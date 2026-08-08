@@ -5,6 +5,35 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Fix: folder tree truncates long names, no horizontal scroll
+
+User confirmed bookmarks work and P2's bug fixes hold up. New report: deeply
+nested/long folder names in the left-panel tree get truncated with no way to scroll to
+see the rest.
+
+Root cause: `QTreeView` defaults to `header()->stretchLastSection() == true`, which
+forces the one visible column (the other `QFileSystemModel` columns are hidden) to
+always exactly fill the viewport width - it can never grow wider, so a long name just
+gets elided and there's nothing to scroll to. Fixed in `MainWindow`'s tree setup:
+`setStretchLastSection(false)`, column 0 resize mode `ResizeToContents` (grows to fit
+the longest currently-visible item, e.g. as folders are expanded), horizontal
+scrollbar policy `ScrollBarAsNeeded`, and `setTextElideMode(Qt::ElideNone)` so nothing
+is ever silently cut - the user's expectation was "let me scroll to it," not "shorten
+it for me."
+
+Verified (window never resized/moved during capture, per the earlier lesson): a
+26-character name (`SolidWorks_Flexnet_Server`) now renders in full with no ellipsis,
+confirming the column is genuinely sizing to content rather than being force-fit.
+Didn't chase a screenshot of the scrollbar itself appearing (would need a
+pathologically long real folder name to force it) - the mechanism is a standard,
+well-understood Qt pattern (disable stretch + ResizeToContents + ScrollBarAsNeeded),
+not something that needs pixel-level proof on top of confirming elision is actually
+gone.
+
+Rebuilt both configs clean, 15/15 tests pass in each.
+
+---
+
 ## 2026-08-09 — desktop — Fix: wheel scroll still smooth; thumbnails clipped to a sliver
 
 User tried the previous session's fixes: wheel scrolling was still smooth, and the

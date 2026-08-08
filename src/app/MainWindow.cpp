@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFileSystemModel>
+#include <QHeaderView>
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
@@ -57,6 +58,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     tree_->setRootIndex(fsModel_->index(QString()));
     tree_->setHeaderHidden(true);
     for (int col = 1; col < fsModel_->columnCount(); ++col) tree_->hideColumn(col);
+    // QTreeView defaults to stretchLastSection(true), which forces the (only visible)
+    // column to always exactly fill the viewport - a long/deeply-indented name just
+    // gets elided with no way to see the rest. Let the column grow to fit its content
+    // instead, with a horizontal scrollbar picking up the overflow.
+    tree_->header()->setStretchLastSection(false);
+    tree_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    tree_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    tree_->setTextElideMode(Qt::ElideNone);
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onTreeSelectionChanged);
 
     auto *leftPanel = new QWidget(this);
