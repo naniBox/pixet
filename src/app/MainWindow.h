@@ -9,11 +9,11 @@ class QTreeView;
 class QFileSystemModel;
 class QListWidget;
 class QListWidgetItem;
-class QListView;
 class QModelIndex;
 class QTimer;
 
 class ThumbGridModel;
+class ThumbGridView;
 class ThumbLoader;
 class PreviewDecoder;
 class PreviewPane;
@@ -42,6 +42,8 @@ private slots:
     void onAddBookmark();
     void onRefresh();
     void onIndexerStarted(QString path);
+    void onFilesListed(QString path);
+    void onThumbsProgress(QString path);
     void onIndexerFinished(QString path);
     void onPreviewReady(qint64 requestId, QImage image);
     void triggerPreviewRequest();
@@ -52,7 +54,7 @@ private:
     QTreeView *tree_;
     QFileSystemModel *fsModel_;
     QListWidget *bookmarks_;
-    QListView *grid_;
+    ThumbGridView *grid_;
     ThumbGridModel *gridModel_;
     PreviewPane *preview_;
 

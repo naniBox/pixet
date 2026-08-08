@@ -60,13 +60,15 @@ int main(int argc, char *argv[]) {
     auto lastPrint = start;
 
     IndexStats stats;
-    indexer.run(rootPath, stats, [&](const IndexStats &s) {
+    IndexCallbacks callbacks;
+    callbacks.onProgress = [&](const IndexStats &s) {
         auto now = Clock::now();
         if (std::chrono::duration<double>(now - lastPrint).count() >= 0.5) {
             printStats(s, std::chrono::duration<double>(now - start).count());
             lastPrint = now;
         }
-    });
+    };
+    indexer.run(rootPath, stats, callbacks);
 
     double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
     printStats(stats, elapsed);

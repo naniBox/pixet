@@ -50,7 +50,8 @@ int64_t Indexer::upsertDir(const std::wstring &path, int64_t parentId) {
 }
 
 void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
-                                 std::vector<std::pair<int64_t, std::wstring>> &subdirsOut, IndexStats &stats) {
+                                 std::vector<std::pair<int64_t, std::wstring>> &subdirsOut, IndexStats &stats,
+                                 const IndexCallbacks &callbacks) {
     int64_t nowMs = nowMillis();
     if (!claims_.tryClaim(dirId, opts_.owner, nowMs)) {
         stats.dirsSkippedClaimed++;
@@ -171,6 +172,10 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
         db_.commit();
     }
 
+    // Pass A (or the fresh-cache equivalent) is done - the file list for this
+    // directory is final, even though most thumbnails are probably still pending.
+    if (callbacks.onFilesListed) callbacks.onFilesListed(dirId, dirPath);
+
     claims_.heartbeat(dirId, opts_.owner, nowMillis());
 
     // Pass B: thumbnail everything still pending in this directory.
@@ -231,6 +236,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
         db_.commit();
         batch.clear();
         claims_.heartbeat(dirId, opts_.owner, nowMillis());
+        if (callbacks.onProgress) callbacks.onProgress(stats);
     };
 
     for (auto &[fileId, name] : pending) {
@@ -244,8 +250,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
     claims_.release(dirId, opts_.owner);
 }
 
-void Indexer::run(const std::wstring &rootPath, IndexStats &stats,
-                   const std::function<void(const IndexStats &)> &onProgress) {
+void Indexer::run(const std::wstring &rootPath, IndexStats &stats, const IndexCallbacks &callbacks) {
     int64_t rootId = upsertDir(rootPath, -1);
 
     std::vector<std::pair<int64_t, std::wstring>> queue;
@@ -256,9 +261,9 @@ void Indexer::run(const std::wstring &rootPath, IndexStats &stats,
         queue.pop_back();
 
         std::vector<std::pair<int64_t, std::wstring>> subdirs;
-        indexOneDirectory(dirId, dirPath, subdirs, stats);
+        indexOneDirectory(dirId, dirPath, subdirs, stats, callbacks);
         stats.dirsVisited++;
-        if (onProgress) onProgress(stats);
+        if (callbacks.onProgress) callbacks.onProgress(stats);
 
         if (opts_.recursive) {
             for (auto &sd : subdirs) queue.push_back(std::move(sd));

@@ -28,7 +28,12 @@ void FolderIndexer::indexFolder(QString path, bool force) {
 
     pixet::Indexer indexer(*db_, opts);
     pixet::IndexStats stats;
-    indexer.run(path.toStdWString(), stats);
+
+    pixet::IndexCallbacks callbacks;
+    callbacks.onFilesListed = [this, path](int64_t, const std::wstring &) { emit filesListed(path); };
+    callbacks.onProgress = [this, path](const pixet::IndexStats &) { emit thumbsProgress(path); };
+
+    indexer.run(path.toStdWString(), stats, callbacks);
 
     emit finished(path);
 }

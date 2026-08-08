@@ -9,6 +9,8 @@ add_executable(pixet WIN32
 
     ThumbGridModel.h
     ThumbGridModel.cpp
+    ThumbGridView.h
+    ThumbGridView.cpp
     ThumbLoader.h
     ThumbLoader.cpp
 

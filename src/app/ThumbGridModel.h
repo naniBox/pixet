@@ -30,7 +30,18 @@ public:
 
     // Reloads rows for the directory at `path` (looked up by path each time, since the
     // dir's id can change - e.g. it didn't exist yet before FolderIndexer created it).
+    // Resets the model - only call when the row *set* may have changed (initial load,
+    // or right after Pass A lists files for a folder). Existing cached thumbnail
+    // pixmaps are discarded, so calling this repeatedly during Pass B would flicker.
     void setDirectory(const QString &path);
+
+    // Re-checks thumb_id/state for the *currently loaded* rows without resetting the
+    // model, so already-displayed thumbnails aren't touched - only rows whose
+    // thumb_id actually changed get a dataChanged (which lets the view re-request a
+    // real thumbnail for what was a placeholder). This is what makes Pass B's
+    // progress visible incrementally instead of in one final jump. No-op if
+    // setDirectory hasn't been called yet.
+    void refreshThumbStates();
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
@@ -53,6 +64,7 @@ private:
     };
 
     pixet::Database &db_;
+    int64_t dirId_ = 0;
     QVector<Row> rows_;
     QHash<qint64, int> rowByFileId_;
 };

@@ -5,6 +5,62 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Pagination scrolling + streaming file list on cold navigate
+
+Two user-requested UX changes.
+
+**Pagination scrolling.** `QListView`'s default wheel handling scrolls by a pixel
+amount scaled by the OS's "lines per notch" setting, which reads as smooth/continuous
+over a thumbnail grid. Added `ThumbGridView` (`QListView` subclass) that overrides
+`wheelEvent` to move the vertical scrollbar by exactly one grid row per wheel notch,
+and sets `ScrollPerItem` for keyboard/scrollbar-arrow consistency too. `MainWindow`
+now constructs a `ThumbGridView` instead of a bare `QListView`.
+
+**Immediate file list on cold navigate.** This is the streaming behavior P2 explicitly
+deferred ("no incremental placeholder-then-fill UX yet... would need Indexer to expose
+per-batch progress, not just per-directory, which it doesn't yet"). Implemented that
+missing piece:
+- `pixet_core::Indexer` gains `IndexCallbacks` (replacing the old bare `onProgress`
+  function parameter): `onFilesListed(dirId, dirPath)` fires once, right after Pass A's
+  transaction commits - the file list is final at that point even though thumbnails are
+  still pending. `onProgress` now also fires after every Pass B batch commit (previously
+  only once per directory, useless for a GUI's single non-recursive folder), so
+  thumbnails becoming available is observable incrementally, not just at the very end.
+- `FolderIndexer` (GUI wrapper) exposes this as two signals: `filesListed(path)` and
+  `thumbsProgress(path)`.
+- `ThumbGridModel` gained `refreshThumbStates()` alongside the existing `setDirectory()`.
+  The distinction matters: `setDirectory()` does a full `beginResetModel()`/
+  `endResetModel()` (correct exactly once, right after Pass A, since nothing meaningful
+  is on screen yet to lose) - `refreshThumbStates()` re-checks `thumb_id`/`state` for
+  *already-loaded* rows and only emits targeted `dataChanged()` for ones that actually
+  changed, so already-displayed thumbnails are never touched. Calling `setDirectory()`
+  on every Pass B batch instead would have reset the model repeatedly and made
+  thumbnails visibly flicker in and out - the whole reason this needed a second method
+  rather than just calling the existing one more often.
+- `MainWindow` wires `filesListed` → `setDirectory()` (once) and `thumbsProgress` →
+  `refreshThumbStates()` (repeatedly); `onIndexerFinished` now also calls
+  `refreshThumbStates()` (catches any trailing batch) instead of `setDirectory()`,
+  since a reset at the very end would undo all the incremental work.
+
+`pixet-index` updated for the `IndexCallbacks` signature change (mechanical - same
+lambda, just assigned to `callbacks.onProgress` instead of passed positionally). It
+incidentally now gets more frequent progress prints too (per-batch instead of
+per-directory), a harmless side effect.
+
+**Verification:** rebuilt both configs clean, 15/15 tests pass in each. Tried twice to
+screenshot-capture the transient "filenames visible, thumbnails still filling in" state
+on a cold 245- and 462-file folder and missed the window both times (indexing at
+~69-80 files/sec completes in a few seconds, and screen-capture tooling overhead in
+this environment - process launch, foreground-lock workaround, P/Invoke JIT - eats
+1-2s+ before the first frame lands reliably). Did not keep fighting it: the mechanism
+is correct by construction (`onFilesListed` structurally fires before any decode work
+starts; `refreshThumbStates()` never resets the model, so it cannot regress
+already-shown content even if never observed mid-flight) and the underlying pipeline
+was already rigorously verified in the previous entry. This one's easy to confirm by
+just watching it - flagging instead of burning more time on automation.
+
+---
+
 ## 2026-08-09 — desktop — Release build: first real numbers
 
 Built and benchmarked `release` (RelWithDebInfo) for the first time. Configure was ~30s

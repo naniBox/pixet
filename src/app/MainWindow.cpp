@@ -4,7 +4,6 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFileSystemModel>
-#include <QListView>
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
@@ -20,6 +19,7 @@
 #include "PreviewDecoder.h"
 #include "PreviewPane.h"
 #include "ThumbGridModel.h"
+#include "ThumbGridView.h"
 #include "ThumbLoader.h"
 #include "db/Database.h"
 #include "db/Schema.h"
@@ -71,7 +71,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // --- center: thumbnail grid ---
     gridModel_ = new ThumbGridModel(*db_, this);
-    grid_ = new QListView(this);
+    grid_ = new ThumbGridView(this);
     grid_->setModel(gridModel_);
     grid_->setViewMode(QListView::IconMode);
     grid_->setResizeMode(QListView::Adjust);
@@ -112,6 +112,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     folderIndexer_ = std::make_unique<FolderIndexer>();
     connect(this, &MainWindow::requestIndex, folderIndexer_.get(), &FolderIndexer::indexFolder);
     connect(folderIndexer_.get(), &FolderIndexer::started, this, &MainWindow::onIndexerStarted);
+    connect(folderIndexer_.get(), &FolderIndexer::filesListed, this, &MainWindow::onFilesListed);
+    connect(folderIndexer_.get(), &FolderIndexer::thumbsProgress, this, &MainWindow::onThumbsProgress);
     connect(folderIndexer_.get(), &FolderIndexer::finished, this, &MainWindow::onIndexerFinished);
 
     previewDebounce_ = new QTimer(this);
@@ -140,7 +142,10 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex) {
 
     currentPath_ = normalized;
     preview_->clear();
-    gridModel_->setDirectory(normalized); // show whatever's already cached, instantly
+    // Show whatever's already cached instantly. For a folder that's new or stale,
+    // this shows 0 rows - onFilesListed (fired once Pass A commits, see FolderIndexer)
+    // reloads again with the real file list, well before thumbnails are ready.
+    gridModel_->setDirectory(normalized);
 
     QModelIndex idx = fsModel_->index(normalized);
     if (idx.isValid() && tree_->currentIndex() != idx) {
@@ -212,9 +217,22 @@ void MainWindow::onIndexerStarted(QString path) {
     if (path == currentPath_) statusBar()->showMessage(QStringLiteral("Indexing %1...").arg(path));
 }
 
+void MainWindow::onFilesListed(QString path) {
+    // Pass A just finished - the file list is final, even though thumbnails are
+    // mostly still pending. Full reload: this is the one point where resetting the
+    // model is correct, since nothing meaningful is on screen yet to flicker away.
+    if (path == currentPath_) gridModel_->setDirectory(path);
+}
+
+void MainWindow::onThumbsProgress(QString path) {
+    // A Pass B batch just landed - pull in the newly-ready thumbnails without
+    // resetting the model, so already-displayed ones don't flicker.
+    if (path == currentPath_) gridModel_->refreshThumbStates();
+}
+
 void MainWindow::onIndexerFinished(QString path) {
     if (path != currentPath_) return;
-    gridModel_->setDirectory(path);
+    gridModel_->refreshThumbStates(); // catch any trailing batch
     statusBar()->showMessage(QStringLiteral("%1 - %2 items").arg(path).arg(gridModel_->rowCount()), 4000);
 }
 

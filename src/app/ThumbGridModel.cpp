@@ -9,14 +9,15 @@ void ThumbGridModel::setDirectory(const QString &path) {
     beginResetModel();
     rows_.clear();
     rowByFileId_.clear();
+    dirId_ = 0;
 
     std::string pathUtf8 = pixet::toUtf8(path.toStdWString());
     auto dirSel = db_.prepare("SELECT id FROM dirs WHERE path=?");
     dirSel.bind(1, pathUtf8);
     if (dirSel.step()) {
-        int64_t dirId = dirSel.columnInt64(0);
+        dirId_ = dirSel.columnInt64(0);
         auto sel = db_.prepare("SELECT id, name, fmt, state, thumb_id FROM files WHERE dir_id=? ORDER BY name");
-        sel.bind(1, dirId);
+        sel.bind(1, dirId_);
         while (sel.step()) {
             Row row;
             row.id = sel.columnInt64(0);
@@ -30,6 +31,30 @@ void ThumbGridModel::setDirectory(const QString &path) {
     }
 
     endResetModel();
+}
+
+void ThumbGridModel::refreshThumbStates() {
+    if (dirId_ == 0 || rows_.isEmpty()) return;
+
+    auto sel = db_.prepare("SELECT id, state, thumb_id FROM files WHERE dir_id=?");
+    sel.bind(1, dirId_);
+    while (sel.step()) {
+        qint64 fileId = sel.columnInt64(0);
+        auto it = rowByFileId_.find(fileId);
+        if (it == rowByFileId_.end()) continue; // new file mid-Pass-B shouldn't happen; ignore defensively
+
+        int row = it.value();
+        auto state = (pixet::FileState)sel.columnInt64(1);
+        qint64 thumbId = sel.columnIsNull(2) ? 0 : sel.columnInt64(2);
+
+        if (thumbId != rows_[row].thumbId || state != rows_[row].state) {
+            rows_[row].thumbId = thumbId;
+            rows_[row].state = state;
+            rows_[row].requested = false; // allow re-request now that a real thumb may exist
+            QModelIndex idx = index(row);
+            emit dataChanged(idx, idx, {Qt::DecorationRole});
+        }
+    }
 }
 
 int ThumbGridModel::rowCount(const QModelIndex &parent) const { return parent.isValid() ? 0 : rows_.size(); }

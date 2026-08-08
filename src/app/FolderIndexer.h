@@ -27,6 +27,15 @@ public slots:
 
 signals:
     void started(QString path);
+    // Pass A just committed for this folder - the file list (names) is final, so a
+    // full grid reload here will show correct filenames even though most thumbnails
+    // are still pending. Fired even when nothing needed rescanning (already fresh),
+    // so the receiver doesn't need to special-case that.
+    void filesListed(QString path);
+    // A Pass B batch just committed - some thumbnails are newly ready. Fired more
+    // often than filesListed; the receiver should do an incremental update; a full
+    // model reset here would wipe already-displayed thumbnails and cause flicker.
+    void thumbsProgress(QString path);
     void finished(QString path);
 
 private:

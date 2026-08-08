@@ -32,6 +32,20 @@ struct IndexOptions {
     std::string owner; // claim owner id, e.g. "pid:1234"
 };
 
+struct IndexCallbacks {
+    // Fired once per directory, right after Pass A (walk+diff) commits - the file
+    // list (names) for that directory is final from this point on, even though most
+    // or all thumbnails are still pending. Lets a GUI show filenames immediately
+    // instead of waiting for Pass B to finish. Also fires for an already-fresh
+    // directory (nothing to do), so callers don't need to special-case that.
+    std::function<void(int64_t dirId, const std::wstring &dirPath)> onFilesListed;
+
+    // Fired after each Pass B batch commits (a handful of thumbnails just became
+    // available) and once per directory visited overall. A GUI can use this to pull
+    // newly-ready thumbnails into view incrementally rather than in one final jump.
+    std::function<void(const IndexStats &)> onProgress;
+};
+
 // Walks and thumbnails a directory tree, reusing the exact same code path the GUI's
 // on-demand FolderIndexer will call for a single folder (see devlog/plan) - this
 // class is the one place Pass A (walk+diff) and Pass B (thumbnail state=0 files)
@@ -40,8 +54,7 @@ class Indexer {
 public:
     Indexer(Database &db, IndexOptions opts);
 
-    void run(const std::wstring &rootPath, IndexStats &stats,
-              const std::function<void(const IndexStats &)> &onProgress = {});
+    void run(const std::wstring &rootPath, IndexStats &stats, const IndexCallbacks &callbacks = {});
 
 private:
     Database &db_;
@@ -50,7 +63,8 @@ private:
 
     int64_t upsertDir(const std::wstring &path, int64_t parentId);
     void indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
-                            std::vector<std::pair<int64_t, std::wstring>> &subdirsOut, IndexStats &stats);
+                            std::vector<std::pair<int64_t, std::wstring>> &subdirsOut, IndexStats &stats,
+                            const IndexCallbacks &callbacks);
 };
 
 } // namespace pixet
