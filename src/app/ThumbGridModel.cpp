@@ -36,6 +36,13 @@ void ThumbGridModel::setDirectory(const QString &path) {
 void ThumbGridModel::refreshThumbStates() {
     if (dirId_ == 0 || rows_.isEmpty()) return;
 
+    // Batched into one dataChanged covering the full changed range, rather than one
+    // signal per row - IconMode + setUniformItemSizes has shown flaky partial repaints
+    // (some cells not redrawn until an unrelated interaction like a hover) under many
+    // small individual dataChanged emissions in quick succession. One range-covering
+    // signal is both more efficient and more reliably triggers a full repaint.
+    int minChanged = -1, maxChanged = -1;
+
     auto sel = db_.prepare("SELECT id, state, thumb_id FROM files WHERE dir_id=?");
     sel.bind(1, dirId_);
     while (sel.step()) {
@@ -51,9 +58,13 @@ void ThumbGridModel::refreshThumbStates() {
             rows_[row].thumbId = thumbId;
             rows_[row].state = state;
             rows_[row].requested = false; // allow re-request now that a real thumb may exist
-            QModelIndex idx = index(row);
-            emit dataChanged(idx, idx, {Qt::DecorationRole});
+            if (minChanged == -1 || row < minChanged) minChanged = row;
+            if (row > maxChanged) maxChanged = row;
         }
+    }
+
+    if (minChanged != -1) {
+        emit dataChanged(index(minChanged), index(maxChanged), {Qt::DecorationRole});
     }
 }
 

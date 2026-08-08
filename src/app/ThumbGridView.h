@@ -14,4 +14,12 @@ public:
 
 protected:
     void wheelEvent(QWheelEvent *event) override;
+
+private:
+    // High-resolution mice/trackpads deliver many small fractional wheel deltas
+    // instead of one clean 120-unit notch per click - accumulate across events so a
+    // full notch's worth of rotation still triggers exactly one discrete row-step,
+    // rather than falling through to smooth per-pixel scrolling for every sub-notch
+    // event (which is what silently happened before this field existed).
+    int accumulatedDelta_ = 0;
 };

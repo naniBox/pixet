@@ -78,7 +78,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     grid_->setMovement(QListView::Static);
     grid_->setIconSize(QSize(ThumbLoader::kThumbIconSize, ThumbLoader::kThumbIconSize));
     grid_->setGridSize(QSize(ThumbLoader::kThumbIconSize + 20, ThumbLoader::kThumbIconSize + 20));
-    grid_->setUniformItemSizes(true);
+    // Deliberately NOT setUniformItemSizes(true): thumbnails arrive asynchronously,
+    // so the first layout pass sees empty decorations for most cells. That flag tells
+    // Qt to cache whatever size it computes then, from a mostly-decoration-less item,
+    // and never revisit it - every thumbnail that streams in afterward gets clipped to
+    // that stale (too-small) cached size until something (e.g. a hover) forces a
+    // relayout. This was very likely the actual cause of the "only shows a tiny sliver
+    // until I hover" bug. setGridSize() already gives fixed, explicit cell dimensions,
+    // so the performance case for this flag doesn't really apply here anyway.
     grid_->setSelectionMode(QAbstractItemView::SingleSelection);
     connect(grid_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onGridSelectionChanged);
 
@@ -105,6 +112,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     thumbLoader_ = std::make_unique<ThumbLoader>();
     connect(gridModel_, &ThumbGridModel::thumbNeeded, thumbLoader_.get(), &ThumbLoader::request);
     connect(thumbLoader_.get(), &ThumbLoader::thumbReady, gridModel_, &ThumbGridModel::setThumbnail);
+    // Belt-and-suspenders: QListView's IconMode + setUniformItemSizes has shown
+    // unreliable partial repaints under many small dataChanged emissions arriving
+    // over time (some cells stay stuck showing a placeholder until an unrelated
+    // interaction like a hover forces Qt to relayout). An explicit viewport update
+    // is cheap - Qt coalesces repeated calls within one event loop iteration - and
+    // removes any doubt about whether the model's dataChanged alone was enough.
+    connect(thumbLoader_.get(), &ThumbLoader::thumbReady, this,
+            [this](qint64, const QPixmap &) { grid_->viewport()->update(); });
 
     previewDecoder_ = std::make_unique<PreviewDecoder>();
     connect(previewDecoder_.get(), &PreviewDecoder::previewReady, this, &MainWindow::onPreviewReady);
@@ -227,12 +242,15 @@ void MainWindow::onFilesListed(QString path) {
 void MainWindow::onThumbsProgress(QString path) {
     // A Pass B batch just landed - pull in the newly-ready thumbnails without
     // resetting the model, so already-displayed ones don't flicker.
-    if (path == currentPath_) gridModel_->refreshThumbStates();
+    if (path != currentPath_) return;
+    gridModel_->refreshThumbStates();
+    grid_->viewport()->update(); // see the comment on the thumbReady connection above
 }
 
 void MainWindow::onIndexerFinished(QString path) {
     if (path != currentPath_) return;
     gridModel_->refreshThumbStates(); // catch any trailing batch
+    grid_->viewport()->update();
     statusBar()->showMessage(QStringLiteral("%1 - %2 items").arg(path).arg(gridModel_->rowCount()), 4000);
 }
 

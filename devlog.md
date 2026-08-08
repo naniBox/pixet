@@ -5,6 +5,59 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Fix: wheel scroll still smooth; thumbnails clipped to a sliver
+
+User tried the previous session's fixes: wheel scrolling was still smooth, and the
+"only the tiny top part [of each thumbnail] shows until I hover" bug was still there.
+Both were real, separate bugs from the pagination-scroll and streaming-file-list work.
+
+**Wheel scroll fix.** `ThumbGridView::wheelEvent` computed `notches = angleDelta().y() /
+120` and fell through to the default (smooth) `QListView::wheelEvent` whenever that was
+zero. Modern mice and touchpads commonly deliver many small fractional wheel deltas
+instead of one clean 120-unit notch per click - so `notches` was 0 almost every time,
+and the override almost never actually fired. Fixed by accumulating delta across events
+in a member (`accumulatedDelta_`) and only consuming a full 120 once the accumulation
+reaches it, **never** falling through to the base implementation regardless of delta
+size (that fallthrough was the bug).
+
+**Thumbnail clipping fix - likely the real explanation for the very first "top 10-20%"
+report too, not just the threading bug.** Root cause: `grid_->setUniformItemSizes(true)`.
+That flag tells Qt to compute an item's size once (from an early item) and trust it for
+every cell thereafter, never recomputing. Since thumbnails arrive asynchronously, the
+first real layout pass happens while most cells' `Qt::DecorationRole` is still an empty
+`QVariant` (no thumbnail yet) - so the cached "uniform" size ends up computed without
+accounting for a decoration at all. Every thumbnail that streams in afterward gets
+clipped to that too-small stale size - reading exactly as "only a tiny sliver at the
+top" - until something (a hover) forces Qt to relayout from scratch. Fix: removed
+`setUniformItemSizes(true)` entirely. `setGridSize()` already gives fixed, explicit
+cell dimensions, so the performance case for trusting a cached size doesn't really
+apply here anyway.
+
+Also added, as defense in depth (cheap, and removes any doubt regardless of the exact
+Qt-internal mechanism): `ThumbGridModel::refreshThumbStates()` now batches its
+`dataChanged` into one range-covering signal instead of one per changed row, and
+`MainWindow` explicitly calls `grid_->viewport()->update()` after both
+`ThumbLoader::thumbReady` and `refreshThumbStates()`.
+
+**A verification-methodology lesson worth keeping:** the previous session's "confirmed
+via screenshot" checks were unreliable in a way I didn't catch at the time - every
+screenshot was preceded by a `MoveWindow` call to reposition/resize the window for
+capture, and resizing a window forces Qt to fully relayout and repaint regardless of
+whatever bug is actually present. That almost certainly masked this exact clipping bug
+in the earlier "verified" screenshots. This time, verified by launching the app,
+deliberately **never** resizing or moving it, and only using `SetForegroundWindow` (plus
+the Alt-key foreground-lock workaround) to bring it forward for the screenshot -
+foregrounding an already-fully-visible, non-minimized window doesn't force DWM to
+recomposite content that hasn't changed, so this is a much more faithful test of what
+the user actually sees. Caught the real transitional sequence cleanly this time:
+filenames-only (~2s), then full-size non-clipped thumbnails streaming in (~3.7s), no
+hover needed. **Lesson: never resize/move the window as part of a verification
+screenshot - it can hide exactly the class of layout/repaint bug being tested for.**
+
+Rebuilt both configs clean, 15/15 tests pass in each.
+
+---
+
 ## 2026-08-09 — desktop — Pagination scrolling + streaming file list on cold navigate
 
 Two user-requested UX changes.
