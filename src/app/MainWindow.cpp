@@ -8,6 +8,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSplitter>
 #include <QStandardPaths>
@@ -67,6 +68,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     tree_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     tree_->setTextElideMode(Qt::ElideNone);
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onTreeSelectionChanged);
+    connect(fsModel_, &QFileSystemModel::directoryLoaded, this, &MainWindow::onTreeDirectoryLoaded);
 
     auto *leftPanel = new QWidget(this);
     auto *leftLayout = new QVBoxLayout(leftPanel);
@@ -173,12 +175,65 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex) {
 
     QModelIndex idx = fsModel_->index(normalized);
     if (idx.isValid() && tree_->currentIndex() != idx) {
+        // This path only runs for navigation that didn't originate from a click
+        // already inside the tree (bookmark click, restoreLastDirectory on startup) -
+        // a direct tree click already has currentIndex() == idx by the time we get
+        // here. Reveal every ancestor first so idx is actually part of the tree's
+        // visible row structure (a collapsed parent means visualRect() below would
+        // come back invalid).
+        for (QModelIndex parent = idx.parent(); parent.isValid(); parent = parent.parent()) {
+            if (!tree_->isExpanded(parent)) tree_->expand(parent);
+        }
+
         tree_->setCurrentIndex(idx);
-        tree_->scrollTo(idx);
+
+        // Deliberately not tree_->scrollTo(idx): its default EnsureVisible hint only
+        // scrolls the minimum needed, and in the process resets horizontal scroll
+        // back to the row's start - hiding whatever of a long name was scrolled into
+        // view. Position vertically at the top instead; horizontal position untouched.
+        // This first attempt is best-effort - expand() above kicks off asynchronous
+        // directory listing, so most ancestors' full row counts (and therefore idx's
+        // real position) usually aren't known yet. onTreeDirectoryLoaded() reapplies
+        // this as each ancestor's listing finishes, but that alone wasn't enough for a
+        // deeply nested path under a directory with many siblings (e.g. a home folder
+        // full of app-config dirs) - the fixed-delay retries below are what actually
+        // catch up in that case, empirically, up to a few seconds out.
+        repositionTreeToTop(idx);
+        for (int delayMs : {300, 800, 1500, 3000}) {
+            QTimer::singleShot(delayMs, this, [this, normalized]() {
+                if (normalized == currentPath_) repositionTreeToTop(fsModel_->index(normalized));
+            });
+        }
     }
 
     saveLastDirectory(normalized);
     emit requestIndex(normalized, forceReindex);
+}
+
+void MainWindow::repositionTreeToTop(const QModelIndex &idx) {
+    if (!idx.isValid()) return;
+    // Trust Qt's own (tested, handles all the nested-expansion/row-height bookkeeping
+    // correctly) positioning logic for the vertical part, rather than computing pixel
+    // offsets by hand. Only manually intervene for the one specific side effect that's
+    // actually a problem: it also resets horizontal scroll to the row's start, hiding
+    // whatever of a long name was scrolled into view - so save/restore around it.
+    int hScroll = tree_->horizontalScrollBar()->value();
+    tree_->scrollTo(idx, QAbstractItemView::PositionAtTop);
+    tree_->horizontalScrollBar()->setValue(hScroll);
+    // Same class of bug as the thumbnail grid's partial-repaint issue: Qt's internal
+    // scroll state ends up correct (verified via visualRect()/scrollbar value) but the
+    // viewport doesn't reliably repaint to actually show it without this nudge.
+    tree_->viewport()->update();
+}
+
+void MainWindow::onTreeDirectoryLoaded(const QString &) {
+    // Fires for every directory the tree has ever listed, not just ones relevant to
+    // the current navigation - cheap to just recheck unconditionally each time. Only
+    // reposition while the tree's own selection still agrees with where we navigated
+    // to, so this doesn't fight a selection the user has since changed manually.
+    if (currentPath_.isEmpty()) return;
+    QModelIndex idx = fsModel_->index(currentPath_);
+    if (idx.isValid() && tree_->currentIndex() == idx) repositionTreeToTop(idx);
 }
 
 void MainWindow::onTreeSelectionChanged(const QModelIndex &current) {

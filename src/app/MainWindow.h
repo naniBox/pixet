@@ -47,6 +47,10 @@ private slots:
     void onIndexerFinished(QString path);
     void onPreviewReady(qint64 requestId, QImage image);
     void triggerPreviewRequest();
+    // QFileSystemModel populates directory contents asynchronously in the background;
+    // an ancestor directory finishing its listing shifts every row below it. Reapplies
+    // the tree top-positioning as that settles - see navigateTo()/repositionTreeToTop().
+    void onTreeDirectoryLoaded(const QString &path);
 
 private:
     std::unique_ptr<pixet::Database> db_; // main-thread: bookmarks CRUD + fast metadata queries
@@ -74,6 +78,7 @@ private:
     qint64 currentPreviewRequestId_ = 0;
 
     void navigateTo(const QString &path, bool forceReindex = false);
+    void repositionTreeToTop(const QModelIndex &idx);
     void loadBookmarks();
     void addBookmark(const QString &path);
     void removeBookmark(qint64 id);

@@ -5,6 +5,64 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Tree: position selection at top on navigate, keep horizontal scroll
+
+Two requests: (1) when navigating via a bookmark or app-startup restore, the target
+folder should land at the top of the tree, not wherever `EnsureVisible` happens to
+leave it; (2) navigating shouldn't reset horizontal scroll back to the left, hiding
+whatever of a long name had been scrolled into view.
+
+**Fix, in `MainWindow::navigateTo`/`repositionTreeToTop`:** this only runs for
+navigation that didn't originate from a click already inside the tree (a direct tree
+click already has `currentIndex() == idx`, so the block is skipped entirely - this
+scoping already existed and turned out to be exactly right, no changes needed there).
+Walk and `expand()` every ancestor first, `setCurrentIndex(idx)`, then position via
+`scrollTo(idx, QAbstractItemView::PositionAtTop)` - **not** the plain `scrollTo(idx)`
+used before, whose default `EnsureVisible` hint is also what was resetting horizontal
+scroll (it scrolls to reveal the row's start). Horizontal position is saved before and
+restored after, so that side effect is gone without losing the "position at top" part.
+
+**This took a lot longer to actually verify than to write, for two compounding
+reasons, both worth remembering:**
+
+1. **QFileSystemModel populates directories asynchronously**, so a `scrollTo()` called
+   immediately after `expand()` is frequently computed against an incomplete row count
+   - the position looks right for a moment, then drifts as more siblings stream in.
+   Signal-driven retries via `QFileSystemModel::directoryLoaded` help but weren't
+   sufficient by themselves for a deeply nested path (6 ancestor levels) under a
+   directory with ~35 siblings (a real dev-machine home folder full of app-config
+   dirs) - empirically needed fixed-delay fallback retries out to a few seconds
+   (`{300, 800, 1500, 3000}` ms) to reliably converge. A shallower 4-level path under
+   a directory with only ~7 children converged almost immediately - the settling time
+   scales with both nesting depth and sibling count at each level, not just one or the
+   other.
+2. **The verification methodology itself was broken for a while and produced a false
+   negative.** Every earlier screenshot in this session launched the app *in the
+   background* (other windows on top) and only foregrounded it right before
+   capturing. Under that sequence, Qt's internal state was provably correct
+   (`visualRect()`/scrollbar value checked directly via a temporary debug-title
+   diagnostic - valid, non-zero rect, positioned at y=0) while the screenshot still
+   showed the old, unscrolled tree content. Foregrounding (and, to reliably survive a
+   browser tab that kept stealing focus back mid-test, pinning the window
+   `HWND_TOPMOST`) *before* the navigation happens, so the window is genuinely visible
+   and composited by DWM the whole time, was necessary to get a screenshot that
+   actually reflects the app's real state. A backgrounded window's content changes are
+   evidently not guaranteed to be reflected live in a screen capture even after
+   bringing it forward afterward.
+
+Net effect of both lessons together: an early round of this fix looked "confirmed
+working" from a screenshot that was actually stale, then looked "still broken" from a
+different screenshot that turned out to be testing the wrong bookmark (an earlier
+miscalibrated click had landed on a different, shallower bookmark and saved *that* to
+`lastDirectory`, so the next launch wasn't testing the deep path at all). Sorted out
+by checking Qt's actual internal state directly rather than trusting either screenshot,
+and by controlling window visibility state deliberately throughout each test rather
+than only at capture time.
+
+Rebuilt both configs clean, 15/15 tests pass in each.
+
+---
+
 ## 2026-08-09 — desktop — Fix: folder tree truncates long names, no horizontal scroll
 
 User confirmed bookmarks work and P2's bug fixes hold up. New report: deeply
