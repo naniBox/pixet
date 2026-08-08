@@ -152,6 +152,21 @@ P0 exit gate (needs `C:\Qt\6.8.3\msvc2022_64\bin` on `PATH`, or run from inside 
 that sets it, since we haven't wired `windeployqt` yet). `build/debug/src/index/pixet-index.exe`
 should print a version stub.
 
+## 7. VS Code run/debug (recommended over the manual CLI steps above)
+
+The repo has `.vscode/launch.json`, `tasks.json`, `settings.json` committed. Install the
+recommended extensions (VS Code will prompt via `.vscode/extensions.json`, or manually:
+`ms-vscode.cmake-tools`, `ms-vscode.cpptools`), open the folder, and press **F5** — pick
+"pixet (debug)" or "pixet-index (debug)".
+
+This sidesteps the whole `Enter-VsDevShell` dance in step 6: `CMakePresets.json` carries a
+`vendor` block that VS Code's CMake Tools recognizes, so it auto-injects the MSVC
+environment itself the first time you configure (may prompt you to pick a VS
+install/architecture — pick the x64 Build Tools). If `pixet.exe` fails to launch with a
+missing-DLL error, check `launch.json`'s `PATH` override still points at your actual Qt
+install (see the `CMakeUserPresets.json` note above if yours differs from
+`C:\Qt\6.8.3\msvc2022_64`).
+
 ## Troubleshooting
 
 - **`winget install` command not found**: winget ships with Windows 11 by default: update

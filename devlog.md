@@ -5,6 +5,31 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-08 — desktop — VS Code run/debug configs
+
+- Added `.vscode/{launch.json,tasks.json,settings.json,extensions.json}`. CMake Tools +
+  C/C++ (cpptools) were already installed on this machine, so wired through those rather
+  than a parallel setup: `settings.json` pins `cmake.configurePreset`/`buildPreset` to
+  `debug` (matches `CMakePresets.json`), `tasks.json` has build tasks per preset,
+  `launch.json` has `cppvsdbg` debug configs for both `pixet` and `pixet-index`, debug and
+  release.
+- **Also fixed a real gap in `CMakePresets.json`**: added a `vendor` block
+  (`microsoft.com/VisualStudioSettings/CMake/1.0`) to the base preset. Without it, CMake
+  Tools configuring through the IDE hits the same "`cl.exe`/`CMAKE_CXX_COMPILER` not
+  found" failure the CLI did before we knew to enter the VS dev shell manually — this
+  `vendor` key is the documented mechanism that makes VS Code (and Visual Studio) prompt
+  for/auto-inject the MSVC environment for a Ninja+presets project. Confirmed
+  `cmake --preset debug` still reconfigures cleanly from the CLI after adding it.
+  Reconfirmed `pixet.exe`/`pixet-index.exe` land exactly where `launch.json` expects
+  (`build/debug/src/app/`, `build/debug/src/index/`).
+- `launch.json`'s `PATH` override for `pixet.exe` (`C:\Qt\6.8.3\msvc2022_64\bin`) is
+  hardcoded to match `CMakePresets.json`'s default Qt path — needed since we haven't
+  wired `windeployqt` yet. If a machine needs the `CMakeUserPresets.json` Qt-path
+  override (see earlier entry), also update this PATH locally in `launch.json` (don't
+  commit a machine-specific path over the shared one).
+
+---
+
 ## 2026-08-08 — desktop — P0 verified: hello-world Qt window builds and runs
 
 - VS Build Tools finished installing. Confirmed via `vswhere.exe -requires

@@ -1,0 +1,23 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "cmake",
+      "label": "CMake: build debug",
+      "command": "build",
+      "preset": "debug",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$msCompile"],
+      "detail": "Build all targets using the debug preset"
+    },
+    {
+      "type": "cmake",
+      "label": "CMake: build release",
+      "command": "build",
+      "preset": "release",
+      "group": "build",
+      "problemMatcher": ["$msCompile"],
+      "detail": "Build all targets using the release preset"
+    }
+  ]
+}

@@ -10,6 +10,9 @@
       "toolchainFile": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.3/msvc2022_64"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": ["Windows"] }
       }
     },
     {
