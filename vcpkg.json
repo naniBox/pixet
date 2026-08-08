@@ -10,7 +10,7 @@
     "libwebp",
     "libavif",
     "libraw",
-    { "name": "libheif", "features": ["libde265"] },
+    { "name": "libheif", "default-features": false },
     { "name": "ffmpeg", "features": ["avcodec", "avformat", "swscale"], "default-features": false }
   ]
 }

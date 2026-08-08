@@ -5,6 +5,42 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-08 — desktop — P0 verified: hello-world Qt window builds and runs
+
+- VS Build Tools finished installing. Confirmed via `vswhere.exe -requires
+  Microsoft.VisualStudio.Component.VC.Tools.x86.x64`.
+- **Gotcha for the other machine:** a plain new PowerShell window does not have `cl.exe`
+  or the MSVC env on `PATH` — you must enter the VS dev shell first:
+  ```powershell
+  $vsPath = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+  Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+  Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
+  ```
+  `Enter-VsDevShell` **replaces** `$env:Path` rather than extending your existing one, so
+  cmake/ninja (installed to user-scope winget paths) disappear from `PATH` after running
+  it. Re-merge the registry `PATH` back in afterward:
+  ```powershell
+  $env:Path = $env:Path + ";" + [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+  ```
+  Added this sequence to `SETUP.md`.
+- **Fixed a vcpkg.json bug found during first configure:** `libheif`'s dependency on
+  `libde265` is a mandatory base dependency of the port, not an optional feature —
+  `"features": ["libde265"]` fails with "does not have required feature". Fixed to
+  `{ "name": "libheif", "default-features": false }` (drops the `hevc`/x265 default
+  feature, which is for *encoding* HEIC — irrelevant, we only decode).
+- `cmake --preset debug` (first run, builds the full vcpkg dependency list from source —
+  sqlite3, libjpeg-turbo, libpng, tiff, webp, avif, libraw, libheif+libde265, ffmpeg):
+  **~28 minutes.** Should be near-instant on the second machine's first run too once vcpkg
+  populates its binary cache, but budget for ~30 min on a truly cold vcpkg cache.
+- `cmake --build build/debug`: fast, as expected (only our placeholder sources compile).
+- **P0 gate passed:** launched `build/debug/src/app/pixet.exe`, confirmed a window titled
+  "pixet 0.1.0" actually renders (`Get-Process pixet | Select MainWindowTitle` +
+  screenshot). `pixet-index.exe` prints its version stub correctly.
+- Next: start P1 — schema/migrations, directory walker, claims table, JPEG decode path
+  (embedded preview → scaled DCT), benchmark against the real 800GB library.
+
+---
+
 ## 2026-08-08 — desktop — P0 toolchain bootstrap (part 1)
 
 - Machine started with zero toolchain: no compiler, CMake, vcpkg, or Qt. `python` was

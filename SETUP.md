@@ -127,13 +127,30 @@ and overriding `CMAKE_PREFIX_PATH`:
 
 ## 6. Build and verify
 
+A plain PowerShell window does **not** have `cl.exe`/MSVC on `PATH` even after step 3 —
+you need to enter the VS dev shell first. `Enter-VsDevShell` **replaces** `$env:Path`
+rather than extending it, so cmake/ninja (installed to user-scope winget paths in steps 1-2)
+disappear from `PATH` afterward — merge the registry `PATH` back in:
+
 ```powershell
+$vsPath = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
+$env:Path = $env:Path + ";" + [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
 cmake --preset debug
 cmake --build build/debug
 ```
 
+The first `cmake --preset debug` also triggers vcpkg building the full dependency list
+from source (sqlite3, libjpeg-turbo, libpng, tiff, webp, avif, libraw, libheif+libde265,
+ffmpeg) — **budget ~30 minutes** on a cold vcpkg binary cache. `cmake --build` itself is
+fast once dependencies are built.
+
 `build/debug/src/app/pixet.exe` should launch a window titled "pixet 0.1.0" — that's the
-P0 exit gate. `build/debug/src/index/pixet-index.exe` should print a version stub.
+P0 exit gate (needs `C:\Qt\6.8.3\msvc2022_64\bin` on `PATH`, or run from inside an IDE
+that sets it, since we haven't wired `windeployqt` yet). `build/debug/src/index/pixet-index.exe`
+should print a version stub.
 
 ## Troubleshooting
 
