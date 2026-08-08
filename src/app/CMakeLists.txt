@@ -7,6 +7,9 @@ add_executable(pixet WIN32
 
     QtInterop.h
 
+    FolderTreeView.h
+    FolderTreeView.cpp
+
     ThumbGridModel.h
     ThumbGridModel.cpp
     ThumbGridView.h

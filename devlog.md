@@ -5,6 +5,44 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Fix: horizontal scroll still reset on a direct tree click
+
+User confirmed the previous fix helped but the horizontal-scroll-reset bug still
+happened "on folder change." Real gap: the previous fix only covered navigation that
+originates *outside* the tree (bookmark click, startup restore) - `MainWindow::navigateTo`'s
+repositioning block explicitly only runs when `tree_->currentIndex() != idx`, which is
+never true for a click *inside* the tree (Qt's own native click handling has already
+changed `currentIndex` by the time our `currentChanged` signal handler runs). So a
+direct click on a different tree row was hitting Qt's built-in auto-scroll-to-reveal
+behavior with zero opportunity for us to intervene via any signal - by the time any of
+our code sees the change, the horizontal reset has already happened.
+
+Fix: added `FolderTreeView`, a small `QTreeView` subclass overriding `mousePressEvent`
+and `keyPressEvent` to save `horizontalScrollBar()->value()`, call the base
+implementation (which does Qt's normal click/keyboard-navigation handling, auto-scroll
+side effect and all), then restore the saved value immediately after. This intercepts
+at the only point that's actually before Qt's internal auto-scroll happens, regardless
+of the exact internal call sequence Qt uses - no signal-based approach could have
+worked here. `MainWindow` now constructs a `FolderTreeView` instead of a bare
+`QTreeView`; the bookmark/startup-restore path (`repositionTreeToTop`) is unchanged
+and still handles the "position at top" part for that separate case.
+
+**Verification note:** given how unreliable coordinate-based UI automation proved
+earlier this session (DPI scaling, focus-stealing, DWM compositing timing), didn't
+attempt a pixel-precise repro of "scroll right, click elsewhere, still scrolled right"
+this time - that would need reliably clicking a horizontal scrollbar's page-right
+region first, another coordinate-precision dependency. Instead confirmed no regression
+(clean build, 15/15 tests, a direct tree click still navigates and populates the grid
+correctly) and relied on the fix being simple and correct by inspection - it's the
+same save/restore pattern already verified working for the bookmark-click case, just
+intercepting at `mousePressEvent`/`keyPressEvent` instead of after the fact. Asked the
+user to confirm directly since they've been an accurate real-usage reporter of both
+bugs this fix addresses.
+
+Rebuilt both configs clean, 15/15 tests pass in each.
+
+---
+
 ## 2026-08-09 — desktop — Tree: position selection at top on navigate, keep horizontal scroll
 
 Two requests: (1) when navigating via a bookmark or app-startup restore, the target

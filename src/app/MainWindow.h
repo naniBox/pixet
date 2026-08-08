@@ -5,13 +5,13 @@
 
 #include <memory>
 
-class QTreeView;
 class QFileSystemModel;
 class QListWidget;
 class QListWidgetItem;
 class QModelIndex;
 class QTimer;
 
+class FolderTreeView;
 class ThumbGridModel;
 class ThumbGridView;
 class ThumbLoader;
@@ -55,7 +55,7 @@ private slots:
 private:
     std::unique_ptr<pixet::Database> db_; // main-thread: bookmarks CRUD + fast metadata queries
 
-    QTreeView *tree_;
+    FolderTreeView *tree_;
     QFileSystemModel *fsModel_;
     QListWidget *bookmarks_;
     ThumbGridView *grid_;

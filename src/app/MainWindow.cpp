@@ -14,10 +14,10 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTimer>
-#include <QTreeView>
 #include <QVBoxLayout>
 
 #include "FolderIndexer.h"
+#include "FolderTreeView.h"
 #include "PreviewDecoder.h"
 #include "PreviewPane.h"
 #include "ThumbGridModel.h"
@@ -54,7 +54,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     fsModel_->setRootPath(QString());
     fsModel_->setFilter(QDir::AllDirs | QDir::NoDotAndDotDot | QDir::Drives);
 
-    tree_ = new QTreeView(this);
+    tree_ = new FolderTreeView(this);
     tree_->setModel(fsModel_);
     tree_->setRootIndex(fsModel_->index(QString()));
     tree_->setHeaderHidden(true);
