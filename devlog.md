@@ -5,6 +5,31 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Release build: first real numbers
+
+Built and benchmarked `release` (RelWithDebInfo) for the first time. Configure was ~30s
+(vcpkg restored every dependency from its binary cache instead of rebuilding from
+source - the ~28min P1 debug build only pays that cost once per machine, not per
+build type).
+
+**Cold-run throughput, same 2,678-file folder as the P1 debug benchmark:**
+- Debug: 38.8s → ~69 files/sec
+- Release: 34.5s → **~78 files/sec** (~12% faster)
+
+Smaller win than a typical debug-vs-release gap because the workload is dominated by
+the embedded-preview path (96.5% of files, per P1) - mostly file I/O and a tiny JPEG
+decode, not the kind of hot CPU-bound loop `-O2` transforms dramatically. The `-O2`ed
+scaled-DCT/resize/encode path helps, but it's a minority of the work here.
+
+Also: release `pixet.exe` uses noticeably less memory at launch (~74MB vs ~97-99MB
+debug) - expected, no debug CRT/iterator-checking overhead.
+
+Scroll/navigation responsiveness itself should be identical or better between configs -
+that was the threading bug fixed in the previous entry, orthogonal to optimization
+level, and applies the same way in both.
+
+---
+
 ## 2026-08-09 — desktop — Critical fix: workers were never actually threaded
 
 User reported real-use bugs: navigating to a folder froze the UI for 2-3s, scrolling
