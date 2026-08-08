@@ -1,0 +1,16 @@
+{
+  "name": "pixet",
+  "version": "0.1.0",
+  "builtin-baseline": "c4d9956c0c10a4742840a5e7d93efa2e0015c865",
+  "dependencies": [
+    "sqlite3",
+    "libjpeg-turbo",
+    "libpng",
+    "tiff",
+    "libwebp",
+    "libavif",
+    "libraw",
+    { "name": "libheif", "features": ["libde265"] },
+    { "name": "ffmpeg", "features": ["avcodec", "avformat", "swscale"], "default-features": false }
+  ]
+}

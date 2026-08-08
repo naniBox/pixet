@@ -61,6 +61,9 @@ compile_commands.json
 # vcpkg
 vcpkg_installed/
 
+# per-machine CMake preset overrides (e.g. different Qt install path/version)
+CMakeUserPresets.json
+
 # debug information files
 *.dwo
 
