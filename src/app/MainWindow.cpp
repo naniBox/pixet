@@ -212,6 +212,20 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex) {
 
 void MainWindow::repositionTreeToTop(const QModelIndex &idx) {
     if (!idx.isValid()) return;
+
+    // If the row is already visible - or within a couple of rows of the viewport -
+    // leave the scroll position alone. Jumping a folder that's already in view (say,
+    // the middle of the tree) up to the top on every navigation is disorienting; only
+    // reposition when the target genuinely isn't reachable without scrolling. An
+    // invalid rect (row not yet part of the laid-out tree structure - still expanding
+    // asynchronously) falls through to the repositioning logic below, same as before.
+    QRect rowRect = tree_->visualRect(idx);
+    if (rowRect.isValid()) {
+        int rowHeight = rowRect.height() > 0 ? rowRect.height() : 20;
+        QRect tolerance = tree_->viewport()->rect().adjusted(0, -3 * rowHeight, 0, 3 * rowHeight);
+        if (tolerance.intersects(rowRect)) return;
+    }
+
     // Trust Qt's own (tested, handles all the nested-expansion/row-height bookkeeping
     // correctly) positioning logic for the vertical part, rather than computing pixel
     // offsets by hand. Only manually intervene for the one specific side effect that's

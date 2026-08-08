@@ -16,5 +16,9 @@ public:
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+
+private:
+    void restoreHorizontalScroll(int value);
 };

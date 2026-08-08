@@ -5,6 +5,48 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Tree: don't reposition if already visible; another hscroll attempt
+
+User feedback: (1) don't jump the tree to top if the newly-selected folder is already
+visible (even mid-viewport) - only reposition when it's genuinely not reachable
+without scrolling; (2) horizontal scroll was *still* resetting on a direct tree click
+despite the previous `FolderTreeView` fix.
+
+**Fix 1 - conditional repositioning.** `repositionTreeToTop` now checks
+`tree_->visualRect(idx)` first: if the row is already within the viewport (extended by
+a 3-row-height tolerance on each side), return immediately without touching scroll at
+all. An invalid rect (row not yet part of the laid-out tree - still expanding
+asynchronously) falls through to the existing positioning logic unchanged. **Verified
+cleanly**: screenshotted before/after clicking a bookmark-equivalent target that was
+already visible mid-viewport (`Pictures`, several rows down) - the tree's scroll
+position was pixel-identical before and after, only the selection highlight moved.
+This is a real, direct confirmation, not an inference from internal state.
+
+**Fix 2 - horizontal scroll on direct click, take two.** Added `mouseReleaseEvent` to
+`FolderTreeView`'s save/restore set (previously only `mousePressEvent`/`keyPressEvent`),
+and - the more likely actual fix - the restore is now also reasserted via
+`QTimer::singleShot(0, ...)` after the base class call returns, not just synchronously
+right after it. Reasoning: if Qt's selection-driven auto-scroll is deferred rather than
+happening synchronously inside the base class event handler, a synchronous
+save-then-restore wrapped tightly around it is too early to catch it - it needs to be
+reasserted after the event loop has had a chance to run whatever Qt deferred.
+
+**Not independently re-confirmed this round** - a horizontal-scroll-preservation test
+(Shift+wheel to establish non-zero scroll, then click elsewhere) got interrupted by an
+unrelated Windows task-switcher overlay that the synthetic input sequence apparently
+triggered, and repeated attempts to force synthetic mouse-wheel/keyboard combinations
+in this environment have a track record of exactly this kind of interference this
+session. Given fix 1 already got a clean, direct, real confirmation and the remaining
+risk/time cost of continuing to fight synthetic input reliability, stopped here rather
+than kept forcing it - the code change is a straightforward, defensible technique
+(same save/restore pattern already proven for the bookmark-click path, now covering
+release + deferred re-assert too), but this one specifically needs the user's own
+direct confirmation rather than mine.
+
+Rebuilt both configs clean, 15/15 tests pass in each.
+
+---
+
 ## 2026-08-09 — desktop — Fix: horizontal scroll still reset on a direct tree click
 
 User confirmed the previous fix helped but the horizontal-scroll-reset bug still
