@@ -43,8 +43,16 @@ void ThumbLoader::processOne() {
     if (sel.step()) {
         std::vector<uint8_t> bytes = sel.columnBlob(0);
         pixet::RgbImage img;
-        if (pixet::decodeJpeg(bytes.data(), bytes.size(), 0, img)) {
+        // Stored thumbs are up to 320px; decode straight to display size (cheap
+        // scaled-DCT path) rather than decoding full-size and scaling after.
+        if (pixet::decodeJpeg(bytes.data(), bytes.size(), kThumbIconSize, img)) {
             pixmap = QPixmap::fromImage(rgbImageToQImage(img));
+            // decodeJpeg only lands *close* to the target via coarse DCT scale steps -
+            // the grid needs an exact fit or oversized decorations bleed into
+            // neighboring cells.
+            if (pixmap.width() > kThumbIconSize || pixmap.height() > kThumbIconSize) {
+                pixmap = pixmap.scaled(kThumbIconSize, kThumbIconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
         }
     }
 

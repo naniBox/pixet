@@ -56,9 +56,13 @@ private:
     ThumbGridModel *gridModel_;
     PreviewPane *preview_;
 
-    ThumbLoader *thumbLoader_;
-    PreviewDecoder *previewDecoder_;
-    FolderIndexer *folderIndexer_;
+    // No QObject parent - moveToThread() silently fails (Qt just warns to stderr,
+    // invisible in a WIN32-subsystem app) on an object that already has a parent, so
+    // these must be parentless to actually run on their own threads. Cleaned up
+    // manually via unique_ptr instead of Qt's parent-child ownership.
+    std::unique_ptr<ThumbLoader> thumbLoader_;
+    std::unique_ptr<PreviewDecoder> previewDecoder_;
+    std::unique_ptr<FolderIndexer> folderIndexer_;
 
     QTimer *previewDebounce_;
     QString currentPath_;

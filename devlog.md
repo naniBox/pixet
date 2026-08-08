@@ -5,6 +5,74 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Critical fix: workers were never actually threaded
+
+User reported real-use bugs: navigating to a folder froze the UI for 2-3s, scrolling
+managed maybe 2-3 repaints/sec, thumbnails only partially rendered until an unrelated
+interaction (hover) forced a repaint, and thumbnails visibly overlapped each other.
+
+**Root cause (one bug explaining the first three symptoms): `QObject::moveToThread()`
+silently no-ops on an object that already has a parent.** `ThumbLoader`, `PreviewDecoder`,
+and `FolderIndexer` were all constructed as `new Worker(this)` in `MainWindow.cpp` -
+passing `this` (MainWindow) as the QObject parent. Each worker's constructor then called
+`moveToThread(&thread_)`, which Qt silently refuses (just a stderr warning - invisible,
+since `pixet` is a `WIN32` subsystem app with no console) when the object has a parent.
+Net effect: **every "background" worker had genuinely been running on the UI thread the
+entire time.** Every `connect()` to them resolved to `Qt::DirectConnection` (same
+apparent thread) instead of `Qt::QueuedConnection`, so:
+- Navigating to a folder ran `FolderIndexer::indexFolder` (Pass A+B, real disk I/O and
+  JPEG decode for every file) synchronously, blocking the UI for exactly as long as
+  indexing took - the reported 2-3s freeze.
+- Every `ThumbLoader::request` during scroll decoded synchronously too, blocking
+  painting on every single thumbnail - the reported 2-3 updates/sec.
+- The partial-repaint-until-hover symptom was very likely a side effect of decode work
+  happening synchronously inside what should have been a quick signal handler,
+  interfering with Qt's own paint scheduling.
+
+Fix: construct all three workers with **no parent** (`std::make_unique<ThumbLoader>()`,
+not `new ThumbLoader(this)`), and switched `MainWindow`'s owning members from raw
+`Worker*` to `std::unique_ptr<Worker>` for manual lifetime management (parent-based
+auto-deletion isn't available once there's no parent). Declaration order in
+`MainWindow.h` already had them after `gridModel_`, which - given members are destroyed
+in reverse declaration order - means workers stop cleanly *before* the model/view they
+signal into gets torn down. Left that ordering as-is since it's already correct.
+
+**Second, separate bug: overlapping thumbnails.** Stored thumbnails are up to 320px
+(P1's target); the grid displays them at a 150px icon size, but nothing ever scaled the
+pixmap down before handing it to `Qt::DecorationRole` - relying on Qt's default item
+delegate to auto-fit an oversized raw `QPixmap` into the icon box, which it doesn't
+reliably do, so decorations bled into neighboring cells. Fixed in `ThumbLoader`: decode
+straight to the target size (cheap scaled-DCT path, `ThumbLoader::kThumbIconSize = 150`)
+and do a final exact `QPixmap::scaled(..., KeepAspectRatio)` pass, since `decodeJpeg`'s
+DCT scale steps only land *close* to a target, not exact. `MainWindow`'s
+`grid_->setIconSize()` now derives from the same `kThumbIconSize` constant instead of a
+second hardcoded `150` - one source of truth for how big a grid cell actually is.
+
+**Verification note:** screenshot/click automation was unreliable last session (DPI
+scaling, see the P2 entry below) - this time verified without depending on pixel
+coordinates at all:
+- **Responsiveness**: wiped the cache, seeded a fresh 245-file folder, launched, and
+  polled `SendMessageTimeout(hwnd, WM_NULL, ..., SMTO_ABORTIFHUNG, 500ms)` every 150ms
+  for 6 seconds while on-demand indexing ran. Every single response was **sub-millisecond
+  (0.3-2ms), zero hangs** - the UI thread was never blocked, for the entire duration
+  indexing was actively running.
+- **Correctness**: after indexing finished, queried the DB directly - 245 files, 237
+  done, 8 unsupported, 0 failed, 237 thumb blobs. Exact match with this same folder's
+  known-good numbers from the P1 benchmark entry - confirms indexing did real, correct
+  work off-thread, not that it silently skipped anything.
+- **Overlap fix**: screenshot (with the window properly foregrounded this time) shows
+  clean, distinct, non-overlapping thumbnails with filenames correctly positioned below
+  each cell.
+- Scrolling smoothness itself wasn't re-measured numerically, but shared the identical
+  root cause as the navigate-freeze (synchronous decode on the UI thread during
+  `ThumbLoader::request`), which is now fixed the same way.
+
+This class of bug (parented QObject silently failing to move threads) is worth
+remembering for any *future* worker-thread class: **never pass a parent to a QObject
+you're about to `moveToThread()`.**
+
+---
+
 ## 2026-08-08 — desktop — P2: GUI shell (folder tree, bookmarks, grid, preview, on-demand index)
 
 Implemented the P2 scope: `MainWindow` now has a real folder tree, a DB-backed

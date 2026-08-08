@@ -76,8 +76,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     grid_->setViewMode(QListView::IconMode);
     grid_->setResizeMode(QListView::Adjust);
     grid_->setMovement(QListView::Static);
-    grid_->setIconSize(QSize(150, 150));
-    grid_->setGridSize(QSize(170, 170));
+    grid_->setIconSize(QSize(ThumbLoader::kThumbIconSize, ThumbLoader::kThumbIconSize));
+    grid_->setGridSize(QSize(ThumbLoader::kThumbIconSize + 20, ThumbLoader::kThumbIconSize + 20));
     grid_->setUniformItemSizes(true);
     grid_->setSelectionMode(QAbstractItemView::SingleSelection);
     connect(grid_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onGridSelectionChanged);
@@ -101,18 +101,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // widget has real geometry - reassert once after that pass actually happens.
     QTimer::singleShot(0, this, [splitter]() { splitter->setSizes({220, 800, 260}); });
 
-    // --- background workers ---
-    thumbLoader_ = new ThumbLoader(this);
-    connect(gridModel_, &ThumbGridModel::thumbNeeded, thumbLoader_, &ThumbLoader::request);
-    connect(thumbLoader_, &ThumbLoader::thumbReady, gridModel_, &ThumbGridModel::setThumbnail);
+    // --- background workers (no parent - see the member declarations in the header) ---
+    thumbLoader_ = std::make_unique<ThumbLoader>();
+    connect(gridModel_, &ThumbGridModel::thumbNeeded, thumbLoader_.get(), &ThumbLoader::request);
+    connect(thumbLoader_.get(), &ThumbLoader::thumbReady, gridModel_, &ThumbGridModel::setThumbnail);
 
-    previewDecoder_ = new PreviewDecoder(this);
-    connect(previewDecoder_, &PreviewDecoder::previewReady, this, &MainWindow::onPreviewReady);
+    previewDecoder_ = std::make_unique<PreviewDecoder>();
+    connect(previewDecoder_.get(), &PreviewDecoder::previewReady, this, &MainWindow::onPreviewReady);
 
-    folderIndexer_ = new FolderIndexer(this);
-    connect(this, &MainWindow::requestIndex, folderIndexer_, &FolderIndexer::indexFolder);
-    connect(folderIndexer_, &FolderIndexer::started, this, &MainWindow::onIndexerStarted);
-    connect(folderIndexer_, &FolderIndexer::finished, this, &MainWindow::onIndexerFinished);
+    folderIndexer_ = std::make_unique<FolderIndexer>();
+    connect(this, &MainWindow::requestIndex, folderIndexer_.get(), &FolderIndexer::indexFolder);
+    connect(folderIndexer_.get(), &FolderIndexer::started, this, &MainWindow::onIndexerStarted);
+    connect(folderIndexer_.get(), &FolderIndexer::finished, this, &MainWindow::onIndexerFinished);
 
     previewDebounce_ = new QTimer(this);
     previewDebounce_->setSingleShot(true);
