@@ -1,0 +1,79 @@
+#include "TestHarness.h"
+#include "TestPaths.h"
+
+#include <Windows.h>
+
+#include "db/Schema.h"
+#include "decode/JpegCodec.h"
+#include "thumb/ThumbGenerator.h"
+
+using namespace pixet;
+
+namespace {
+
+void writeFile(const std::wstring &path, const std::vector<uint8_t> &data) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD written = 0;
+    WriteFile(h, data.data(), (DWORD)data.size(), &written, nullptr);
+    CloseHandle(h);
+}
+
+std::vector<uint8_t> makeGradientJpeg(int w, int h, int quality) {
+    RgbImage img;
+    img.w = w;
+    img.h = h;
+    img.pixels.resize((size_t)w * h * 3);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            uint8_t *p = &img.pixels[(size_t)(y * w + x) * 3];
+            p[0] = (uint8_t)(x * 255 / w);
+            p[1] = (uint8_t)(y * 255 / h);
+            p[2] = 128;
+        }
+    }
+    std::vector<uint8_t> jpeg;
+    encodeJpeg(img, quality, jpeg);
+    return jpeg;
+}
+
+} // namespace
+
+PIXET_TEST(ThumbGeneratorUnsupportedFormatSkipsDecode) {
+    // No file at this path - if ThumbGenerator tried to read it, this would fail
+    // differently (Failed, not Unsupported). Confirms format is checked first.
+    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.png", Format::Png);
+    PIXET_CHECK(result.tier == ThumbTier::Unsupported);
+}
+
+PIXET_TEST(ThumbGeneratorFailsOnMissingFile) {
+    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.jpg", Format::Jpeg);
+    PIXET_CHECK(result.tier == ThumbTier::Failed);
+}
+
+PIXET_TEST(ThumbGeneratorDecodesAndDownscalesLargeJpeg) {
+    auto path = testTempPath(L"thumbgen_large.jpg");
+    writeFile(path, makeGradientJpeg(1600, 1200, 90));
+
+    ThumbResult result = generateThumb(path, Format::Jpeg, 320, 85);
+    PIXET_CHECK(result.tier == ThumbTier::Decoded); // no EXIF thumb present -> main-image path
+    PIXET_CHECK(!result.jpegBytes.empty());
+    int longEdge = result.width > result.height ? result.width : result.height;
+    PIXET_CHECK(longEdge <= 320);
+    PIXET_CHECK(longEdge > 0);
+
+    // Round-trip: the stored bytes must actually decode back to those dimensions.
+    RgbImage decoded;
+    PIXET_CHECK(decodeJpeg(result.jpegBytes.data(), result.jpegBytes.size(), 0, decoded));
+    PIXET_CHECK(decoded.w == result.width);
+    PIXET_CHECK(decoded.h == result.height);
+}
+
+PIXET_TEST(ThumbGeneratorDoesNotUpscaleSmallJpeg) {
+    auto path = testTempPath(L"thumbgen_small.jpg");
+    writeFile(path, makeGradientJpeg(100, 80, 90));
+
+    ThumbResult result = generateThumb(path, Format::Jpeg, 320, 85);
+    PIXET_CHECK(result.tier == ThumbTier::Decoded);
+    PIXET_CHECK(result.width == 100);
+    PIXET_CHECK(result.height == 80);
+}

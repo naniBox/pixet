@@ -5,6 +5,78 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-08 — desktop — P1: core indexer + JPEG ladder, unit-tested and smoke-tested
+
+Implemented the P1 scope from the plan: schema, claims, directory walker, the JPEG
+extraction ladder, batched writes, and `pixet-index` wired to actually run it. All new
+code lives in `pixet_core` (`src/core/{db,scan,meta,decode,thumb,util}/`) so the GUI's
+future on-demand `FolderIndexer` reuses the exact same path, per the plan.
+
+**Real bug caught by the schema unit test, not by eyeballing:** unqualified
+`CREATE TABLE IF NOT EXISTS thumbs(...)` targets the `main` database, not the attached
+`thumbs` alias, even though the table name matches the alias name. It was silently
+creating the thumbs table inside `index.db` instead of `thumbs.db`. Every subsequent
+`INSERT INTO thumbs.thumbs(...)` from the indexer would have failed at runtime. Fixed to
+`CREATE TABLE IF NOT EXISTS thumbs.thumbs(...)`, added a regression test that asserts the
+table does *not* leak into `main`. This is exactly the kind of bug that only shows up the
+first time you actually write a thumbnail - worth remembering if `thumbs.db` ever looks
+suspiciously small.
+
+**Decisions made that weren't already pinned in the plan:**
+- Central cache location: `%LOCALAPPDATA%\pixet\{index,thumbs}.db` (`util/AppPaths`).
+  macOS equivalent (`~/Library/Application Support/pixet`) is a P5 addition to that file.
+- `files.state` gets a 4th value beyond the plan's 0/1/2 sketch: `3 = Unsupported`
+  (format has no decoder yet, e.g. everything but JPEG right now), distinct from
+  `2 = Failed` (decode attempted, file is corrupt/truncated). Matters for P4: when a
+  decoder lands for a format, those rows should be retried, unlike genuine failures.
+- Non-media files (sidecars, `Thumbs.db`, `.xmp`, random junk) are never inserted into
+  `files` at all - `classifyFormat` returns `Unknown` and Pass A skips them, rather than
+  cluttering the index with permanently-`Unsupported` rows.
+- JPEG-only in P1 (as the plan allowed, conditional on the real library's format mix -
+  haven't measured that yet, see below). PNG/HEIC/RAW/TIFF/WebP/AVIF all classify
+  correctly and land in `files` with `state=Unsupported`, ready to pick up in P4 without a
+  schema change.
+- `ThumbTier` collapses the plan's "scaled DCT vs full decode" distinction into one
+  `Decoded` tier for JPEG, since `decodeJpeg()` always tries scaled-DCT and transparently
+  falls back to native-resolution decode (denom=1) when the image is already small -
+  there's no separate code path to distinguish. The "full decode + Lanczos" tier the plan
+  describes is for *other* formats (PNG/TIFF/...) in P4, not JPEG.
+- Box-filter downscale only *downscales* - a thumbnail smaller than the 320px target
+  (e.g. an embedded EXIF preview, or a genuinely small source image) is stored as-is
+  rather than upscaled. Verified by `ThumbGeneratorDoesNotUpscaleSmallJpeg`.
+- Vanished-file cleanup on rescan is a hard delete (file row + its thumb blob), not a
+  tombstone - simplest correct behavior for v1.
+- Single-threaded for P1. Decode is CPU-bound and embarrassingly parallel across files -
+  real headroom for a worker-pool optimization once we have a baseline number to compare
+  against.
+- Cross-database transactions (`files` in `index.db`, `thumbs` in the attached
+  `thumbs.db`, same connection, same `BEGIN`/`COMMIT`) are not perfectly atomic across a
+  crash in WAL mode per SQLite's own docs (two-phase commit across attached WAL files has
+  a narrow crash window). Accepted risk for a thumbnail cache - worst case is an orphaned
+  blob or a dangling `thumb_id`, both harmless and self-healing on next rescan.
+
+**Verified:**
+- 15/15 unit tests (`tests/pixet_tests.exe`, wired to `ctest`): schema creation +
+  idempotency + the thumbs-table regression above, format classification, claim
+  acquire/renew/block/steal-when-stale/release, EXIF orientation + embedded-thumbnail
+  extraction (via a self-consistent hand-built TIFF/IFD fixture, not hardcoded offsets),
+  tier selection, no-upscale behavior, JPEG round-trip.
+- Smoke-tested `pixet-index` against `C:\Windows\Web` (36 real JPEGs, 14 directories,
+  mixed sizes up to 4K wallpapers): clean run, 8 embedded-preview / 28 decoded / 0
+  unsupported / 0 failed. Second run: 14/14 dirs fresh-skipped, 0.0s. `--force`: correctly
+  re-walks (bypasses the mtime shortcut) but doesn't re-thumbnail unchanged files (0 new,
+  0 removed, 0 thumbnails touched) - confirms `--force` means "re-verify freshness," not
+  "redo everything."
+- Not yet done: the real throughput benchmark against the 800GB library (the actual P1
+  gate) - haven't run it, don't know the format mix (JPEG-only vs RAW-heavy) yet. Also
+  not yet exercised: true multi-process concurrent indexing (claims are unit-tested in
+  isolation, not yet run as two real `pixet-index` processes racing on one tree), or
+  crash-mid-run recovery live (stale-claim-steal is unit-tested, not battle-tested).
+- Next: run the benchmark, see what the format mix and files/sec actually look like, and
+  decide from real numbers whether LibRaw needs to move up from "P4" to "finish P1."
+
+---
+
 ## 2026-08-08 — desktop — VS Code run/debug configs
 
 - Added `.vscode/{launch.json,tasks.json,settings.json,extensions.json}`. CMake Tools +
