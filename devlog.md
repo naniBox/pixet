@@ -5,6 +5,42 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-08 — desktop — P1 throughput benchmark (real data) - the P1 gate
+
+Ran `pixet-index` against `C:\Users\dmo\Nextcloud\InstantUpload\Camera\2026` - real
+phone/camera uploads, not synthetic data. 2,678 files, 33.9GB (2,522 jpg / 142 mp4 /
+14 dng). First attempt was contaminated (the folder had already been indexed from an
+earlier pass in this session, so it reported a false "0.0s, all fresh-skipped" - wiped
+`%LOCALAPPDATA%\pixet\{index,thumbs}.db` and reran clean to get an honest cold number.
+
+**Result: 2,678 files in 38.8s = ~69 files/sec, single-threaded.**
+- 2,434 embedded-preview (96.5% of the 2,522 JPEGs - the EXIF-thumbnail fast path is
+  doing almost all the work, exactly as the plan bet it would)
+- 88 decoded (main-image scaled-DCT path - JPEGs without a usable embedded preview)
+- 156 unsupported (142 mp4 + 14 dng, exactly matching the file listing - correctly
+  deferred to P4, not errors, and cheap: format is checked before any file read, so
+  these don't cost real I/O/decode time)
+- 0 failed
+
+Rough extrapolation to 800GB: this sample averages ~12.6MB/file (skewed up by the
+videos); at that ratio 800GB is ~63k files, which at 69 files/sec is **~15 minutes**
+single-threaded. Treat this as order-of-magnitude, not a promise - it's one 8-month
+slice of a phone's camera roll, not the full multi-year archive, and older parts of a
+"real" photo library could have a different RAW/JPEG ratio. But the extrapolation is
+fairly robust to that specific uncertainty, since RAW/video files are cheap
+(Unsupported, rejected pre-read) rather than slow in P1 - they just don't get
+thumbnailed yet.
+
+**Gate verdict: pass.** Format mix (94% JPEG in this sample) confirms JPEG-only was the
+right P1 scope call - RAW doesn't need to move up from P4. ~69 files/s single-threaded
+is fast enough that P1 isn't the bottleneck for "index while browsing" (P2's on-demand
+FolderIndexer only ever touches one folder at a time, a few hundred files at most).
+Multithreading is real, available headroom (decode is CPU-bound and embarrassingly
+parallel across files) but not an urgent blocker - reasonable to defer past P2 unless a
+full 800GB `pixet-index` run in practice turns out to feel slow.
+- Next: P2 - GUI shell (MainWindow, folder tree, bookmarks, thumbnail grid, on-demand
+  FolderIndexer wired to navigation).
+
 ## 2026-08-08 — desktop — P1: core indexer + JPEG ladder, unit-tested and smoke-tested
 
 Implemented the P1 scope from the plan: schema, claims, directory walker, the JPEG
