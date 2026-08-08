@@ -39,6 +39,9 @@ machines. Newest entry on top. Append, don't rewrite history.
 - **Blocked on:** user running the elevated VS Build Tools command above. Once that's
   done, next step is `cmake --preset debug && cmake --build build/debug` and confirm the
   `pixet` window actually opens — that's the P0 exit gate, not yet verified.
+- Wrote up every command above as a runbook in `SETUP.md` so the second machine doesn't
+  need to reconstruct this from the devlog prose. If a step's exact command changes going
+  forward, update `SETUP.md`, not just this log.
 
 - Stack: C++20 + Qt6 Widgets (not Python) — startup time and native decode access matter
   more than dev speed for a tool used daily; matches the existing C++/vcpkg .gitignore.
