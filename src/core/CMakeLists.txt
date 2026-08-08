@@ -13,6 +13,8 @@ add_library(pixet_core STATIC
     util/Time.cpp
     util/FileIO.h
     util/FileIO.cpp
+    util/PathUtil.h
+    util/PathUtil.cpp
 
     db/Schema.h
     db/Schema.cpp

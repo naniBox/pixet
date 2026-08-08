@@ -7,6 +7,7 @@
 #include "db/Database.h"
 #include "scan/Indexer.h"
 #include "util/AppPaths.h"
+#include "util/PathUtil.h"
 #include "util/StringUtil.h"
 #include "version.h"
 
@@ -14,15 +15,6 @@ using namespace pixet;
 using Clock = std::chrono::steady_clock;
 
 namespace {
-
-std::wstring toAbsolutePath(const std::wstring &path) {
-    wchar_t buf[MAX_PATH * 4];
-    DWORD len = GetFullPathNameW(path.c_str(), (DWORD)std::size(buf), buf, nullptr);
-    if (len == 0 || len >= std::size(buf)) return path;
-    std::wstring abs(buf, len);
-    while (abs.size() > 3 && abs.back() == L'\\') abs.pop_back(); // normalize, keep "C:\"
-    return abs;
-}
 
 void printStats(const IndexStats &s, double elapsedSec) {
     int64_t thumbed = s.thumbsEmbedded + s.thumbsDecoded + s.thumbsUnsupported + s.thumbsFailed;
@@ -55,7 +47,7 @@ int main(int argc, char *argv[]) {
         if (arg == "--no-recurse") opts.recursive = false;
     }
 
-    std::wstring rootPath = toAbsolutePath(toUtf16(rootArg));
+    std::wstring rootPath = normalizePath(toUtf16(rootArg));
     std::printf("pixet-index %s\n", pixet::version());
     std::printf("root:    %s\n", rootArg.c_str());
     std::printf("cache:   %s\n", toUtf8(appDataDir()).c_str());

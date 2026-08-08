@@ -5,6 +5,107 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-08 — desktop — P2: GUI shell (folder tree, bookmarks, grid, preview, on-demand index)
+
+Implemented the P2 scope: `MainWindow` now has a real folder tree, a DB-backed
+bookmarks list, a virtualized thumbnail grid, a side preview pane, and on-demand
+indexing wired to navigation - the "browse a folder and it just works, no prior
+`pixet-index` run needed" behavior the whole plan is built around.
+
+**New pieces (`src/app/`):**
+- `ThumbGridModel` - `QAbstractListModel` over `files` for the current dir. Rows come
+  from a synchronous main-thread query (small/fast - deliberately not async, see
+  below). `DecorationRole` returns a cached `QPixmap` if we have one, else emits
+  `thumbNeeded(fileId, thumbId)` and returns a placeholder.
+- `ThumbLoader` - `QObject` moved to its own `QThread`, own read-only `Database`
+  connection (created lazily, on the worker thread - a `Database` must be opened and
+  used by the same thread). Requests are a LIFO stack deduped by file id, so whatever
+  was most recently requested (typically wherever the user just scrolled to) decodes
+  first. Decodes thumb blobs through `pixet_core`'s own `decodeJpeg`, not Qt's image
+  plugins (see `QtInterop.h` - avoids a runtime plugin-discovery dependency).
+- `PreviewDecoder` - same threading shape, but decodes the *original* file at preview
+  resolution (not an upscale of the thumbnail). Cancel-on-supersede via an
+  `std::atomic<qint64> latestRequestId_` stamped synchronously on the UI thread the
+  instant a new request comes in, checked both before and after the (possibly slow)
+  decode - a superseded in-flight decode bails without emitting.
+- `FolderIndexer` - thin `QObject`/`QThread` wrapper that calls P1's `Indexer` exactly
+  as `pixet-index` does, just non-recursive and triggered by navigation instead of a
+  CLI arg. This is what makes browsing self-indexing: `MainWindow::navigateTo` shows
+  whatever's cached immediately, then always fires `requestIndex` in the background,
+  which is a fast no-op via the freshness check when nothing changed.
+- `PreviewPane` - plain `QLabel`-backed widget; keeps the undecoded-resolution
+  `QPixmap` around so a window resize rescales in place instead of triggering a
+  redecode.
+
+**Real bug found via code inspection while wiring paths, not by luck:** `dirs.path`
+in the DB is written via `pixet-index`'s `GetFullPathNameW`-based normalization
+(backslash-separated, no trailing slash), but `QFileSystemModel` can hand back
+forward-slash paths. A GUI query built from an unnormalized path would silently miss
+rows that are actually there. Fixed by extracting that normalization out of
+`pixet-index/main.cpp` into `pixet_core` as `util/PathUtil.h` (`normalizePath`), so
+the CLI and the GUI funnel every path through the identical function before it ever
+touches the DB. `pixet-index` updated to use it too (removed its local copy).
+
+**Scope decisions not already in the plan:**
+- MainWindow's own DB connection is **read-write**, not read-only as the plan's
+  "GUI opens read-only connections" line suggests. Reasoning: bookmarks CRUD needs
+  writes anyway, and a read-only `sqlite3_open_v2` fails outright if `index.db`
+  doesn't exist yet (first launch, cold machine) - opening read-write bootstraps the
+  schema for free. The *hot* paths the plan actually cares about (thumbnail blob
+  reads under `ThumbLoader`, Pass A/B writes under `FolderIndexer`) do each get their
+  own dedicated connection off the UI thread, which is the part that actually matters
+  for not blocking the GUI.
+- Grid metadata queries (`ThumbGridModel::setDirectory`) run synchronously on the UI
+  thread rather than being handed to a worker. This is a deliberate simplification -
+  it's a single indexed `SELECT` against a small warm table, microseconds in
+  practice. The genuinely expensive operations (thumbnail blob decode, Pass A/B disk
+  walking) are the ones actually moved off-thread.
+- No incremental "placeholder now, thumbnails stream in during Pass B" UX yet for a
+  *newly*-indexed folder - `FolderIndexer::finished` triggers one full grid reload
+  after Pass A+B both complete for that folder. Already-cached folders are unaffected
+  (still instant). At P1's ~69 files/sec single-threaded, a typical few-hundred-photo
+  folder finishes in a few seconds - acceptable for a first cut; true Pass-A-then-
+  streaming-Pass-B would need Indexer to expose per-batch progress, not just
+  per-directory, which it doesn't yet.
+- No explicit cancellation of off-screen `ThumbLoader`/`FolderIndexer` requests - the
+  grid only re-requests currently-painted cells so stale entries just stop being
+  reissued and drain naturally. Revisit if scrolling perf ever demands it.
+- Double-click / Enter on a grid item does nothing yet - fullscreen viewing is
+  explicitly P3, didn't want a dead-end stub.
+
+**Testing note for the next session (this cost real time to figure out):** GUI
+screenshot/click automation via PowerShell + Win32 APIs (`SetCursorPos`,
+`mouse_event`, `MoveWindow`) in this environment is **unreliable** because the
+display runs at 125% scaling (`GetDpiForWindow` = 120) and Qt6 apps are
+Per-Monitor-V2 DPI-aware by default (`GetProcessDpiAwareness` = 2) - correct/desired
+for crisp rendering, but it means coordinates from external, differently-DPI-aware
+Win32 automation don't line up with the app's own logical pixel space, and screenshots
+can visually mislead about where widgets actually are. **Ground truth is the app's
+own widget geometry**, not screenshot pixel-counting - when in doubt, temporarily log
+`widget->geometry()` (e.g. via window title, since these are `WIN32` subsystem apps
+with no console) rather than trying to reverse-engineer scaling factors from a
+screenshot. Confirmed this way: the splitter layout (bookmarks+tree / grid / preview)
+is correctly proportioned, none of the three panels collapse to zero.
+
+**Verified:**
+- Clean build, 15/15 unit tests still passing.
+- On-demand indexing end-to-end, twice, against real folders in the Nextcloud test
+  tree with the cache fully wiped first: navigated to a folder with zero cache,
+  confirmed real (different, changing) photo thumbnails populate the grid with no
+  prior `pixet-index` run - this is the actual point of P2.
+- Widget geometry confirmed correct via direct introspection (see above) - all three
+  panels present and properly sized.
+- Not yet verified by direct interaction (blocked on the DPI/automation issue above,
+  not a known app bug): grid-selection-to-preview-pane click flow, bookmarks
+  add/click/remove, Refresh. These all use the same wiring patterns already confirmed
+  working elsewhere (identical async architecture to the proven thumbnail path) but
+  should get an actual manual click-through on the next session, on either machine,
+  since a human with a real mouse doesn't have this problem.
+- Next: P3 - fullscreen viewer (ring buffer, prefetch, thumb-upscale fallback,
+  keyboard navigation).
+
+---
+
 ## 2026-08-08 — desktop — P1 throughput benchmark (real data) - the P1 gate
 
 Ran `pixet-index` against `C:\Users\dmo\Nextcloud\InstantUpload\Camera\2026` - real

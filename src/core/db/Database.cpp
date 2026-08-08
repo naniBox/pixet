@@ -78,6 +78,14 @@ std::string Statement::columnText(int col) const {
     return text ? std::string((const char *)text, len) : std::string();
 }
 
+std::vector<uint8_t> Statement::columnBlob(int col) const {
+    const void *data = sqlite3_column_blob(stmt_, col);
+    int len = sqlite3_column_bytes(stmt_, col);
+    if (!data || len <= 0) return {};
+    const uint8_t *bytes = (const uint8_t *)data;
+    return std::vector<uint8_t>(bytes, bytes + len);
+}
+
 bool Statement::columnIsNull(int col) const { return sqlite3_column_type(stmt_, col) == SQLITE_NULL; }
 
 // ---- Database ----

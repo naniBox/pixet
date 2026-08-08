@@ -4,6 +4,21 @@ add_executable(pixet WIN32
     main.cpp
     MainWindow.h
     MainWindow.cpp
+
+    QtInterop.h
+
+    ThumbGridModel.h
+    ThumbGridModel.cpp
+    ThumbLoader.h
+    ThumbLoader.cpp
+
+    PreviewDecoder.h
+    PreviewDecoder.cpp
+    PreviewPane.h
+    PreviewPane.cpp
+
+    FolderIndexer.h
+    FolderIndexer.cpp
 )
 
 target_link_libraries(pixet PRIVATE

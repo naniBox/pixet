@@ -32,6 +32,7 @@ public:
 
     int64_t columnInt64(int col) const;
     std::string columnText(int col) const;
+    std::vector<uint8_t> columnBlob(int col) const;
     bool columnIsNull(int col) const;
 
 private:
