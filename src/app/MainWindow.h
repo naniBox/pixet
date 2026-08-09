@@ -22,6 +22,8 @@ class ThumbLoader;
 class PreviewDecoder;
 class PreviewPane;
 class FolderIndexer;
+class BackgroundReconciler;
+class FullscreenViewer;
 
 namespace pixet {
 class Database;
@@ -48,6 +50,8 @@ private slots:
     void onBookmarksContextMenu(const QPoint &pos);
     void onGridSelectionChanged();
     void onGridContextMenu(const QPoint &pos);
+    // Double-click or Enter/Return on a thumbnail - opens the fullscreen viewer (P3).
+    void onGridItemActivated(const QModelIndex &index);
     void onPathBarReturnPressed();
     void onAddBookmark();
     void onRefresh();
@@ -76,6 +80,11 @@ private:
     ThumbGridView *grid_;
     ThumbGridModel *gridModel_;
     PreviewPane *preview_;
+    // Runs on the main thread like any other widget (only its internal decoder is a
+    // background worker) - a normal parented QWidget is fine, unlike the
+    // thumbLoader_/previewDecoder_/folderIndexer_ workers below. Created once, reused
+    // (shown/hidden) for every fullscreen session rather than per-activation.
+    FullscreenViewer *fullscreenViewer_;
     QLineEdit *pathBar_;
     // Status bar: separate fixed-width labels rather than one joined string, so
     // browsing (arrow keys, clicking through images) doesn't visually jitter as

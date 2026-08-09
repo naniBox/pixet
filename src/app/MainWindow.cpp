@@ -23,8 +23,10 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "BackgroundReconciler.h"
 #include "FolderIndexer.h"
 #include "FolderTreeView.h"
+#include "FullscreenViewer.h"
 #include "PreviewDecoder.h"
 #include "PreviewPane.h"
 #include "ThumbGridModel.h"
@@ -134,6 +136,19 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     grid_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(grid_, &QWidget::customContextMenuRequested, this, &MainWindow::onGridContextMenu);
     connect(grid_, &ThumbGridView::navigateFolderRequested, this, &MainWindow::onNavigateFolderRequested);
+    // QAbstractItemView::activated fires on both double-click and Enter/Return by
+    // default - exactly the two ways to "open" an item.
+    connect(grid_, &QAbstractItemView::activated, this, &MainWindow::onGridItemActivated);
+
+    fullscreenViewer_ = new FullscreenViewer(this);
+    // Keep the grid's selection following along while browsing fullscreen, so
+    // closing it (Escape/double-click) leaves the grid on whatever image was last
+    // shown there instead of wherever it was when fullscreen opened.
+    connect(fullscreenViewer_, &FullscreenViewer::rowChanged, this, [this](int row) {
+        QModelIndex idx = gridModel_->index(row);
+        grid_->setCurrentIndex(idx);
+        grid_->scrollTo(idx);
+    });
 
     // --- path bar: shows/edits currentPath_; Enter navigates (see navigateToInput) ---
     pathBar_ = new QLineEdit(this);
@@ -430,6 +445,11 @@ void MainWindow::onGridContextMenu(const QPoint &pos) {
     menu.addAction(QStringLiteral("Refresh (check for new/changed files)"), this, &MainWindow::onRefresh);
     menu.addAction(QStringLiteral("Force Re-thumbnail This Folder"), this, &MainWindow::onForceRethumbnail);
     menu.exec(grid_->mapToGlobal(pos));
+}
+
+void MainWindow::onGridItemActivated(const QModelIndex &index) {
+    if (!index.isValid()) return;
+    fullscreenViewer_->openAt(gridModel_, currentPath_, index.row());
 }
 
 void MainWindow::onPathBarReturnPressed() { navigateToInput(pathBar_->text()); }

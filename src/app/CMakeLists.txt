@@ -22,8 +22,16 @@ add_executable(pixet WIN32
     PreviewPane.h
     PreviewPane.cpp
 
+    FullscreenDecoder.h
+    FullscreenDecoder.cpp
+    FullscreenViewer.h
+    FullscreenViewer.cpp
+
     FolderIndexer.h
     FolderIndexer.cpp
+
+    BackgroundReconciler.h
+    BackgroundReconciler.cpp
 )
 
 target_link_libraries(pixet PRIVATE
