@@ -219,7 +219,8 @@ ThumbResult generateHeifThumb(const std::vector<uint8_t> &fileBytes, int targetL
     return result;
 }
 
-ThumbResult generateRawThumb(const std::vector<uint8_t> &fileBytes, int targetLongEdge, int quality) {
+ThumbResult generateRawThumb(const std::vector<uint8_t> &fileBytes, int targetLongEdge, int quality,
+                              bool forceFullRender) {
     ThumbResult result;
 
     // LibRaw's decode pipeline (both the embedded-thumb and full-demosaic paths)
@@ -230,8 +231,11 @@ ThumbResult generateRawThumb(const std::vector<uint8_t> &fileBytes, int targetLo
     readRawDimensions(fileBytes.data(), fileBytes.size(), result.origWidth, result.origHeight);
 
     RgbImage img;
-    bool decoded = decodeRawThumb(fileBytes.data(), fileBytes.size(), targetLongEdge, img);
-    if (decoded) result.tier = ThumbTier::EmbeddedPreview;
+    bool decoded = false;
+    if (!forceFullRender) {
+        decoded = decodeRawThumb(fileBytes.data(), fileBytes.size(), targetLongEdge, img);
+        if (decoded) result.tier = ThumbTier::EmbeddedPreview;
+    }
     if (!decoded) {
         decoded = decodeRaw(fileBytes.data(), fileBytes.size(), img);
         if (decoded) result.tier = ThumbTier::Decoded;
@@ -290,7 +294,8 @@ ThumbResult generateVideoThumb(const std::wstring &filePath, int targetLongEdge,
 
 } // namespace
 
-ThumbResult generateThumb(const std::wstring &filePath, Format fmt, int targetLongEdge, int quality) {
+ThumbResult generateThumb(const std::wstring &filePath, Format fmt, int targetLongEdge, int quality,
+                           bool forceFullRender) {
     // Video is handled before the whole-file-read below (it takes the path directly),
     // and before the format gate too (Video isn't in the Jpeg/Png/Raw list there).
     if (fmt == Format::Video) return generateVideoThumb(filePath, targetLongEdge, quality);
@@ -321,7 +326,7 @@ ThumbResult generateThumb(const std::wstring &filePath, Format fmt, int targetLo
     switch (fmt) {
         case Format::Jpeg: return generateJpegThumb(fileBytes, targetLongEdge, quality);
         case Format::Png: return generatePngThumb(fileBytes, targetLongEdge, quality);
-        case Format::Raw: return generateRawThumb(fileBytes, targetLongEdge, quality);
+        case Format::Raw: return generateRawThumb(fileBytes, targetLongEdge, quality, forceFullRender);
         case Format::Tiff: return generateTiffThumb(fileBytes, targetLongEdge, quality);
         case Format::Webp: return generateWebpThumb(fileBytes, targetLongEdge, quality);
         case Format::Avif: return generateAvifThumb(fileBytes, targetLongEdge, quality);

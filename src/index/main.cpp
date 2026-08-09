@@ -32,9 +32,15 @@ void printStats(const IndexStats &s, double elapsedSec) {
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         std::printf("pixet-index %s\n", pixet::version());
-        std::printf("usage: pixet-index <root-path> [--force] [--no-recurse]\n");
-        std::printf("  --force       ignore the per-folder freshness cache, rescan everything\n");
-        std::printf("  --no-recurse  index only the given folder, not its subfolders\n");
+        std::printf("usage: pixet-index <root-path> [--force] [--no-recurse] [--render-raws]\n");
+        std::printf("  --force        ignore the per-folder freshness cache, rescan everything\n");
+        std::printf("  --no-recurse   index only the given folder, not its subfolders\n");
+        std::printf(
+            "  --render-raws  replace every RAW file's fast embedded-preview thumbnail with a full\n"
+            "                 demosaic render of the actual sensor data. Much slower (this is exactly\n"
+            "                 the expensive decode normal indexing avoids by default) - meant to be run\n"
+            "                 as a separate, deliberate pass after a normal (fast) index, not routinely.\n"
+            "                 Safe to re-run: only RAW files still on the fast preview are touched.\n");
         return 1;
     }
 
@@ -45,13 +51,15 @@ int main(int argc, char *argv[]) {
         std::string arg = argv[i];
         if (arg == "--force") opts.forceRescan = true;
         if (arg == "--no-recurse") opts.recursive = false;
+        if (arg == "--render-raws") opts.renderRaws = true;
     }
 
     std::wstring rootPath = normalizePath(toUtf16(rootArg));
     std::printf("pixet-index %s\n", pixet::version());
     std::printf("root:    %s\n", rootArg.c_str());
     std::printf("cache:   %s\n", toUtf8(appDataDir()).c_str());
-    std::printf("options: recursive=%s force=%s\n\n", opts.recursive ? "yes" : "no", opts.forceRescan ? "yes" : "no");
+    std::printf("options: recursive=%s force=%s render-raws=%s\n\n", opts.recursive ? "yes" : "no",
+                 opts.forceRescan ? "yes" : "no", opts.renderRaws ? "yes" : "no");
 
     Database db(indexDbPath(), thumbsDbPath());
     Indexer indexer(db, opts);

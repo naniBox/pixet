@@ -32,6 +32,15 @@ enum class FileState : int {
     Done = 1,       // thumbnail generated successfully
     Failed = 2,     // decode was attempted and failed (corrupt/unreadable file)
     Unsupported = 3,// format has no decoder yet (P1: everything but JPEG) - retry once support lands
+    // RAW only: the current thumbnail was generated from the file's embedded preview
+    // (fast, but camera-baked - a different rendering pipeline than the actual sensor
+    // data, which can look meaningfully different: white balance, tone curve, crop).
+    // Good enough to browse with immediately, same rationale as every other embedded-
+    // preview tier, but a `pixet-index --render-raws` pass treats this the same as New
+    // - eligible to be picked up and replaced with a real demosaic render. A plain
+    // Done (1) RAW file already went through the full render (or --render-raws already
+    // caught up to it) and won't be revisited.
+    DoneNeedsRender = 4,
 };
 
 // Classifies a filename by extension. Returns Format::Unknown for anything not in

@@ -34,6 +34,14 @@ struct ThumbResult {
 // resize to targetLongEdge -> re-encode as JPEG q`quality`. Never throws - every
 // failure mode (missing file, corrupt data, unsupported format) comes back as a
 // ThumbResult with the appropriate tier so a bulk scan can continue past it.
-ThumbResult generateThumb(const std::wstring &filePath, Format fmt, int targetLongEdge = 320, int quality = 85);
+//
+// forceFullRender skips straight past the embedded-preview rung for formats that have
+// one (currently just RAW) - only meaningful there; every other format already always
+// does its best available decode; RAW's embedded preview is camera-baked rather than
+// rendered from the actual sensor data, which is what makes it worth an explicit
+// opt-in "no really, do the expensive real render" escape hatch (see
+// FileState::DoneNeedsRender and IndexOptions::renderRaws).
+ThumbResult generateThumb(const std::wstring &filePath, Format fmt, int targetLongEdge = 320, int quality = 85,
+                           bool forceFullRender = false);
 
 } // namespace pixet

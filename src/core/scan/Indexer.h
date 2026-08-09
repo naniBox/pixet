@@ -34,6 +34,19 @@ struct IndexOptions {
     // hatch (e.g. after a Pass B bug fix changed what gets extracted). Implies
     // forceRescan.
     bool forceRethumbnail = false;
+    // RAW only: replaces every RAW file's embedded-preview-derived thumbnail
+    // (FileState::DoneNeedsRender) with one from a full demosaic render of the actual
+    // sensor data - the expensive path the embedded-preview-first ladder exists to
+    // avoid by default. Deliberately a separate, explicit opt-in (`pixet-index
+    // --render-raws`) rather than something Pass B does automatically: unlike
+    // forceRethumbnail (a blunt "redo everything" escape hatch), this is a targeted,
+    // recurring "catch up whatever's still on the fast path" pass meant to be run
+    // periodically after normal (fast) indexing, not a one-off recovery tool. Also
+    // forces any brand-new (state=New) RAW file encountered during this same run
+    // straight to a full render rather than the normal embedded-preview-first
+    // attempt - if the user is explicitly asking for real renders right now, a
+    // freshly-discovered RAW file shouldn't get the fast placeholder either.
+    bool renderRaws = false;
     int targetLongEdge = 320;
     int quality = 85;
     std::string owner; // claim owner id, e.g. "pid:1234"

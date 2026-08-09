@@ -4,8 +4,10 @@
 // hand-builds a minimal TIFF/IFD. These tests cover error-handling and format-gating
 // only; the actual decode path (embedded-preview extraction, orientation, dimensions)
 // was live-verified during development against a real Pixel-phone DNG file on the dev
-// machine - not committed here, since a test depending on a specific absolute path on
-// one machine isn't portable/reproducible.
+// machine, and the two-pass --render-raws upgrade (FileState::DoneNeedsRender ->
+// forceFullRender -> Done) against a real Sony ARW file - not committed here, since a
+// test depending on a specific absolute path on one machine isn't portable/
+// reproducible.
 #include "TestHarness.h"
 #include "TestPaths.h"
 
@@ -38,5 +40,14 @@ PIXET_TEST(ThumbGeneratorRawIsNoLongerUnsupported) {
     // Heic still is), this would come back Unsupported instead of Failed. Confirms
     // Format::Raw actually reaches the RAW decode path now.
     ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.dng", Format::Raw);
+    PIXET_CHECK(result.tier == ThumbTier::Failed);
+}
+
+PIXET_TEST(ThumbGeneratorForceFullRenderStillFailsGracefullyOnMissingFile) {
+    // Doesn't verify forceFullRender actually skips the embedded-preview attempt
+    // (needs a real decodable RAW file - see the live-verified two-pass flow noted
+    // above) - just that the parameter is threaded through generateThumb() without
+    // upsetting the ordinary failure path.
+    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.dng", Format::Raw, 320, 85, /*forceFullRender=*/true);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

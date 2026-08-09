@@ -28,6 +28,7 @@ struct ExistingFile {
 
 struct PendingThumb {
     int64_t fileId;
+    Format fmt;
     ThumbResult result;
 };
 
@@ -181,10 +182,18 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
 
     claims_.heartbeat(dirId, opts_.owner, nowMillis());
 
-    // Pass B: thumbnail everything still pending in this directory.
+    // Pass B: thumbnail everything still pending in this directory - state=New,
+    // plus state=DoneNeedsRender too when a --render-raws pass is asking to catch up
+    // every RAW file still sitting on its fast embedded-preview thumbnail (see
+    // IndexOptions::renderRaws).
+    std::string pendingSql = "SELECT id, name, fmt FROM files WHERE dir_id=? AND (state=" +
+                              std::to_string((int64_t)FileState::New);
+    if (opts_.renderRaws) pendingSql += " OR state=" + std::to_string((int64_t)FileState::DoneNeedsRender);
+    pendingSql += ")";
+
     std::vector<std::pair<int64_t, std::wstring>> pending; // (fileId, name)
     {
-        auto sel = db_.prepare("SELECT id, name, fmt FROM files WHERE dir_id=? AND state=0");
+        auto sel = db_.prepare(pendingSql);
         sel.bind(1, dirId);
         while (sel.step()) {
             pending.emplace_back(sel.columnInt64(0), toUtf16(sel.columnText(1)));
@@ -216,13 +225,22 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
                     // something rather than a blank field.
                     int64_t fileWidth = pt.result.origWidth > 0 ? pt.result.origWidth : pt.result.width;
                     int64_t fileHeight = pt.result.origHeight > 0 ? pt.result.origHeight : pt.result.height;
+                    // RAW's embedded-preview tier lands on DoneNeedsRender, not Done -
+                    // a later --render-raws pass picks it back up for the real render
+                    // (see FileState::DoneNeedsRender). Every other case (RAW that
+                    // already got the full render, or any other format's own tiers)
+                    // is a plain Done.
+                    FileState newState = (pt.fmt == Format::Raw && pt.result.tier == ThumbTier::EmbeddedPreview)
+                                              ? FileState::DoneNeedsRender
+                                              : FileState::Done;
                     auto updFile = db_.prepare(
-                        "UPDATE files SET width=?, height=?, orientation=?, thumb_id=?, state=1 WHERE id=?");
+                        "UPDATE files SET width=?, height=?, orientation=?, thumb_id=?, state=? WHERE id=?");
                     updFile.bind(1, fileWidth);
                     updFile.bind(2, fileHeight);
                     updFile.bind(3, (int64_t)pt.result.orientation);
                     updFile.bind(4, thumbId);
-                    updFile.bind(5, pt.fileId);
+                    updFile.bind(5, (int64_t)newState);
+                    updFile.bind(6, pt.fileId);
                     updFile.step();
 
                     if (pt.result.tier == ThumbTier::EmbeddedPreview) stats.thumbsEmbedded++;
@@ -251,8 +269,12 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
 
     for (auto &[fileId, name] : pending) {
         Format fmt = classifyFormat(name);
-        ThumbResult result = generateThumb(joinPath(dirPath, name), fmt, opts_.targetLongEdge, opts_.quality);
-        batch.push_back({fileId, std::move(result)});
+        // Also forces a fresh (state=New) RAW file straight to a full render during a
+        // --render-raws run - see IndexOptions::renderRaws.
+        bool forceFullRender = opts_.renderRaws && fmt == Format::Raw;
+        ThumbResult result =
+            generateThumb(joinPath(dirPath, name), fmt, opts_.targetLongEdge, opts_.quality, forceFullRender);
+        batch.push_back({fileId, fmt, std::move(result)});
         if (batch.size() >= kBatchSize) flushBatch();
     }
     flushBatch();
