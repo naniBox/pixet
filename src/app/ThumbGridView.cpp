@@ -74,6 +74,16 @@ ThumbGridView::ThumbGridView(QWidget *parent) : QListView(parent) {
     // consistent with the wheel behavior below.
     setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
     setHorizontalScrollMode(QAbstractItemView::ScrollPerItem);
+    // Always reserve the vertical scrollbar's width, even when nothing needs
+    // scrolling, rather than the default show/hide-as-needed. Without this, choosing
+    // a column count is a feedback loop with its own effect on the viewport: fewer
+    // columns means more rows, which can cross the "needs to scroll" threshold and
+    // make the scrollbar appear, which shrinks the viewport width, which can make a
+    // *different* column count fit - and that new attempt can just as easily toggle
+    // the scrollbar back off again. See updateGridSize()'s class comment for how much
+    // machinery chasing that loop reactively needed before landing on just removing
+    // the feedback source instead.
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     setItemDelegate(new ThumbGridDelegate(this));
 
     resizeDebounce_ = new QTimer(this);
@@ -88,23 +98,69 @@ void ThumbGridView::resizeEvent(QResizeEvent *event) {
 }
 
 void ThumbGridView::updateGridSize() {
-    if (fitInProgress_) {
-        // Don't just drop this - the width that prompted it (e.g. the final settled
-        // size of a maximize, arriving while an earlier intermediate-size fit is
-        // still converging) needs to be checked once that fit is done, or the grid
-        // stays sized for a stale, since-superseded width.
-        pendingRecheck_ = true;
-        return;
-    }
-
     int vw = viewport()->width();
     // Width close to one we already found a working fit for - most likely our own
     // scrollbar-visibility side effect bouncing back, not a real resize. Re-deriving
     // here would just repeat the same failing guess (see the class comment on why).
     if (lastFitWidth_ >= 0 && qAbs(vw - lastFitWidth_) <= kWidthJitterTolerance) return;
+    if (vw <= 0) return;
 
-    fitInProgress_ = true;
-    applyColumns(idealColumns());
+    int cellHeight = ThumbGridDelegate::kCellPadding + ThumbLoader::kThumbIconSize + ThumbGridDelegate::kTextTopGap +
+                      ThumbGridDelegate::kTextRowHeight + ThumbGridDelegate::kCellPadding;
+
+    int columns = idealColumns();
+    int lastTriedWidth = vw;
+
+    // Bounds the backoff so it can't loop forever - generous on purpose: each step is
+    // cheap (the normal case converges in exactly one), and too small a bound was
+    // observed to cut the sequence off before it actually reached a fitting count.
+    for (int attemptsLeft = 15; columns > 0 && attemptsLeft > 0; --attemptsLeft) {
+        int currentWidth = viewport()->width();
+        if (currentWidth <= 0) return;
+        lastTriedWidth = currentWidth;
+
+        QSize newSize(currentWidth / columns, cellHeight); // stretched to fill the row evenly
+        if (newSize != gridSize()) setGridSize(newSize);
+        doItemsLayout(); // force immediate relayout - see the class comment on why this must be synchronous
+
+        int actual = renderedColumnCount();
+        // Only back off when short - overshooting isn't the reported problem and
+        // "more, slightly smaller-than-target columns" isn't actually wrong, just a
+        // different density than the baseline guess.
+        if (actual > 0 && actual < columns) {
+            columns--;
+            continue;
+        }
+        break; // converged (or nothing to verify yet, e.g. an empty folder)
+    }
+
+    if (viewport()->width() != lastTriedWidth && consecutiveDefers_ < kMaxConsecutiveDefers) {
+        // The width moved again since the last iteration actually ran - a resize
+        // landing between iterations of what's otherwise a synchronous loop, not just
+        // between separate calls to this method (see the class comment: even
+        // doItemsLayout() forcing immediate relayout doesn't stop a *cross-process*
+        // resize - a real drag comes from explorer.exe/dwm.exe, not this process, and
+        // those arrive as sent messages Qt can end up dispatching mid-loop). Defer to
+        // the debounce timer rather than retrying inline - retrying was tried first
+        // and doesn't reliably win either (a target whose own scrollbar is toggling in
+        // response to each guess can tick-tock between two states just as fast as a
+        // tight inline retry can chase it); the timer only fires once things are
+        // *actually* quiet, which is the condition a trustworthy fit needs. Leaving
+        // lastFitWidth_ untouched is what makes that later attempt possible - stamping
+        // a width nothing was actually verified against was the original bug this
+        // method exists to fix, and would otherwise make the jitter guard above
+        // silently swallow that later, correct attempt.
+        ++consecutiveDefers_;
+        resizeDebounce_->start();
+        return;
+    }
+
+    // Either it held still (the common case), or it didn't but consecutiveDefers_ hit
+    // its bound - a width that keeps moving in response to its own fit attempts (see
+    // the class comment) would otherwise defer forever. Accept the current state
+    // either way rather than waiting for a "hold still" that isn't coming.
+    consecutiveDefers_ = 0;
+    lastFitWidth_ = viewport()->width();
 }
 
 int ThumbGridView::idealColumns() const {
@@ -112,46 +168,6 @@ int ThumbGridView::idealColumns() const {
     if (viewportWidth <= 0) return 1;
     int baseCellWidth = ThumbLoader::kThumbIconSize + 2 * ThumbGridDelegate::kCellPadding;
     return qMax(1, viewportWidth / baseCellWidth);
-}
-
-void ThumbGridView::applyColumns(int columns, int attemptsLeft) {
-    int viewportWidth = viewport()->width();
-    if (viewportWidth <= 0 || columns <= 0) {
-        finishFit();
-        return;
-    }
-
-    int cellWidth = viewportWidth / columns; // stretched to fill the row evenly
-    int cellHeight = ThumbGridDelegate::kCellPadding + ThumbLoader::kThumbIconSize + ThumbGridDelegate::kTextTopGap +
-                      ThumbGridDelegate::kTextRowHeight + ThumbGridDelegate::kCellPadding;
-
-    QSize newSize(cellWidth, cellHeight);
-    if (newSize != gridSize()) setGridSize(newSize);
-
-    if (attemptsLeft <= 0) {
-        finishFit();
-        return;
-    }
-    QTimer::singleShot(0, this, [this, columns, attemptsLeft]() {
-        int actual = renderedColumnCount();
-        // Only back off when short - overshooting isn't the reported problem and
-        // "more, slightly smaller-than-target columns" isn't actually wrong, just a
-        // different density than the baseline guess.
-        if (actual > 0 && actual < columns) {
-            applyColumns(columns - 1, attemptsLeft - 1); // continuation - still in progress
-        } else {
-            finishFit(); // converged (or nothing to verify yet) - done
-        }
-    });
-}
-
-void ThumbGridView::finishFit() {
-    fitInProgress_ = false;
-    lastFitWidth_ = viewport()->width();
-    if (pendingRecheck_) {
-        pendingRecheck_ = false;
-        updateGridSize(); // re-evaluate against whatever the width actually is now
-    }
 }
 
 int ThumbGridView::renderedColumnCount() const {

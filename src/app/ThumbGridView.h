@@ -75,57 +75,87 @@ private:
     // viewport evenly, leaving a gap on the right. Height stays fixed; only width
     // stretches to fill the row. Debounced (see resizeEvent()) rather than run
     // straight off every resizeEvent: a single window-manager resize (e.g. a
-    // maximize) can fire a burst of intermediate WM_SIZE events.
+    // maximize, or a manual drag) can fire a burst of intermediate WM_SIZE events.
     //
-    // Getting this to actually converge took three layers, each fixing a real,
-    // logged failure of the previous one:
+    // Getting this to actually converge went through several rounds, each fixing a
+    // real, logged failure of the previous one - worth recording since the failure
+    // mode was different every time and easy to reintroduce:
     //  1. Debounce alone: a resize burst still computed-and-verified against each
     //     intermediate size, so the *final* size's verification never got to finish.
-    //  2. fitInProgress_ (block re-entry while a fit is running): setGridSize()
-    //     inside applyColumns() turned out to itself trigger further resizeEvents
-    //     mid-backoff, re-entering at a fresh ideal guess before the prior backoff
-    //     could converge.
-    //  3. lastFitWidth_ (skip re-deriving for a width close to one already handled):
-    //     even serialized, the *sequence itself* oscillates forever on its own -
-    //     trying N columns can fail, backing off to N-1 (wider) cells changes the row
-    //     count, which can toggle the vertical scrollbar's visibility, which changes
-    //     viewport width by the scrollbar's ~12-17px - and idealColumns() computes
-    //     the *same* N again for a width that close, repeating indefinitely. Since
-    //     idealColumns() is a stateless function of only the current width, it has no
-    //     way to remember "N already failed here" on its own.
+    //  2. Verifying what actually rendered (via renderedColumnCount()) and backing off
+    //     by one column when short, rather than trusting idealColumns()'s arithmetic
+    //     outright - QListView's own column-fitting isn't reliably predictable up
+    //     front (tried both a strict inequality and a 1px safety margin on the width
+    //     calculation and neither was always enough, likely DPI-scaling-related
+    //     rounding inside Qt's layout code).
+    //  3. The verify step was originally deferred a tick (QTimer::singleShot(0)) to
+    //     give Qt a chance to actually lay out the new gridSize before checking it -
+    //     which turned out to be the root problem, not a detail: that tick is a gap
+    //     the OS can deliver another resize event into (setGridSize() itself can
+    //     synchronously toggle the vertical scrollbar's visibility as row count
+    //     changes, which is itself a resize; a real user drag-resizing the window
+    //     delivers a steady stream of these regardless). A resize landing in that gap
+    //     meant the *next* verify was checking a gridSize computed for an
+    //     already-superseded width, and whatever it converged to then got permanently
+    //     stamped as "fits this width" even though it didn't - visible as the grid
+    //     getting stuck at far fewer columns than the space available (small folders,
+    //     where backing off enough columns to need more rows was itself enough to
+    //     toggle the scrollbar mid-verify) or as leftover unfilled space at the right
+    //     edge once resizing actually stopped (a mid-drag width's fit outliving the
+    //     drag). Fixed at the root by dropping the deferred verify entirely -
+    //     doItemsLayout() forces Qt to recompute item positions synchronously, so the
+    //     whole try/verify/back-off loop now runs in one call with no event-loop gap
+    //     for a resize to land in at all, rather than reactively detecting drift after
+    //     the fact (which was tried first and still wasn't watertight against a
+    //     continuous drag re-landing in the *next* gap).
+    //  5. Turns out even that gap wasn't fully closeable: a resize landing while
+    //     updateGridSize() is mid-loop was observed to change the viewport's width out
+    //     from under a *later* iteration of the same synchronous loop, not just
+    //     between separate calls to this method - a real window drag comes from
+    //     explorer.exe/dwm.exe, delivered as sent messages Qt can end up dispatching
+    //     between iterations regardless of how synchronous this method's own code is.
+    //     Retrying inline against that (an "outer" retry loop, tried next) doesn't
+    //     reliably win either: fitting a *narrower* just-seen width can converge on
+    //     one column count while fitting a *wider* one converges on a very different
+    //     one (the empirical renderedColumnCount() check is only meaningful for a
+    //     width that actually held still while being measured), so retrying inline
+    //     against a target whose scrollbar is itself toggling in response to each
+    //     guess can genuinely tick-tock between two states forever rather than settle.
+    //     Deferring to the debounce timer on a detected mismatch - rather than
+    //     retrying inline - fixes the *transient* version of this (a drag still
+    //     actually in progress), since the timer only fires once real quiet has
+    //     elapsed. It doesn't fix a *sustained* one, though: consecutiveDefers_ bounds
+    //     how many times in a row this can happen before just accepting whatever the
+    //     current state is rather than deferring indefinitely - guaranteeing
+    //     termination even if the width and the scrollbar it toggles are, for
+    //     whatever reason, never going to hold still relative to each other.
+    // Being synchronous end-to-end (layers 3-4) does still mean there's no window for
+    // updateGridSize() to be re-entered by its *own* side effects (as opposed to an
+    // external resize) mid-fit, so there's no separate re-entrancy guard needed here.
     void updateGridSize();
     QTimer *resizeDebounce_;
-    bool fitInProgress_ = false;
-    // Set when updateGridSize() is called again while a fit is already running (see
-    // fitInProgress_) - without this, that trigger was simply dropped, so a resize
-    // landing mid-fit (e.g. the final settled size arriving right as an intermediate
-    // animation frame's fit was still converging) got silently lost, leaving the grid
-    // stuck sized for a stale, since-superseded width. Checked once the current fit
-    // finishes to run one more pass against whatever the width actually is by then.
-    bool pendingRecheck_ = false;
+    // Skip re-deriving for a width close to one already fit - not primarily about
+    // performance, but about breaking a genuine oscillation: fitting N columns can
+    // itself change row count enough to toggle the vertical scrollbar, which changes
+    // viewport width by the scrollbar's ~12-17px, which would otherwise trigger
+    // *another* fit for a width that close, which can toggle the scrollbar back, and
+    // so on indefinitely. idealColumns() is a stateless function of only the current
+    // width, so without this it has no way to remember "already fit here." Only ever
+    // set from a fit that was actually verified against a width that held still (or
+    // after consecutiveDefers_ forces acceptance) - see updateGridSize().
     int lastFitWidth_ = -1;
     static constexpr int kWidthJitterTolerance = 20; // comfortably more than one scrollbar's width
+    // How many updateGridSize() calls in a row have bailed out via the debounce-defer
+    // path (see updateGridSize()) without ever reaching a verified fit. Bounds that
+    // defer loop so a width that's genuinely oscillating (its own scrollbar toggling
+    // in response to each fit attempt, rather than settling) can't defer forever -
+    // past kMaxConsecutiveDefers, the next call accepts whatever it converges to
+    // without requiring one more round of verification. Reset to 0 on any verified fit.
+    int consecutiveDefers_ = 0;
+    static constexpr int kMaxConsecutiveDefers = 4;
     // Target column count for the current viewport width, before any verification -
-    // see applyColumns() for why this is only a starting guess, not a guarantee.
+    // see updateGridSize() for why this is only a starting guess, not a guarantee.
     int idealColumns() const;
-    // Sets gridSize() for `columns` evenly filling the viewport, then verifies what
-    // QListView actually rendered and backs off by one column (wider cells) if it
-    // came up short. QListView's own column-fitting arithmetic isn't something this
-    // can reliably predict up front - tried both a strict inequality and a 1px safety
-    // margin on the width calculation and neither was always enough (likely
-    // DPI-scaling-related rounding inside Qt's layout code) - directly checking what
-    // rendered and correcting is more robust than continuing to guess at the formula.
-    // attemptsLeft bounds the backoff so it can't loop forever - generous on purpose:
-    // each step is a cheap 0ms check (the normal case converges in exactly one), and
-    // too small a bound was observed to cut the sequence off before it actually
-    // reached a fitting count (landed on idealColumns()-3 columns, well under what
-    // the width could actually hold, precisely because attemptsLeft was 3).
-    void applyColumns(int columns, int attemptsLeft = 15);
-    // Clears fitInProgress_/records lastFitWidth_, then re-triggers if a resize came
-    // in while this fit was running (see pendingRecheck_) - the single place every
-    // terminal path through applyColumns() routes through, so that re-trigger can't
-    // be missed from any of them.
-    void finishFit();
     // How many items actually share the first row's top y-coordinate right now.
     int renderedColumnCount() const;
 };

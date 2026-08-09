@@ -105,7 +105,17 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     grid_ = new ThumbGridView(this);
     grid_->setModel(gridModel_);
     grid_->setViewMode(QListView::IconMode);
-    grid_->setResizeMode(QListView::Adjust);
+    // Fixed, not the more obvious-looking Adjust: Adjust makes QListView relayout
+    // items automatically on *every* resizeEvent, using whatever gridSize() happens to
+    // be set at that instant - which, mid-drag, is the previous (stale) column count,
+    // since ThumbGridView::updateGridSize() deliberately debounces and only recomputes
+    // once resizing settles (see its class comment). That gave Qt's own automatic
+    // relayout and our explicit one two independent, uncoordinated opinions about
+    // layout during a drag, racing on every intermediate frame. Fixed leaves item
+    // positions untouched until something explicitly asks for a relayout -
+    // ThumbGridView::updateGridSize() already does that itself (doItemsLayout()), so
+    // this doesn't lose any actual behavior, just the redundant/conflicting one.
+    grid_->setResizeMode(QListView::Fixed);
     grid_->setMovement(QListView::Static);
     grid_->setIconSize(QSize(ThumbLoader::kThumbIconSize, ThumbLoader::kThumbIconSize));
     // Cell size (grid size) is self-managed by ThumbGridView, recomputed on resize so
