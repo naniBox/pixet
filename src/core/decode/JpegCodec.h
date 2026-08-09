@@ -2,18 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <vector>
+
+#include "RgbImage.h"
 
 namespace pixet {
-
-// Interleaved RGB, 3 bytes/pixel, no padding.
-struct RgbImage {
-    std::vector<uint8_t> pixels;
-    int w = 0;
-    int h = 0;
-
-    bool empty() const { return w <= 0 || h <= 0; }
-};
 
 // Decodes a JPEG buffer, using libjpeg's scaled-DCT decode (1/1, 1/2, 1/4, 1/8) to land
 // close to targetLongEdge from above whenever the source is large enough - roughly 8x
@@ -29,17 +21,5 @@ bool decodeJpeg(const uint8_t *data, size_t size, int targetLongEdge, RgbImage &
 // embedded-preview version at a much smaller size. Returns false on a corrupt/
 // non-JPEG buffer.
 bool readJpegDimensions(const uint8_t *data, size_t size, int &width, int &height);
-
-// Downscales to targetLongEdge via box-filter averaging. No-op (copies through) if the
-// image is already at or below targetLongEdge - this codec never upscales.
-void resizeBoxDownscale(const RgbImage &src, int targetLongEdge, RgbImage &dst);
-
-// Applies an EXIF orientation transform (1..8) in place. 1 is a no-op. 5-8 rotate and
-// swap width/height.
-void applyOrientation(RgbImage &img, int orientation);
-
-// Encodes to a baseline JPEG in memory. Returns false on failure (should be rare - input
-// is always a buffer we just decoded/resized ourselves, not untrusted data).
-bool encodeJpeg(const RgbImage &img, int quality, std::vector<uint8_t> &out);
 
 } // namespace pixet

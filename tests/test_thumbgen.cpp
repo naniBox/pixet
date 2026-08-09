@@ -41,7 +41,10 @@ std::vector<uint8_t> makeGradientJpeg(int w, int h, int quality) {
 PIXET_TEST(ThumbGeneratorUnsupportedFormatSkipsDecode) {
     // No file at this path - if ThumbGenerator tried to read it, this would fail
     // differently (Failed, not Unsupported). Confirms format is checked first.
-    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.png", Format::Png);
+    // Format::Unknown, not a specific format: every real format now has a decoder
+    // (see test_{png,raw,video,tiff,webp,avif,heif}codec.cpp) - Unknown is the only
+    // value that's permanently, correctly Unsupported by definition.
+    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.xyz", Format::Unknown);
     PIXET_CHECK(result.tier == ThumbTier::Unsupported);
 }
 
