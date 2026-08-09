@@ -5,6 +5,215 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Grid column-fit bug, round five (dual relayout systems)
+
+User report after round three's fix: manual drag-resize can still jump straight from
+4-wide to 1-wide, skipping 2 and 3 - i.e. the empirical backoff in
+`ThumbGridView::updateGridSize()` is backing off much further than it should within a
+single settle, not just landing on a slightly-too-low count.
+
+Found a real structural cause: `grid_->setResizeMode(QListView::Adjust)`
+(`MainWindow.cpp`) tells QListView to relayout items **automatically on every single
+resizeEvent**, using whatever `gridSize()` is set *at that instant* - which, mid-drag,
+is last settle's (now stale) column count, since `updateGridSize()` deliberately
+debounces 50ms behind. So during a drag, Qt's own automatic relayout and our explicit
+one were two independent, uncoordinated systems both repositioning items, on different
+schedules, against different assumptions about the current size - a plausible source of
+exactly this kind of over-aggressive backoff if Qt's own pass left the view in some
+partially-relaid-out state before our `doItemsLayout()` runs. Changed to
+`QListView::Fixed` - items only reposition when something explicitly asks
+(`doItemsLayout()`, which `updateGridSize()` already calls itself), removing the
+redundant/conflicting automatic pass rather than trying to out-race it.
+
+Verified via build + full test suite (15/15, clean) and extensive live drag-resize
+testing against a real 400-file folder: smooth step sequences, deliberate `1600<->850`
+big single jumps (restore-down/flick-style), and two different jittery random-walk
+sequences (one general-range, one deliberately centered in the width band where ideal
+columns is 4-5) via `SetWindowPos` from an external PowerShell process, `PW_RENDERFULLCONTENT`
+`PrintWindow` capture, and title-bar debug logging identical to earlier rounds.
+**Honest gap**: none of these synthetic runs reproduced the exact "skips 2 & 3" pattern
+either before or after the fix - every observed transition backed off one column at a
+time and converged correctly. The `QListView::Adjust`/`Fixed` fix is real and worth
+keeping regardless (two uncoordinated relayout systems racing is a legitimate bug on
+its own terms), but it isn't *confirmed* to be the specific mechanism behind what was
+reported, since it couldn't be reproduced on demand to verify against. Asked the user
+to retest and report back with more specific repro details (exact action - drag vs.
+maximize vs. restore, single vs. multi-monitor, right after opening a folder or well
+after) if it still happens, to narrow down what a synthetic `SetWindowPos` stream isn't
+capturing about a real OS-level drag.
+
+Also note: `HKCU\Software\pixet\pixet\lastDirectory` was temporarily overwritten during
+this session's testing (pointed at a 400-file real folder to get a meaningful repro
+folder, rather than the ~3-5 file folders used in earlier rounds) - pixet will just
+overwrite it again on next real navigation, but worth knowing why it might open
+somewhere unexpected once.
+
+---
+
+## 2026-08-09 — desktop — Grid column-fit bug, round three (manual drag-resize, root cause)
+
+Round two's fix (restart on detected width drift) turned out to only patch one
+symptom, not the actual mechanism - user report: manual drag-resize still collapsed
+4-wide to 1-wide, and the settled state after a drag could show correctly-proportioned
+columns with a large blank gap on the right (fewer columns than the width could hold).
+
+Reproduced with a synthetic drag: since a live in-app click-drag can't be scripted
+without either stealing the user's input focus or simulating literal mouse-hardware
+events (both ruled out - VS Code had focus most of this session), used
+`SetWindowPos` from an external PowerShell process to stream ~50 resize steps at
+20ms intervals, which is a reasonable stand-in for a real OS-level drag (Windows
+delivers `WM_SIZE` on essentially every mouse-move sample regardless of source).
+`PrintWindow` with `PW_RENDERFULLCONTENT` was needed to screenshot it, since a
+correctly-unfocused pixet window sits behind VS Code and a plain screen-region capture
+just grabs whatever's on top - confirmed the hard way when an early capture returned a
+totally unrelated file manager window's content (the hwnd was legitimately pixet's the
+whole time; only the *capture coordinates*, taken from a stale/wrong source, were off -
+double-checked via `GetWindowThreadProcessId` + window title before concluding no other
+app had actually been resized).
+
+Put the title-bar debug logging back in a third time and found the real mechanism:
+even with round two's synchronous `doItemsLayout()`-based fit, a **cross-process**
+resize (a real drag comes from `explorer.exe`/`dwm.exe`, not this process) can still
+get dispatched *between iterations* of the fit loop - "synchronous within one C++ call"
+doesn't mean "atomic against sent window messages." Worse, the empirical
+`renderedColumnCount()` check driving the backoff turned out to be a genuine
+**feedback loop**, not just a race: fitting fewer columns means more rows, which can
+cross the vertical scrollbar's show/hide threshold, which changes the viewport width,
+which changes which column count fits - observed as a stable, *self-sustaining*
+919px/931px oscillation (exactly one scrollbar-width apart) that never settled on its
+own, deferring to the resize-debounce timer forever rather than converging.
+
+Fixed at the actual root: `setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn)` in the
+constructor. Reserving the scrollbar's space unconditionally means a column-count
+choice can no longer change the viewport width as a side effect of itself, which
+removes the feedback loop rather than reacting to it - most of round two's defensive
+machinery (per-iteration width re-reads, post-loop drift detection deferring to the
+debounce timer, a bounded `consecutiveDefers_` forcing eventual termination) turned out
+to still be worth keeping as defense-in-depth against the underlying cross-process
+timing hazard, just no longer fighting a fight they couldn't reliably win on their own.
+`ThumbGridView.h`'s class comment now has the full five-round history.
+
+Verified with the same synthetic drag sequence against a build with the fix: the debug
+log showed every single fit converging in one pass (no `stale`/`defer` entries at all,
+where before there'd been dozens in a stuck loop), and a `PrintWindow` screenshot
+confirmed the grid fills cleanly with no leftover gap. Build + full test suite (15/15)
+clean; debug logging fully removed again afterward.
+
+## 2026-08-09 — desktop — Grid column-fit bug, round two (small folders)
+
+The horizontal-fill bug came back: "space for 3 cells, shows only 1" on the folder
+restored at startup. Put the title-bar debug logging back in (`ThumbGridView.cpp`,
+same technique as the original hunt, removed again once done) and reproduced by
+launching `pixet.exe` directly (needed `C:\Qt\6.8.3\msvc2022_64\bin` on PATH - it's
+only on PATH inside the VS dev shell `scripts/build.ps1` enters, not a bare shell) and
+reading its title. Real log for the repro folder (5 files):
+
+```
+U(vw=679,rc=5)>try(c=4)>verify(act=3)>try(c=3)>verify(act=2)>try(c=2)>verify(act=1)
+>try(c=1)>R(w=667)>verify(act=1)>FIN(lfw=667,pending=0)>R(w=667)>U:jit(vw=667,lfw=667)
+```
+
+A **fourth** layer to the same underlying race documented on `updateGridSize()`: the
+backoff sequence itself (columns 4→3→2→1) makes the grid *taller* each step (fewer
+columns, same 5 items, more rows) - taller than the viewport is enough to cross the
+vertical-scrollbar threshold, and on a folder this small, that can happen *mid-sequence*
+(a big folder's scrollbar is already showing regardless of column count, so this never
+triggered there). The scrollbar appearing shrank the viewport (679→667) between one
+`applyColumns()` attempt's `setGridSize()` and its `QTimer::singleShot(0)` verification.
+`finishFit()` then read `viewport()->width()` *fresh* (667, already changed) and
+stamped that into `lastFitWidth_` - so the next resize's jitter guard compared 667
+against itself and always looked "already fresh", even though the gridSize actually
+applied (a single full-width column) was computed and verified against the stale 679,
+never against 667. The grid got stuck at 1 column permanently.
+
+Fix: `applyColumns()`'s deferred verify lambda now captures the viewport width at the
+moment it was launched and compares against the current width when it actually fires;
+a mismatch restarts clean via `applyColumns(idealColumns(), attemptsLeft - 1)` instead
+of trusting a `renderedColumnCount()` reading that was measured against a since-stale
+gridSize. Reproduced live before and after: before, stuck at 1 column even after the
+scrollbar-driven resize settled; after, the log shows `drift(was=679,now=667)` followed
+by a fresh `try(c=4)`→`verify(act=4)` that actually converges, confirmed visually via a
+screenshot of the running app (4 columns, evenly filled, 5th item wrapped cleanly to
+its own row). `ThumbGridView.h`'s class comment on `updateGridSize()` gained a fourth
+numbered entry for this.
+
+Build + full test suite (15/15) both clean.
+
+## 2026-08-09 — desktop — Background reconciler + fullscreen aliasing fix
+
+Two follow-ups from the P3 fullscreen work below.
+
+**Fullscreen aliasing on the default (fit) view**: `FullscreenViewer::paintEvent` never
+set `QPainter::SmoothPixmapTransform`. The fit-scaled decode only lands on a power-of-2
+scaled-DCT step (`JpegCodec::decodeJpeg`'s `scale_num/scale_denom`), so it's usually
+somewhat larger than the exact on-screen size - `drawPixmap` was then downscaling that
+remainder with Qt's default (effectively nearest-neighbor) transform, visible as
+aliasing even with no zoom involved. One-line fix: enable the render hint, matching
+what `PreviewPane` already does via `Qt::SmoothTransformation`.
+
+**Background reconciler** (`BackgroundReconciler.h/.cpp`, new): worried that the
+width/height bug's residual bad data (see below) - and more generally, any file edited
+outside pixet - would just sit stale until someone happened to hit Refresh on that
+exact folder. Added a low-priority worker (`QThread::LowestPriority`) that continuously
+cycles through every directory already in the `dirs` table, running the same Pass A/B
+Refresh logic (`forceRescan=true, forceRethumbnail=false`) FolderIndexer already uses,
+paced ~1.5s between directories with a 10-minute rest after each full pass - deliberately
+slow, since this is hygiene, not urgency. Deliberately does *not* use the directory-mtime
+shortcut, since that shortcut only catches added/removed/renamed files - a file edited
+in place under the same name never moves its directory's own mtime, which is exactly
+the drift this is meant to catch (mirrors the existing devlog note on why manual Refresh
+already has to bypass that shortcut too). Coordinates with the on-demand indexer and any
+running `pixet-index` via the same claims table Indexer already uses, under a distinct
+owner id (`gui:bg:pid:N`) so it skips rather than contends with either. `MainWindow`
+does a light incremental grid refresh (`refreshThumbStates()`, not a full reset) if the
+directory the sweep just touched happens to be the one currently on screen.
+
+Verified via build + full test suite (15/15); not live-verified in the running app this
+round for the same reason as the last entry (VS Code had focus).
+
+## 2026-08-09 — desktop — P3 fullscreen viewer
+
+Double-click/Enter on a thumbnail opens a fullscreen viewer (`FullscreenViewer` +
+`FullscreenDecoder`, `src/app/`). Baseline: fit-to-screen by default, click zooms to 1:1
+centered on the click point, click-drag pans, click again zooms out, arrow keys move
+next/prev with a ±2-row prefetch ring buffer, Escape closes. `FullscreenDecoder` is a
+LIFO-queue worker (like `ThumbLoader`, unlike the side panel's latest-wins
+`PreviewDecoder`) since the viewer needs several requests serviced at once - neighbor
+prefetch plus an on-demand full-resolution decode for whichever row is current. Only
+JPEG has a decoder right now; other formats fall back to the grid's cached thumbnail.
+
+Follow-up round added six more asks in one pass:
+- **Grid stays in sync.** `FullscreenViewer` emits `rowChanged(row)` on every
+  navigation; `MainWindow` updates `grid_`'s current index + scrolls it into view, so
+  closing fullscreen (however it happened) leaves the grid selection on the same image.
+- **Double-click closes** the viewer, in addition to Escape.
+- **Plain mouse wheel** navigates next/prev, same as arrow keys.
+- **Ctrl+scroll zooms continuously**, centered on the cursor. This needed reworking the
+  binary "fit vs. 1:1" model into a continuous one: `fitMode_` (recompute scale-to-fit
+  every paint) vs. an explicit `scale_` + `centerImagePoint_` (which native-resolution
+  pixel is centered in the viewport) once the user leaves fit mode via click or
+  Ctrl+scroll. Turned out to *simplify* rendering rather than complicate it - one
+  formula (`screenX = viewportCenter + (imagePoint - center) * scale`) now drives fit
+  view, 1:1 click-zoom, and arbitrary Ctrl+scroll zoom alike, and the "never blank,
+  upscale a lower-res placeholder while the real decode is in flight" behavior falls
+  out for free instead of needing its own code path.
+- **I key** toggles a bottom-left info overlay (filename/format/dimensions/size/taken-at/
+  duration - same fields the main window's status bar shows). Not true EXIF-field
+  cycling as floated ("maybe cycle through exif") - the app doesn't parse EXIF tags
+  beyond orientation yet (`ExifInfo`), so there's nothing richer to cycle through
+  without a real EXIF tag parser, which is out of scope for this pass.
+- **F key** toggles borderless `showFullScreen()` vs. a maximized window with a title
+  bar (set to the current image's full path, updated on every navigation) - persists
+  across opens/closes as a session-level display preference rather than resetting each
+  time.
+
+Verified via build + full test suite (15/15 pass); not live-input-verified this round
+since the user's foreground window was VS Code at the time (see the automation-safety
+note from the earlier P3 baseline entry - skip synthetic input when the user is
+actively in their editor, rely on code review + tests, say so plainly).
+
+Still uncommitted, along with the P3 baseline below.
+
 ## 2026-08-09 — desktop — Fixed width/height bug + more QOL (path bar, force rethumbnail)
 
 Follow-up to the QOL batch below. Four small asks turned up one real bug.
