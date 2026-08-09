@@ -40,4 +40,7 @@ enum class FileState : int {
 Format classifyFormat(const std::wstring &filename);
 Kind kindForFormat(Format fmt);
 
+// Short human-readable label for display (e.g. status bars) - "JPEG", "HEIC", ...
+const char *formatName(Format fmt);
+
 } // namespace pixet

@@ -36,6 +36,20 @@ Format classifyFormat(const std::wstring &filename) {
 
 Kind kindForFormat(Format fmt) { return fmt == Format::Video ? Kind::Video : Kind::Image; }
 
+const char *formatName(Format fmt) {
+    switch (fmt) {
+        case Format::Jpeg: return "JPEG";
+        case Format::Png: return "PNG";
+        case Format::Heic: return "HEIC";
+        case Format::Raw: return "RAW";
+        case Format::Tiff: return "TIFF";
+        case Format::Webp: return "WebP";
+        case Format::Avif: return "AVIF";
+        case Format::Video: return "Video";
+        default: return "Unknown";
+    }
+}
+
 const char *kIndexSchemaSql = R"SQL(
 CREATE TABLE IF NOT EXISTS dirs(
     id INTEGER PRIMARY KEY,

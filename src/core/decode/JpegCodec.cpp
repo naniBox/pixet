@@ -93,6 +93,31 @@ bool decodeJpeg(const uint8_t *data, size_t size, int targetLongEdge, RgbImage &
     return true;
 }
 
+bool readJpegDimensions(const uint8_t *data, size_t size, int &width, int &height) {
+    if (size == 0) return false;
+
+    jpeg_decompress_struct cinfo;
+    JpegErrorMgr jerr;
+    cinfo.err = jpeg_std_error(&jerr.pub);
+    jerr.pub.error_exit = jpegErrorExit;
+    jerr.pub.output_message = silentOutputMessage;
+
+    if (setjmp(jerr.jmp)) {
+        jpeg_destroy_decompress(&cinfo);
+        return false;
+    }
+
+    jpeg_create_decompress(&cinfo);
+    jpeg_mem_src(&cinfo, data, (unsigned long)size);
+    jpeg_read_header(&cinfo, TRUE);
+
+    width = (int)cinfo.image_width;
+    height = (int)cinfo.image_height;
+
+    jpeg_destroy_decompress(&cinfo);
+    return true;
+}
+
 void resizeBoxDownscale(const RgbImage &src, int targetLongEdge, RgbImage &dst) {
     int srcLong = std::max(src.w, src.h);
     if (srcLong <= targetLongEdge || srcLong == 0) {

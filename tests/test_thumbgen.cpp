@@ -66,6 +66,14 @@ PIXET_TEST(ThumbGeneratorDecodesAndDownscalesLargeJpeg) {
     PIXET_CHECK(decodeJpeg(result.jpegBytes.data(), result.jpegBytes.size(), 0, decoded));
     PIXET_CHECK(decoded.w == result.width);
     PIXET_CHECK(decoded.h == result.height);
+
+    // origWidth/origHeight must be the true source dimensions, not the thumbnail's -
+    // regression test for a bug where files.width/height got the thumbnail's (much
+    // smaller) size instead of the original image's.
+    PIXET_CHECK(result.origWidth == 1600);
+    PIXET_CHECK(result.origHeight == 1200);
+    PIXET_CHECK(result.origWidth != result.width);
+    PIXET_CHECK(result.origHeight != result.height);
 }
 
 PIXET_TEST(ThumbGeneratorDoesNotUpscaleSmallJpeg) {
@@ -76,4 +84,6 @@ PIXET_TEST(ThumbGeneratorDoesNotUpscaleSmallJpeg) {
     PIXET_CHECK(result.tier == ThumbTier::Decoded);
     PIXET_CHECK(result.width == 100);
     PIXET_CHECK(result.height == 80);
+    PIXET_CHECK(result.origWidth == 100);
+    PIXET_CHECK(result.origHeight == 80);
 }

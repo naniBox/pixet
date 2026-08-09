@@ -27,6 +27,13 @@ struct IndexStats {
 struct IndexOptions {
     bool recursive = true;
     bool forceRescan = false; // bypass the dir-mtime-unchanged skip
+    // Unconditionally re-thumbnails every file in the directory, even ones whose
+    // (mtime, size) haven't changed since the last scan - forceRescan alone only
+    // catches new/changed/removed files, deliberately, so a plain Refresh stays cheap
+    // on a large folder. This is the heavier "no really, redo everything" escape
+    // hatch (e.g. after a Pass B bug fix changed what gets extracted). Implies
+    // forceRescan.
+    bool forceRethumbnail = false;
     int targetLongEdge = 320;
     int quality = 85;
     std::string owner; // claim owner id, e.g. "pid:1234"

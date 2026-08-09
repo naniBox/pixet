@@ -22,8 +22,11 @@ public:
 
 public slots:
     // force=true is the explicit "Refresh" action - bypasses the mtime freshness
-    // shortcut and re-verifies every file in the folder.
-    void indexFolder(QString path, bool force);
+    // shortcut and re-verifies every file in the folder (but only re-thumbnails
+    // files whose mtime/size actually changed). forceRethumbnail=true goes further -
+    // regenerates every thumbnail in the folder unconditionally (the "Force
+    // Re-thumbnail" context menu action); implies force.
+    void indexFolder(QString path, bool force, bool forceRethumbnail = false);
 
 signals:
     void started(QString path);

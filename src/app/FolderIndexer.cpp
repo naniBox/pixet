@@ -16,7 +16,7 @@ FolderIndexer::~FolderIndexer() {
     thread_.wait();
 }
 
-void FolderIndexer::indexFolder(QString path, bool force) {
+void FolderIndexer::indexFolder(QString path, bool force, bool forceRethumbnail) {
     emit started(path);
 
     if (!db_) db_ = std::make_unique<pixet::Database>(pixet::indexDbPath(), pixet::thumbsDbPath(), false);
@@ -24,6 +24,7 @@ void FolderIndexer::indexFolder(QString path, bool force) {
     pixet::IndexOptions opts;
     opts.recursive = false;
     opts.forceRescan = force;
+    opts.forceRethumbnail = forceRethumbnail;
     opts.owner = "gui:pid:" + std::to_string(GetCurrentProcessId());
 
     pixet::Indexer indexer(*db_, opts);

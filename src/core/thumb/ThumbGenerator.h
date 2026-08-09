@@ -20,8 +20,13 @@ enum class ThumbTier {
 struct ThumbResult {
     ThumbTier tier = ThumbTier::Failed;
     std::vector<uint8_t> jpegBytes; // encoded thumbnail, ready to store in thumbs.db
-    int width = 0;
+    int width = 0;  // thumbnail's own pixel dimensions (what's actually in jpegBytes)
     int height = 0;
+    // The original file's true native pixel dimensions - independent of `width`/
+    // `height` above, which describe the (much smaller) generated thumbnail. Either
+    // may be 0 if the source dimensions couldn't be determined (e.g. read failed).
+    int origWidth = 0;
+    int origHeight = 0;
     int orientation = 1;
 };
 

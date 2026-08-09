@@ -23,6 +23,13 @@ struct RgbImage {
 // files and a bad one must not abort the scan.
 bool decodeJpeg(const uint8_t *data, size_t size, int targetLongEdge, RgbImage &out);
 
+// Reads just the JPEG header (SOF marker) for the image's true native pixel
+// dimensions, without decoding any pixel data - cheap enough to always call
+// alongside a thumbnail decode, which may itself be reading a scaled-DCT or
+// embedded-preview version at a much smaller size. Returns false on a corrupt/
+// non-JPEG buffer.
+bool readJpegDimensions(const uint8_t *data, size_t size, int &width, int &height);
+
 // Downscales to targetLongEdge via box-filter averaging. No-op (copies through) if the
 // image is already at or below targetLongEdge - this codec never upscales.
 void resizeBoxDownscale(const RgbImage &src, int targetLongEdge, RgbImage &dst);

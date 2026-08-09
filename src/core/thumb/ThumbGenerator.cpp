@@ -1,5 +1,7 @@
 #include "ThumbGenerator.h"
 
+#include <utility>
+
 #include "../decode/JpegCodec.h"
 #include "../meta/JpegExif.h"
 #include "../util/FileIO.h"
@@ -22,6 +24,16 @@ ThumbResult generateThumb(const std::wstring &filePath, Format fmt, int targetLo
 
     ExifInfo exif = parseJpegExif(fileBytes.data(), fileBytes.size());
     result.orientation = exif.orientation;
+
+    // Always read the *original* file's header for its true native dimensions -
+    // independent of whatever size the thumbnail decode below actually lands on
+    // (embedded EXIF previews are typically ~160px; scaled-DCT decodes land near
+    // targetLongEdge; neither is the real image size). A header-only read is cheap
+    // (no pixel decode), so there's no cost to doing this unconditionally.
+    if (readJpegDimensions(fileBytes.data(), fileBytes.size(), result.origWidth, result.origHeight) &&
+        exif.orientation >= 5) {
+        std::swap(result.origWidth, result.origHeight); // EXIF 5-8 rotate 90deg
+    }
 
     RgbImage img;
     bool decoded = false;

@@ -70,7 +70,8 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
         }
     }
 
-    bool freshEnough = !opts_.forceRescan && scannedAt > 0 && storedMtime == actualMtime;
+    bool freshEnough =
+        !opts_.forceRescan && !opts_.forceRethumbnail && scannedAt > 0 && storedMtime == actualMtime;
 
     if (freshEnough) {
         stats.dirsSkippedFresh++;
@@ -129,8 +130,10 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
                 stats.filesNew++;
             } else {
                 const ExistingFile &ef = it->second;
-                if (ef.mtime != entry.mtimeUnix || ef.size != entry.size) {
-                    // Changed in place - drop the stale thumb and re-queue for Pass B.
+                if (opts_.forceRethumbnail || ef.mtime != entry.mtimeUnix || ef.size != entry.size) {
+                    // Changed in place, or a full re-thumbnail was explicitly requested
+                    // regardless of whether anything actually changed - drop the stale
+                    // thumb and re-queue for Pass B.
                     if (ef.thumbId != 0) {
                         auto delThumb = db_.prepare("DELETE FROM thumbs.thumbs WHERE id=?");
                         delThumb.bind(1, ef.thumbId);
@@ -206,10 +209,17 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
                     insThumb.step();
                     int64_t thumbId = db_.lastInsertRowId();
 
+                    // files.width/height are the ORIGINAL image's dimensions, not the
+                    // thumbnail's (that's thumbs.thumbs.w/h, bound above) - fall back to
+                    // the thumbnail's own size only if the header-only dimension read
+                    // failed (result.origWidth/Height left at 0), so the UI still shows
+                    // something rather than a blank field.
+                    int64_t fileWidth = pt.result.origWidth > 0 ? pt.result.origWidth : pt.result.width;
+                    int64_t fileHeight = pt.result.origHeight > 0 ? pt.result.origHeight : pt.result.height;
                     auto updFile = db_.prepare(
                         "UPDATE files SET width=?, height=?, orientation=?, thumb_id=?, state=1 WHERE id=?");
-                    updFile.bind(1, (int64_t)pt.result.width);
-                    updFile.bind(2, (int64_t)pt.result.height);
+                    updFile.bind(1, fileWidth);
+                    updFile.bind(2, fileHeight);
                     updFile.bind(3, (int64_t)pt.result.orientation);
                     updFile.bind(4, thumbId);
                     updFile.bind(5, pt.fileId);
