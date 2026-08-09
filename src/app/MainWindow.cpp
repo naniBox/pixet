@@ -233,6 +233,11 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(folderIndexer_.get(), &FolderIndexer::thumbsProgress, this, &MainWindow::onThumbsProgress);
     connect(folderIndexer_.get(), &FolderIndexer::finished, this, &MainWindow::onIndexerFinished);
 
+    backgroundReconciler_ = std::make_unique<BackgroundReconciler>();
+    connect(backgroundReconciler_.get(), &BackgroundReconciler::directoryChanged, this,
+            &MainWindow::onBackgroundDirectoryChanged);
+    backgroundReconciler_->start();
+
     previewDebounce_ = new QTimer(this);
     previewDebounce_->setSingleShot(true);
     previewDebounce_->setInterval(80);
@@ -536,6 +541,16 @@ void MainWindow::onIndexerFinished(QString path) {
     gridModel_->refreshThumbStates(); // catch any trailing batch
     grid_->viewport()->update();
     statusBar()->showMessage(QStringLiteral("%1 - %2 items").arg(path).arg(gridModel_->rowCount()), 4000);
+}
+
+void MainWindow::onBackgroundDirectoryChanged(QString path) {
+    if (path != currentPath_) return;
+    // Same light-touch refresh as onThumbsProgress - a background sweep re-thumbnailing
+    // a file the user happens to be looking at shouldn't reset the model and flicker
+    // everything else on screen.
+    gridModel_->refreshThumbStates();
+    grid_->viewport()->update();
+    updateSelectionStatus();
 }
 
 void MainWindow::loadBookmarks() {

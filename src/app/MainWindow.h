@@ -70,6 +70,9 @@ private slots:
     // to the previous/next sibling folder, left to the parent, right into the first
     // subfolder.
     void onNavigateFolderRequested(Qt::Key direction);
+    // BackgroundReconciler found and corrected drift in a directory - refresh the grid
+    // if that's the one currently on screen (no-op otherwise).
+    void onBackgroundDirectoryChanged(QString path);
 
 private:
     std::unique_ptr<pixet::Database> db_; // main-thread: bookmarks CRUD + fast metadata queries
@@ -113,6 +116,9 @@ private:
     std::unique_ptr<ThumbLoader> thumbLoader_;
     std::unique_ptr<PreviewDecoder> previewDecoder_;
     std::unique_ptr<FolderIndexer> folderIndexer_;
+    // Low-priority background sweep that keeps already-indexed folders honest against
+    // files changed on disk outside pixet - see BackgroundReconciler's class comment.
+    std::unique_ptr<BackgroundReconciler> backgroundReconciler_;
 
     QTimer *previewDebounce_;
     QString currentPath_;
