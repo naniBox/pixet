@@ -147,6 +147,14 @@ from source (sqlite3, libjpeg-turbo, libpng, tiff, webp, avif, libraw, libheif+l
 ffmpeg) — **budget ~30 minutes** on a cold vcpkg binary cache. `cmake --build` itself is
 fast once dependencies are built.
 
+**To avoid that 30 minutes**, use `scripts/configure.ps1`/`scripts/build.ps1` instead of
+calling `cmake` directly (see step 7 below) — they point `VCPKG_BINARY_SOURCES` at
+`\\kioku\talsit\code\pixet\vcpkg-cache`, a shared network cache both machines can read
+from and write to. If the other machine already built a given package version, this
+machine restores it from the share instead of rebuilding from source. It's a plain
+network path, not synced storage — nothing moves between machines except through this
+cache lookup, so there's no risk of it silently going stale or ballooning a sync folder.
+
 `build/debug/src/app/pixet.exe` should launch a window titled "pixet 0.1.0" — that's the
 P0 exit gate (needs `C:\Qt\6.8.3\msvc2022_64\bin` on `PATH`, or run from inside an IDE
 that sets it, since we haven't wired `windeployqt` yet). `build/debug/src/index/pixet-index.exe`
@@ -170,6 +178,10 @@ own history did), F5 can silently build with no `INCLUDE`/`LIB` set at all — i
 until a file actually needs recompiling, then fails with something like
 `Cannot open include file: 'type_traits'`. `scripts/build.ps1` sidesteps that
 inconsistency entirely rather than depending on it.
+
+Prefer `scripts/configure.ps1 -Preset debug` over a bare `cmake --preset debug` for the
+same reason step 6's manual dance exists, plus it wires up the shared vcpkg cache
+(`scripts/vcpkg-cache-env.ps1`) — see the note under step 6 above.
 
 If `pixet.exe` fails to *launch* (not build) with a missing-DLL error, check
 `launch.json`'s `PATH` override still points at your actual Qt install (see the

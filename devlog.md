@@ -5,6 +5,51 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Shared vcpkg binary cache over the network (\\kioku\talsit)
+
+User pushed the day's work to test-build on the other machine, then asked whether the
+~28-minute cold vcpkg dependency build (full source build of ffmpeg/libheif/libraw/etc.)
+on that machine's fresh clone can be avoided.
+
+vcpkg already caches locally at `%LOCALAPPDATA%\vcpkg\archives` - a *second* configure on
+the same machine only takes seconds. That cache just never leaves the machine that built
+it, so a fresh clone elsewhere starts cold regardless. Fix: point `VCPKG_BINARY_SOURCES`
+at an additional read/write cache tier so whichever machine builds a package first saves
+the other from ever rebuilding it.
+
+Added `scripts/vcpkg-cache-env.ps1`, dot-sourced by both `configure.ps1` (new - the
+`cmake --preset` step, where vcpkg install actually runs) and `build.ps1`:
+
+```
+$env:VCPKG_BINARY_SOURCES = "clear;default;files,<path>,readwrite"
+```
+
+`default` keeps the local cache in play, `files,<path>,readwrite` adds the shared path as
+a second tier vcpkg checks and writes through.
+
+First attempt pointed `<path>` at the Nextcloud sync folder - user explicitly vetoed that
+("I don't want it there, I will manually copy it across as needed") and asked for
+`\\kioku\talsit\code\pixet\vcpkg-cache` instead: a plain network share, not synced
+storage, so nothing moves between machines except when deliberately copied. Switched to
+that path.
+
+Verified: `configure.ps1 -Preset release` runs clean through the new script (restores all
+22 packages from the local cache in ~4s rather than rebuilding), and the network path gets
+created (`New-Item -Force`) and is writable. Did not force a genuine from-source rebuild
+to prove the write-through mirroring specifically - that's standard, well-documented
+vcpkg behavior once the `VCPKG_BINARY_SOURCES` syntax is confirmed valid and the target
+path is reachable/writable, both of which are now confirmed.
+
+**Not yet proven end-to-end**: the actual cross-machine payoff (build on desktop, confirm
+laptop's fresh clone skips rebuilding the same packages) - that only shows itself the next
+time a *new* dependency version needs building, since everything currently in
+`vcpkg.json` is already cached locally on this machine.
+
+Next: `SETUP.md` needs a note pointing at this for the other machine. Commit
+`vcpkg-cache-env.ps1`, `configure.ps1`, `build.ps1`, push.
+
+---
+
 ## 2026-08-09 — desktop — Fix: F5 build fails after a trivial edit ("type_traits" not found)
 
 User report: edit a file, revert the edit, hit F5 → build fails. Got the actual error

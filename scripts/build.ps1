@@ -37,6 +37,11 @@ Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments 
 $env:Path = $env:Path + ";" + [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+# CMake reruns vcpkg install as part of an implicit reconfigure if CMakeLists.txt/
+# vcpkg.json changed since the last build - set up the shared cache in case that
+# happens here rather than only in configure.ps1.
+. (Join-Path $PSScriptRoot "vcpkg-cache-env.ps1")
+
 Push-Location $repoRoot
 try {
     cmake --build "build/$Preset"
