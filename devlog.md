@@ -5,6 +5,104 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-10 — desktop — P4 format breadth: PNG, RAW, video, TIFF, WebP, AVIF, HEIF
+
+Every format the plan scoped for P4 now has a real decoder, in the user's stated
+priority order (PNG > RAW > video > TIFF > WebP > AVIF > HEIF, reflecting that their
+phone shoots JPEG rather than HEIC). Before today only JPEG was implemented;
+`src/core/decode/` had exactly one codec.
+
+**Refactor first**: pulled `RgbImage`, `resizeBoxDownscale()`, `applyOrientation()`,
+and `encodeJpeg()` out of `JpegCodec.h/.cpp` into a new shared `RgbImage.h/.cpp` -
+every new codec needs these (every format ends up re-encoded to JPEG for storage
+regardless of source), and importing them from something literally named
+`JpegCodec.h` stopped making sense once JPEG was one format among many.
+`ThumbGenerator.cpp` also got restructured from a single JPEG-only function into a
+`switch`-based dispatcher with one `generateXxxThumb()` per format, sharing the same
+read-buffer-then-decode-then-resize-then-reencode shape JPEG already established.
+
+**Per-format notes**:
+- **PNG** (`PngCodec`, libpng's simplified API) - no scaled decode like JPEG's
+  scaled-DCT, always native-resolution then box-downscale. No orientation extraction
+  (PNG's eXIf chunk exists but is vanishingly rare in practice - screenshots/graphics/
+  exports don't carry it).
+- **RAW** (`RawCodec`, LibRaw, `libraw::raw_r` - the thread-safe build, since
+  ThumbLoader/FolderIndexer/BackgroundReconciler can all decode concurrently on
+  separate threads within one process) - embedded-preview-first ladder just like
+  JPEG's EXIF thumbnail (LibRaw's `unpack_thumb()`/`dcraw_make_mem_thumb()`), full
+  demosaic via `dcraw_process()` as fallback. LibRaw auto-applies the file's own
+  orientation to its output for both tiers, so - unlike JPEG - there's no separate
+  `applyOrientation()` step. **Live-verified against a real Pixel-phone DNG**:
+  embedded preview extracted correctly, portrait orientation correctly reported
+  (3072x4080, matching the phone's actual rotated capture).
+- **Video poster frames** (`VideoCodec`, FFmpeg avformat/avcodec/swscale) - the one
+  codec that takes a file *path* rather than an in-memory buffer, deliberately
+  breaking the pattern every image codec follows: video files can be gigabytes, and
+  reading one wholesale just to grab a frame a few seconds in would be wasteful when
+  FFmpeg's own demuxer already seeks efficiently from disk. Seeks to
+  min(3s, 10% of duration), decodes the nearest keyframe, converts via swscale. Also
+  corrects for the video's own display-matrix rotation metadata (common for
+  phone-recorded portrait video, stored landscape with a rotate flag) by mapping
+  FFmpeg's counter-clockwise rotation value onto `applyOrientation()`'s existing
+  EXIF-style orientation constants rather than writing a separate transform. Hit two
+  API-vintage issues building against this vcpkg build's FFmpeg (`avformat-63`,
+  notably newer than expected): `av_stream_get_side_data()` no longer exists, replaced
+  with `av_packet_side_data_get()` over `codecpar->coded_side_data`. **Live-verified
+  against a real Pixel-phone portrait MP4** - poster frame extracted, dumped to a file,
+  and visually confirmed upright (not sideways or mirrored), which also validated the
+  rotation-sign convention empirically rather than trusting the docs' wording alone.
+- **TIFF** (`TiffCodec`, libtiff) - `TIFFReadRGBAImageOriented(..., ORIENTATION_TOPLEFT,
+  0)` handles the format's wide variety of encodings (bit depth, palette/CMYK/
+  grayscale, most compressions) in one call and auto-corrects for the file's own
+  `TIFFTAG_ORIENTATION` (same 1-8 encoding EXIF borrowed from TIFF). libtiff has no
+  built-in memory-buffer open the way libjpeg/libpng do, so `TIFFClientOpen()` needed
+  five small read/write/seek/close/size callbacks wrapping the in-memory buffer.
+- **WebP** (`WebpCodec`, libwebp's simple `WebPDecodeRGB`/`WebPGetInfo`) - simplest
+  codec of the seven, no memory-buffer plumbing needed at all. No orientation
+  extraction (same rarity rationale as PNG).
+- **AVIF** (`AvifCodec`, libavif) - no orientation extraction (irot/imir transforms
+  exist but are uncommon outside camera-native capture, and AVIF in the wild is
+  mostly web-optimized). **Testing gap**: this vcpkg build's libavif links a
+  decode-only AV1 backend - `avifEncoderWrite()` came back empty every time,
+  confirmed empirically (no AV1 encoder buildtree exists under vcpkg/buildtrees at
+  all). Round-trip fixture tests (the pattern used for PNG/TIFF/WebP) had to be
+  dropped in favor of garbage-data + format-gating tests only, same shape as RAW/
+  video's tests (which never had an encode path to begin with). No real AVIF sample
+  exists on the dev machine either, so unlike RAW/video there's no live-verification
+  fallback - lowest-confidence codec of the seven as a result, consistent with the
+  user's own prioritization (their phone doesn't produce AVIF).
+- **HEIF** (`HeifCodec`, libheif + libde265 decode backend) - same embedded-preview-
+  first ladder as RAW (`heif_image_handle_get_thumbnail()` before falling back to the
+  primary image), libheif applies container orientation automatically like RAW/TIFF.
+  Same testing gap as AVIF and for the same reason: `vcpkg.json` declares libheif with
+  `default-features: false` specifically to skip x265 (the HEVC encoder, an
+  unnecessary heavy dependency for read-only thumbnailing) - confirmed via no x265
+  buildtree existing - so no encode-based fixture was possible here either. Lowest
+  priority of the seven per the user's own ranking (their phone shoots JPEG, not
+  HEIC), and it shows in the test confidence: garbage-data + gating only, no
+  real-file verification.
+
+**Retroactive pickup for already-indexed libraries**: files scanned before today got
+`state=Unsupported` (3) for every one of these formats, and Pass B's pending-work
+query (`WHERE state=0`) won't touch them on a normal Refresh. Checked
+`Indexer.cpp:133` - `forceRethumbnail` unconditionally resets `state=0` for every
+existing file regardless of its *current* state, which already includes Unsupported.
+So the "Force Re-thumbnail This Folder" action added earlier this session (originally
+built for the width/height bugfix) is *also* exactly the right tool to retroactively
+pick up all seven newly-supported formats in an existing library - no new code
+needed, it already composes correctly.
+
+**Scope note**: `src/app/FullscreenDecoder.cpp` (the fullscreen viewer's full-
+resolution decoder, separate from `ThumbGenerator`) is still JPEG-only - it falls back
+to the grid's cached thumbnail for every other format, same graceful-degradation
+behavior as before today. Not addressed in this pass, since the ask was specifically
+about thumbnail/indexing coverage (P4's actual scope); worth a follow-up if fullscreen
+full-resolution viewing of RAW/HEIC/etc. turns out to matter in practice.
+
+Build + full test suite (46/46) clean throughout, one format at a time.
+
+---
+
 ## 2026-08-09 — desktop — Grid column-fit bug, round five (dual relayout systems)
 
 User report after round three's fix: manual drag-resize can still jump straight from
