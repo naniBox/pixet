@@ -159,13 +159,21 @@ recommended extensions (VS Code will prompt via `.vscode/extensions.json`, or ma
 `ms-vscode.cmake-tools`, `ms-vscode.cpptools`), open the folder, and press **F5** — pick
 "pixet (debug)" or "pixet-index (debug)".
 
-This sidesteps the whole `Enter-VsDevShell` dance in step 6: `CMakePresets.json` carries a
-`vendor` block that VS Code's CMake Tools recognizes, so it auto-injects the MSVC
-environment itself the first time you configure (may prompt you to pick a VS
-install/architecture — pick the x64 Build Tools). If `pixet.exe` fails to launch with a
-missing-DLL error, check `launch.json`'s `PATH` override still points at your actual Qt
-install (see the `CMakeUserPresets.json` note above if yours differs from
-`C:\Qt\6.8.3\msvc2022_64`).
+The F5 build task (`.vscode/tasks.json`) runs `scripts/build.ps1`, which explicitly
+enters the VS dev shell itself before calling `cmake --build` — same
+`Enter-VsDevShell`/PATH-merge dance as step 6, just scripted. This is deliberate, not
+just convenience: `CMakePresets.json`'s `vendor` block *can* make CMake Tools
+auto-inject the MSVC environment on its own, but only reliably for a build directory
+CMake Tools configured itself. If the build directory was ever configured by running
+`cmake --preset` directly from a terminal (as this doc's step 6 does, and as this repo's
+own history did), F5 can silently build with no `INCLUDE`/`LIB` set at all — invisible
+until a file actually needs recompiling, then fails with something like
+`Cannot open include file: 'type_traits'`. `scripts/build.ps1` sidesteps that
+inconsistency entirely rather than depending on it.
+
+If `pixet.exe` fails to *launch* (not build) with a missing-DLL error, check
+`launch.json`'s `PATH` override still points at your actual Qt install (see the
+`CMakeUserPresets.json` note above if yours differs from `C:\Qt\6.8.3\msvc2022_64`).
 
 ## Troubleshooting
 

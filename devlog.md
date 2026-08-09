@@ -5,6 +5,67 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Fix: F5 build fails after a trivial edit ("type_traits" not found)
+
+User report: edit a file, revert the edit, hit F5 → build fails. Got the actual error
+this time (essential - I couldn't reproduce it blind from a description):
+
+```
+FAILED: [...] FolderTreeView.cpp.obj.ddi
+"...\cl.exe" ... C:\Users\dmo\code\pixet\src\app\FolderTreeView.cpp ...
+C:\Qt\6.8.3\msvc2022_64\include\QtCore/qglobal.h(13): fatal error C1083:
+Cannot open include file: 'type_traits': No such file or directory
+```
+
+`type_traits` is a standard MSVC STL header - this is the exact "no `INCLUDE` env var
+set" failure mode from way back in P0, just now happening *inside* VS Code's F5 flow
+instead of a bare terminal. Root cause, once the actual compile command was visible:
+none of its `-I`/`-external:I` flags point at the MSVC or Windows SDK headers - CMake's
+Ninja+MSVC generator does not bake those into `build.ninja`, it expects them to already
+be in the environment via `INCLUDE`/`LIB` (set by `vcvarsall.bat`/`Enter-VsDevShell`).
+
+The `CMakePresets.json` `vendor` block (added a few sessions back specifically so VS
+Code wouldn't need this) *can* make CMake Tools inject that environment automatically -
+but, it turns out, only reliably for a build directory CMake Tools configured itself.
+Every configure of this repo's `build/debug`/`build/release` actually happened via me
+running `cmake --preset ...` directly from a terminal (necessary throughout this whole
+session for command-line verification) - CMake Tools' extension was never the one that
+configured these directories, so its F5 build task apparently doesn't apply the same
+injection to them. The failure was latent the whole time: already-compiled `.obj` files
+don't need `cl.exe` at all, so it only surfaces the moment something actually needs
+recompiling - which a trivial edit-then-revert does (mtime changes, ninja recompiles),
+explaining exactly the symptom reported.
+
+**Fix: stopped depending on CMake Tools' environment injection working at all.** Added
+`scripts/build.ps1`, which locates the VS install via `vswhere` and explicitly calls
+`Enter-VsDevShell` itself before `cmake --build` - the exact sequence this session's own
+manual PowerShell commands have used throughout, now scripted and deterministic instead
+of conditional on VS Code extension internals. `.vscode/tasks.json`'s two build tasks
+now run this script (`"type": "shell"` instead of `"type": "cmake"`) rather than
+CMake Tools' own build command. `launch.json`'s `preLaunchTask` references need no
+changes - same task labels, different implementation underneath.
+
+**Verification:** the bug itself is confirmed directly by the user's pasted error output
+above, not inferred - that's what made the root cause (missing `INCLUDE`) unambiguous.
+For the fix, reverted `FolderTreeView.cpp` to committed state, added a blank line,
+reverted again (the exact sequence reported), then ran `scripts/build.ps1 -Preset
+release` from a cold PowerShell process (no dev shell pre-established - this tool's
+shell state doesn't persist between calls, so every invocation already *is* a fresh
+process, a reasonable proxy for "VS Code spawns a plain terminal for this task").
+Succeeded cleanly for both presets. Didn't separately re-run the *old*, broken
+`"type": "cmake"` task to watch it fail first - the user's pasted output already is that
+evidence, and every one of my own manual builds all session used an explicit
+`Enter-VsDevShell` wrapper, so re-deriving the failure would've just meant deliberately
+building without one, not new information.
+
+Also updated `SETUP.md`'s VS Code section to describe why `scripts/build.ps1` exists
+instead of just "CMake Tools handles it," so this doesn't need rediscovering blind on
+the other machine if it configures its own build directory differently.
+
+Rebuilt both configs clean via the new script, 15/15 tests pass in each.
+
+---
+
 ## 2026-08-09 — desktop — Tree: don't reposition if already visible; another hscroll attempt
 
 User feedback: (1) don't jump the tree to top if the newly-selected folder is already
