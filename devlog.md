@@ -5,6 +5,55 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-10 — desktop — Two-pass RAW rendering (`pixet-index --render-raws`)
+
+Follow-up to P4's RAW support below: the user shoots a lot of RAW (ARW especially) and
+wants more than the fast embedded-preview thumbnail long-term - the embedded preview
+is camera-baked (its own white balance/tone curve/crop), a genuinely different
+rendering than what a real demosaic of the sensor data produces, so "good enough to
+browse with" shouldn't be the permanent end state for a RAW-heavy library.
+
+Added `FileState::DoneNeedsRender` (4) - a RAW file whose current thumbnail came from
+`ThumbTier::EmbeddedPreview` lands here instead of the ordinary `Done` (1); everything
+else (RAW that already got a full render, or any other format's tiers) is unaffected.
+No schema migration needed - `state` was already a plain unconstrained INTEGER column.
+
+`generateThumb()` gained a `forceFullRender` parameter (RAW-only; every other format's
+codec function ignores it) that skips straight past `decodeRawThumb()` to `decodeRaw()`
+- the full LibRaw demosaic pipeline already built for P4's fallback path, just no
+longer conditional on the embedded preview failing.
+
+`IndexOptions::renderRaws` threads this through `Indexer`: Pass B's pending-work query
+picks up `state=DoneNeedsRender` rows too (in addition to the usual `state=New`) when
+set, and every RAW file touched during that run - New or DoneNeedsRender - gets
+`forceFullRender=true`. Deliberately a separate opt-in pass rather than something Pass
+B does automatically or bundled into `forceRethumbnail`: normal indexing needs to stay
+fast (that's the entire point of trying the embedded preview first), so upgrading to
+real renders has to be something the user asks for, not a silent cost added to every
+scan. Exposed as `pixet-index --render-raws`; safe to re-run since it's a no-op once
+everything's already `Done`.
+
+**Live-verified end-to-end against a real Sony ARW file** (copied into a throwaway
+temp directory + temp `Database`, not the shared app cache, so the test never touched
+the user's real index): pass 1 (normal index) landed the file on `DoneNeedsRender`
+with 1 embedded-preview hit; pass 2 (`--render-raws`) upgraded it to `Done` with 1
+full-decode hit, zero embedded-preview hits; pass 3 (normal index again) did nothing
+at all (0/0), confirming the ladder actually terminates instead of re-rendering every
+run. Exact trace is in this session's history, not committed as a permanent test
+(depends on an absolute path to a real file on this machine) - only the lighter,
+still-portable parameter-threading check made it into `test_rawcodec.cpp`.
+
+**Not done this round**: this only reaches RAW files through `pixet-index
+--render-raws`, an explicit CLI invocation - there's no automatic background upgrade
+path yet (e.g. extending `BackgroundReconciler` to pick up `DoneNeedsRender` rows at
+low priority while the GUI app is just sitting there). Worth adding if periodically
+remembering to run the CLI pass turns out to be friction in practice; deferred for now
+since the user asked for "commit this work first."
+
+Build + full test suite (47/47) clean.
+
+---
+
 ## 2026-08-10 — desktop — P4 format breadth: PNG, RAW, video, TIFF, WebP, AVIF, HEIF
 
 Every format the plan scoped for P4 now has a real decoder, in the user's stated
