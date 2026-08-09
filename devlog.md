@@ -5,6 +5,114 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-09 — desktop — Fixed width/height bug + more QOL (path bar, force rethumbnail)
+
+Follow-up to the QOL batch below. Four small asks turned up one real bug.
+
+**Bug found and fixed**: the status bar's file dimensions were showing the *thumbnail's*
+size (e.g. "160×120"), not the original image's. Root cause in
+`ThumbGenerator::generateThumb` (`src/core/thumb/ThumbGenerator.cpp`): `ThumbResult.width/
+height` were always the post-downscale thumbnail dimensions, and `Indexer.cpp`'s Pass B
+write wrote that same value into *both* `thumbs.thumbs.w/h` (correct - that's the
+thumbnail) *and* `files.width/height` (wrong - that's supposed to be the original).
+Fixed by adding `JpegCodec::readJpegDimensions()` - a header-only read (`jpeg_read_header`,
+no pixel decode, cheap) that gets the file's true native size independent of whatever
+tier/scale the thumbnail decode used - stored as new `ThumbResult::origWidth/origHeight`,
+which `Indexer.cpp` now writes to `files.width/height` instead. Added regression
+assertions to `tests/test_thumbgen.cpp` (a 1600x1200 source must report `origWidth==1600`
+even though its thumbnail is ≤320px) - would have caught this immediately.
+
+**Important wrinkle this surfaced**: fixing the bug only affects *newly*-thumbnailed
+files. `Refresh`/F5 (`forceRescan`) deliberately only re-thumbnails files whose
+`(mtime, size)` actually changed - by design, so Refresh stays cheap on a large folder -
+so already-indexed files keep their stale (wrong) width/height forever unless something
+re-decodes them. Added a genuinely stronger option: `IndexOptions::forceRethumbnail`
+(`src/core/scan/Indexer.{h,cpp}`) unconditionally re-thumbnails every file in the
+directory regardless of whether it changed, threaded through
+`FolderIndexer::indexFolder()` / `MainWindow::requestIndex` as a third bool. Exposed as
+"Force Re-thumbnail This Folder" in the grid's right-click menu, distinct from the
+existing lighter "Refresh (check for new/changed files)". This is also the fix for
+already-corrupted `files.width/height` data from before today's bugfix - existing users
+need to run it once per folder (or the whole tree via `pixet-index`) to pick up correct
+dimensions; new indexing gets it right automatically.
+
+**Other QOL** (`src/app/MainWindow.cpp` mainly):
+- Path bar now also tracks the *selected file* (full path), not just the current
+  directory - reverts to the directory when selection clears.
+- Path bar selects-all with cursor at the end on focus (`QEvent::FocusIn` +
+  `QTimer::singleShot(0, ...selectAll)` - doing it synchronously in the focus-in handler
+  gets undone by the mouse-press that triggered the focus).
+- Navigating to a folder (any way - tree click, bookmark, path bar) now expands that
+  folder's own node in the tree, not just its ancestors, so its children are visible
+  without an extra click.
+- Status bar rewritten to show folder-level aggregates (`ThumbGridModel::imageCount()/
+  videoCount()/totalBytes()`, computed for free during the existing per-directory row
+  loop in `setDirectory()`) alongside the selected file's name/format/dimensions/size/
+  taken-at/duration. Format name string added (`pixet::formatName()` in `db/Schema.cpp`
+  - didn't exist anywhere before). Bit depth ("24bpp") sourced from the already-decoded
+  preview `QImage::depth()` rather than a new DB column - no schema/migration needed
+  (confirmed via research: this codebase has no migration mechanism at all yet, so
+  avoiding a schema change here was deliberate).
+- `.vscode/launch.json`: `externalConsole` (bool) → `console` (string) - VS Code
+  deprecated the old key. `pixet`/`pixet-index` configs need different values
+  (`internalConsole` vs `externalTerminal` - the CLI tool needs a real console to print
+  to).
+
+Verification: unit tests (15/15, including the two new dimension-regression checks) and
+a live GUI pass confirmed the folder-aggregate status bar, path-bar file-tracking, and
+selection border all work correctly against the real photo library. Did **not** get a
+clean live confirmation of "Force Re-thumbnail" actually correcting a real file's
+dimensions end-to-end - automation clicks started landing in the user's own VS Code
+window (they were actively using the machine mid-test), so I stopped rather than risk
+interfering. The underlying fix is covered by the unit tests either way; only the GUI
+wiring for the new context menu action is unconfirmed live.
+
+---
+
+## 2026-08-09 — desktop — vcpkg cache fix + new GUI QOL features
+
+Two follow-ups to the same day's earlier work.
+
+**vcpkg cache bug**: the shared cache (previous entry below) verified as "working" too
+early - a full cold rebuild populated the network share fine, but the *local*
+`%LOCALAPPDATA%\vcpkg\archives` tier silently never got refreshed on rebuild. Root
+cause: `default` needs an explicit `,readwrite` suffix exactly like `files` does -
+`"clear;default;files,<path>,readwrite"` only makes `default` read-only. Confirmed via
+`vcpkg install --debug`, which logs `Completed submission of X to N binary cache(s)` -
+was reporting N=1 (network only) until fixed to `"clear;default,readwrite;files,...`,
+after which it correctly reports N=2. `scripts/vcpkg-cache-env.ps1` updated; verified end
+to end afterward (`build/release` reconfigured cold, both tiers populated: 20 local files,
+44 network files).
+
+**GUI QOL batch** (`src/app/MainWindow.{h,cpp}`, `ThumbGridView.{h,cpp}`,
+`ThumbGridModel.{h,cpp}`, `main.cpp`):
+- Thumbnail selection now draws a border instead of recoloring the cell - a custom
+  `ThumbGridDelegate` clears `State_Selected` before delegating to the base paint, then
+  draws the highlight color as an outline only.
+- Grid right-click context menu with "Rescan This Folder" (same force-reindex path F5
+  already had, just more discoverable).
+- Status bar permanent label showing the selected item's name/dimensions/size/taken-at/
+  duration - dimensions etc. only exist post-decode, so it also refreshes on
+  `thumbsProgress`, not just on selection change.
+- Path bar (`QLineEdit` above the tree) mirrors `currentPath_`; Enter navigates, and
+  pasting a *file* path browses to its folder and selects that file once the grid has
+  loaded it (`ThumbGridModel::rowForName()` + a pending-selection retried across
+  `onFilesListed`).
+
+Verification note: screenshot-and-click UI automation this session repeatedly gave
+false readings before landing on a reliable method - raw `GetWindowRect`/`SetCursorPos`
+coordinates from a non-DPI-aware PowerShell process don't match `UIAutomation`'s
+physical-pixel rects (a ~1.24x mismatch), and `QLineEdit` accepted focus/clicks and
+`WM_CHAR` text insertion fine but never fired `returnPressed()` for any synthetic Enter
+key tried (`SendMessage(WM_KEYDOWN)`, `keybd_event`) - a tooling limitation, not
+necessarily an app bug, but flagging since the path bar's Enter-to-navigate is the one
+piece of this batch that was *not* independently confirmed working. Selection border,
+context menu wiring, and status bar/preview were all confirmed via
+`AutomationElement.GetClickablePoint()` + a real mouse click, which worked reliably once
+adopted.
+
+---
+
 ## 2026-08-09 — desktop — Shared vcpkg binary cache over the network (\\kioku\talsit)
 
 User pushed the day's work to test-build on the other machine, then asked whether the
