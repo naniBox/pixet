@@ -24,6 +24,11 @@ public:
         ThumbIdRole,
         FormatRole,
         StateRole,
+        SizeRole,      // bytes, qint64
+        WidthRole,     // px, int (0/invalid if unknown)
+        HeightRole,    // px, int (0/invalid if unknown)
+        TakenAtRole,   // unix seconds, qint64 (0 if unknown)
+        DurationMsRole,// video only, qint64 (0 if unknown/not video)
     };
 
     explicit ThumbGridModel(pixet::Database &db, QObject *parent = nullptr);
@@ -43,6 +48,17 @@ public:
     // setDirectory hasn't been called yet.
     void refreshThumbStates();
 
+    // Row index for the (currently loaded) file named `name`, or -1 if there's no
+    // such row - used by the path bar's "paste a file path" -> select-it behavior.
+    int rowForName(const QString &name) const;
+
+    // Folder-level aggregates over every row currently loaded (all states, including
+    // not-yet-thumbnailed - size/kind are known from Pass A alone) - recomputed by
+    // setDirectory(), not refreshThumbStates() (kind/size never change in Pass B).
+    int imageCount() const { return imageCount_; }
+    int videoCount() const { return videoCount_; }
+    qint64 totalBytes() const { return totalBytes_; }
+
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
 
@@ -59,6 +75,11 @@ private:
         pixet::Format fmt = pixet::Format::Unknown;
         pixet::FileState state = pixet::FileState::New;
         qint64 thumbId = 0;
+        qint64 size = 0;
+        int width = 0;
+        int height = 0;
+        qint64 takenAt = 0;
+        qint64 durationMs = 0;
         QPixmap thumb;
         mutable bool requested = false;
     };
@@ -67,4 +88,8 @@ private:
     int64_t dirId_ = 0;
     QVector<Row> rows_;
     QHash<qint64, int> rowByFileId_;
+    QHash<QString, int> rowByName_;
+    int imageCount_ = 0;
+    int videoCount_ = 0;
+    qint64 totalBytes_ = 0;
 };
