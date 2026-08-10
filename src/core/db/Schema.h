@@ -43,10 +43,11 @@ enum class FileState : int {
     DoneNeedsRender = 4,
 };
 
-// Classifies a filename by extension. Returns Format::Unknown for anything not in
-// the supported image/video set - callers skip inserting those rows entirely
-// rather than cluttering the index with sidecar/system files (.xmp, Thumbs.db, ...).
-Format classifyFormat(const std::wstring &filename);
+// Classifies a filename by extension. `filename` is UTF-8. Returns Format::Unknown for
+// anything not in the supported image/video set - callers skip inserting those rows
+// entirely rather than cluttering the index with sidecar/system files (.xmp,
+// Thumbs.db, ...).
+Format classifyFormat(const std::string &filename);
 Kind kindForFormat(Format fmt);
 
 // Short human-readable label for display (e.g. status bars) - "JPEG", "HEIC", ...

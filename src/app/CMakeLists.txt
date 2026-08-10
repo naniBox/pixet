@@ -1,6 +1,15 @@
 find_package(Qt6 REQUIRED COMPONENTS Widgets Sql Concurrent)
 
-add_executable(pixet WIN32
+# WIN32 (no console window) only has an effect on Windows - CMake ignores it
+# elsewhere - but macOS needs the analogous MACOSX_BUNDLE instead to get a real,
+# double-clickable .app (with an Info.plist) rather than a bare Unix binary.
+if(APPLE)
+    set(PIXET_APP_TYPE MACOSX_BUNDLE)
+else()
+    set(PIXET_APP_TYPE WIN32)
+endif()
+
+add_executable(pixet ${PIXET_APP_TYPE}
     main.cpp
     MainWindow.h
     MainWindow.cpp

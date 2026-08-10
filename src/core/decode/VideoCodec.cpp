@@ -11,8 +11,6 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
-#include "../util/StringUtil.h"
-
 namespace pixet {
 
 namespace {
@@ -52,13 +50,11 @@ int exifOrientationForRotation(double ccwRotationDegrees) {
 
 } // namespace
 
-bool decodeVideoPosterFrame(const std::wstring &filePath, RgbImage &out) {
+bool decodeVideoPosterFrame(const std::string &path, RgbImage &out) {
     // FFmpeg's default logging is chatty (codec/container warnings straight to
     // stderr) - invisible in a WIN32-subsystem app and just noise over a scan of a
     // large real library, same rationale as libjpeg's silenced output_message().
     av_log_set_level(AV_LOG_QUIET);
-
-    std::string path = toUtf8(filePath);
 
     AVFormatContext *fmtCtxRaw = nullptr;
     if (avformat_open_input(&fmtCtxRaw, path.c_str(), nullptr, nullptr) != 0) return false;

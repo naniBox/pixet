@@ -25,6 +25,6 @@ namespace pixet {
 //
 // Returns false on any error (missing/corrupt file, no video stream, decode failure)
 // rather than throwing - this runs unattended over a real, messy file library.
-bool decodeVideoPosterFrame(const std::wstring &filePath, RgbImage &out);
+bool decodeVideoPosterFrame(const std::string &filePath, RgbImage &out);
 
 } // namespace pixet

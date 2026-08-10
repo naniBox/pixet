@@ -15,7 +15,7 @@
 
 namespace pixet {
 
-bool decodeForDisplay(const std::wstring &filePath, Format fmt, int targetLongEdge, RgbImage &out) {
+bool decodeForDisplay(const std::string &filePath, Format fmt, int targetLongEdge, RgbImage &out) {
     if (fmt == Format::Unknown) return false;
 
     if (fmt == Format::Video) {

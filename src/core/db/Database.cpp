@@ -5,7 +5,6 @@
 #include <stdexcept>
 
 #include "Schema.h"
-#include "../util/StringUtil.h"
 
 namespace pixet {
 
@@ -90,17 +89,14 @@ bool Statement::columnIsNull(int col) const { return sqlite3_column_type(stmt_, 
 
 // ---- Database ----
 
-Database::Database(const std::wstring &indexDbPath, const std::wstring &thumbsDbPath, bool readOnly) {
-    std::string indexPathUtf8 = toUtf8(indexDbPath);
-    std::string thumbsPathUtf8 = toUtf8(thumbsDbPath);
-
+Database::Database(const std::string &indexDbPath, const std::string &thumbsDbPath, bool readOnly) {
     int flags = readOnly ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
-    int rc = sqlite3_open_v2(indexPathUtf8.c_str(), &db_, flags, nullptr);
+    int rc = sqlite3_open_v2(indexDbPath.c_str(), &db_, flags, nullptr);
     if (rc != SQLITE_OK) {
         std::string msg = db_ ? sqlite3_errmsg(db_) : "sqlite3_open_v2 failed";
         if (db_) sqlite3_close(db_);
         db_ = nullptr;
-        throw std::runtime_error("failed to open " + indexPathUtf8 + ": " + msg);
+        throw std::runtime_error("failed to open " + indexDbPath + ": " + msg);
     }
 
     exec("PRAGMA busy_timeout=10000;");
@@ -112,8 +108,8 @@ Database::Database(const std::wstring &indexDbPath, const std::wstring &thumbsDb
 
     // ATTACH needs a bound-free literal; escape single quotes defensively.
     std::string escaped;
-    escaped.reserve(thumbsPathUtf8.size());
-    for (char c : thumbsPathUtf8) {
+    escaped.reserve(thumbsDbPath.size());
+    for (char c : thumbsDbPath) {
         if (c == '\'') escaped += '\'';
         escaped += c;
     }

@@ -32,6 +32,6 @@ PIXET_TEST(ThumbGeneratorAvifIsNoLongerUnsupported) {
     // Missing file, not garbage bytes - if Avif were still gated as Unsupported (like
     // Heic still is), this would come back Unsupported instead of Failed. Confirms
     // Format::Avif actually reaches the AVIF decode path now.
-    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.avif", Format::Avif);
+    ThumbResult result = generateThumb("Z:\\does\\not\\exist.avif", Format::Avif);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

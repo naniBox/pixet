@@ -43,7 +43,7 @@ private:
 // Not thread-safe - callers use one Database per thread/connection.
 class Database {
 public:
-    Database(const std::wstring &indexDbPath, const std::wstring &thumbsDbPath, bool readOnly = false);
+    Database(const std::string &indexDbPath, const std::string &thumbsDbPath, bool readOnly = false);
     ~Database();
 
     Database(const Database &) = delete;

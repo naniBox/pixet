@@ -4,7 +4,6 @@
 
 #include "../db/Database.h"
 #include "../thumb/ThumbGenerator.h"
-#include "../util/StringUtil.h"
 #include "../util/Time.h"
 #include "DirWalker.h"
 
@@ -12,9 +11,12 @@ namespace pixet {
 
 namespace {
 
-std::wstring joinPath(const std::wstring &dir, const std::wstring &name) {
-    if (!dir.empty() && dir.back() == L'\\') return dir + name;
-    return dir + L'\\' + name;
+// Windows-separator join, matching what DirWalker/PathUtil produce - a portable
+// (std::filesystem::path::operator/-based) version is P5's job once there's a second
+// platform to join paths for.
+std::string joinPath(const std::string &dir, const std::string &name) {
+    if (!dir.empty() && dir.back() == '\\') return dir + name;
+    return dir + '\\' + name;
 }
 
 constexpr size_t kBatchSize = 64;
@@ -40,22 +42,20 @@ struct PendingThumb {
 
 Indexer::Indexer(Database &db, IndexOptions opts) : db_(db), opts_(std::move(opts)), claims_(db) {}
 
-int64_t Indexer::upsertDir(const std::wstring &path, int64_t parentId) {
-    std::string pathUtf8 = toUtf8(path);
-
+int64_t Indexer::upsertDir(const std::string &path, int64_t parentId) {
     auto ins = db_.prepare("INSERT OR IGNORE INTO dirs(parent_id, path, mtime, scanned_at) VALUES(?,?,0,0)");
     if (parentId < 0) ins.bindNull(1); else ins.bind(1, parentId);
-    ins.bind(2, pathUtf8);
+    ins.bind(2, path);
     ins.step();
 
     auto sel = db_.prepare("SELECT id FROM dirs WHERE path=?");
-    sel.bind(1, pathUtf8);
+    sel.bind(1, path);
     sel.step();
     return sel.columnInt64(0);
 }
 
-void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
-                                 std::vector<std::pair<int64_t, std::wstring>> &subdirsOut, IndexStats &stats,
+void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
+                                 std::vector<std::pair<int64_t, std::string>> &subdirsOut, IndexStats &stats,
                                  const IndexCallbacks &callbacks) {
     int64_t nowMs = nowMillis();
     if (!claims_.tryClaim(dirId, opts_.owner, nowMs)) {
@@ -83,7 +83,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
         auto sel = db_.prepare("SELECT id, path FROM dirs WHERE parent_id=?");
         sel.bind(1, dirId);
         while (sel.step()) {
-            subdirsOut.emplace_back(sel.columnInt64(0), toUtf16(sel.columnText(1)));
+            subdirsOut.emplace_back(sel.columnInt64(0), sel.columnText(1));
         }
     } else {
         std::vector<DirEntry> entries;
@@ -94,14 +94,14 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
             return; // directory vanished / permission denied mid-walk - just skip it
         }
 
-        std::unordered_map<std::wstring, ExistingFile> existing;
+        std::unordered_map<std::string, ExistingFile> existing;
         {
             auto sel = db_.prepare("SELECT id, name, mtime, size, thumb_id FROM files WHERE dir_id=?");
             sel.bind(1, dirId);
             while (sel.step()) {
                 ExistingFile ef;
                 ef.id = sel.columnInt64(0);
-                std::wstring name = toUtf16(sel.columnText(1));
+                std::string name = sel.columnText(1);
                 ef.mtime = sel.columnInt64(2);
                 ef.size = sel.columnInt64(3);
                 ef.thumbId = sel.columnIsNull(4) ? 0 : sel.columnInt64(4);
@@ -126,7 +126,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
                     "INSERT INTO files(dir_id, name, mtime, size, kind, fmt, orientation, state) "
                     "VALUES(?,?,?,?,?,?,1,0)");
                 ins.bind(1, dirId);
-                ins.bind(2, toUtf8(entry.name));
+                ins.bind(2, entry.name);
                 ins.bind(3, entry.mtimeUnix);
                 ins.bind(4, entry.size);
                 ins.bind(5, (int64_t)kindForFormat(fmt));
@@ -195,13 +195,13 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
     if (opts_.renderRaws) pendingSql += " OR state=" + std::to_string((int64_t)FileState::DoneNeedsRender);
     pendingSql += ")";
 
-    std::vector<std::tuple<int64_t, std::wstring, int64_t>> pending; // (fileId, name, existingThumbId)
+    std::vector<std::tuple<int64_t, std::string, int64_t>> pending; // (fileId, name, existingThumbId)
     {
         auto sel = db_.prepare(pendingSql);
         sel.bind(1, dirId);
         while (sel.step()) {
             int64_t existingThumbId = sel.columnIsNull(3) ? 0 : sel.columnInt64(3);
-            pending.emplace_back(sel.columnInt64(0), toUtf16(sel.columnText(1)), existingThumbId);
+            pending.emplace_back(sel.columnInt64(0), sel.columnText(1), existingThumbId);
         }
     }
 
@@ -298,17 +298,17 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
     claims_.release(dirId, opts_.owner);
 }
 
-void Indexer::run(const std::wstring &rootPath, IndexStats &stats, const IndexCallbacks &callbacks) {
+void Indexer::run(const std::string &rootPath, IndexStats &stats, const IndexCallbacks &callbacks) {
     int64_t rootId = upsertDir(rootPath, -1);
 
-    std::vector<std::pair<int64_t, std::wstring>> queue;
+    std::vector<std::pair<int64_t, std::string>> queue;
     queue.emplace_back(rootId, rootPath);
 
     while (!queue.empty()) {
         auto [dirId, dirPath] = queue.back();
         queue.pop_back();
 
-        std::vector<std::pair<int64_t, std::wstring>> subdirs;
+        std::vector<std::pair<int64_t, std::string>> subdirs;
         indexOneDirectory(dirId, dirPath, subdirs, stats, callbacks);
         stats.dirsVisited++;
         if (callbacks.onProgress) callbacks.onProgress(stats);

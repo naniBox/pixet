@@ -37,14 +37,13 @@
 #include "db/Schema.h"
 #include "util/AppPaths.h"
 #include "util/PathUtil.h"
-#include "util/StringUtil.h"
 #include "version.h"
 
 namespace {
 // dirs.path / files.name are UTF-8 in the DB; QFileSystemModel paths need the same
 // backslash-normalized form pixet_core writes, or path-string lookups silently miss.
 QString normalizeForDb(const QString &path) {
-    return QString::fromStdWString(pixet::normalizePath(path.toStdWString()));
+    return QString::fromStdString(pixet::normalizePath(path.toStdString()));
 }
 } // namespace
 
@@ -568,8 +567,8 @@ void MainWindow::loadBookmarks() {
     auto sel = db_->prepare("SELECT id, path, label FROM bookmarks ORDER BY sort");
     while (sel.step()) {
         qint64 id = sel.columnInt64(0);
-        QString path = QString::fromStdWString(pixet::toUtf16(sel.columnText(1)));
-        QString label = QString::fromStdWString(pixet::toUtf16(sel.columnText(2)));
+        QString path = QString::fromStdString(sel.columnText(1));
+        QString label = QString::fromStdString(sel.columnText(2));
         if (label.isEmpty()) label = path;
 
         auto *item = new QListWidgetItem(label, bookmarks_);
@@ -587,8 +586,8 @@ void MainWindow::addBookmark(const QString &path) {
     int64_t nextSort = countSel.columnInt64(0);
 
     auto ins = db_->prepare("INSERT INTO bookmarks(path, label, sort) VALUES(?,?,?)");
-    ins.bind(1, pixet::toUtf8(path.toStdWString()));
-    ins.bind(2, pixet::toUtf8(label.toStdWString()));
+    ins.bind(1, path.toStdString());
+    ins.bind(2, label.toStdString());
     ins.bind(3, nextSort);
     ins.step();
 

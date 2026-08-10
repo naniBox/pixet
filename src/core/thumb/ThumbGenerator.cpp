@@ -262,7 +262,7 @@ ThumbResult generateRawThumb(const std::vector<uint8_t> &fileBytes, int targetLo
 // Unlike the image formats above, takes the path directly rather than a pre-read
 // buffer - see VideoCodec.h for why (video files are too large to read wholesale just
 // to grab a poster frame a few seconds in).
-ThumbResult generateVideoThumb(const std::wstring &filePath, int targetLongEdge, int quality) {
+ThumbResult generateVideoThumb(const std::string &filePath, int targetLongEdge, int quality) {
     ThumbResult result;
 
     RgbImage img;
@@ -295,7 +295,7 @@ ThumbResult generateVideoThumb(const std::wstring &filePath, int targetLongEdge,
 
 } // namespace
 
-ThumbResult generateThumb(const std::wstring &filePath, Format fmt, int targetLongEdge, int quality,
+ThumbResult generateThumb(const std::string &filePath, Format fmt, int targetLongEdge, int quality,
                            bool forceFullRender) {
     // Video is handled before the whole-file-read below (it takes the path directly),
     // and before the format gate too (Video isn't in the Jpeg/Png/Raw list there).

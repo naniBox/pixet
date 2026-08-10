@@ -1,7 +1,6 @@
 #include "ThumbGridModel.h"
 
 #include "db/Database.h"
-#include "util/StringUtil.h"
 
 ThumbGridModel::ThumbGridModel(pixet::Database &db, QObject *parent) : QAbstractListModel(parent), db_(db) {}
 
@@ -17,7 +16,7 @@ void ThumbGridModel::setDirectory(const QString &path) {
     rawPreviewCount_ = 0;
     dirId_ = 0;
 
-    std::string pathUtf8 = pixet::toUtf8(path.toStdWString());
+    std::string pathUtf8 = path.toStdString();
     auto dirSel = db_.prepare("SELECT id FROM dirs WHERE path=?");
     dirSel.bind(1, pathUtf8);
     if (dirSel.step()) {
@@ -28,7 +27,7 @@ void ThumbGridModel::setDirectory(const QString &path) {
         while (sel.step()) {
             Row row;
             row.id = sel.columnInt64(0);
-            row.name = QString::fromStdWString(pixet::toUtf16(sel.columnText(1)));
+            row.name = QString::fromStdString(sel.columnText(1));
             row.fmt = (pixet::Format)sel.columnInt64(2);
             row.state = (pixet::FileState)sel.columnInt64(3);
             row.thumbId = sel.columnIsNull(4) ? 0 : sel.columnInt64(4);

@@ -13,15 +13,13 @@ add_library(pixet_core STATIC
     version.cpp
 
     util/StringUtil.h
-    util/StringUtil.cpp
     util/AppPaths.h
-    util/AppPaths.cpp
     util/Time.h
     util/Time.cpp
     util/FileIO.h
-    util/FileIO.cpp
     util/PathUtil.h
-    util/PathUtil.cpp
+    util/ProcessId.h
+    util/ProcessId.cpp
 
     db/Schema.h
     db/Schema.cpp
@@ -29,7 +27,6 @@ add_library(pixet_core STATIC
     db/Database.cpp
 
     scan/DirWalker.h
-    scan/DirWalker.cpp
     scan/Claims.h
     scan/Claims.cpp
     scan/Indexer.h
@@ -62,6 +59,27 @@ add_library(pixet_core STATIC
     thumb/ThumbGenerator.h
     thumb/ThumbGenerator.cpp
 )
+
+# util/{StringUtil,FileIO,PathUtil,AppPaths}.h and scan/DirWalker.h declare a portable
+# (UTF-8 std::string) interface; only their *_win.cpp implementations exist so far -
+# see devlog's P5 prep entry. A macOS build needs the *_mac.cpp counterparts (POSIX
+# APIs directly on the UTF-8 string - no wide-char conversion needed there at all,
+# unlike Windows) added to an equivalent elseif(APPLE) branch below.
+if(WIN32)
+    target_sources(pixet_core PRIVATE
+        util/StringUtil_win.cpp
+        util/FileIO_win.cpp
+        util/PathUtil_win.cpp
+        util/AppPaths_win.cpp
+        scan/DirWalker_win.cpp
+    )
+else()
+    message(FATAL_ERROR
+        "pixet_core has no non-Windows implementation yet for: "
+        "util/StringUtil (Windows-only helper, likely just unneeded elsewhere), "
+        "util/FileIO, util/PathUtil, util/AppPaths, scan/DirWalker. "
+        "See devlog's P5 prep entry for what each needs to do.")
+endif()
 
 target_include_directories(pixet_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(pixet_core PUBLIC ${FFMPEG_LIBRARY_DIRS})

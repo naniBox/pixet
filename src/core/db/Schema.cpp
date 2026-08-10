@@ -1,34 +1,40 @@
 #include "Schema.h"
 
 #include <algorithm>
-#include <cwctype>
+#include <cctype>
 
 namespace pixet {
 
 namespace {
-std::wstring lowerExt(const std::wstring &filename) {
-    size_t dot = filename.find_last_of(L'.');
-    if (dot == std::wstring::npos || dot == filename.size() - 1) return {};
-    std::wstring ext = filename.substr(dot + 1);
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return (wchar_t)std::towlower(c); });
+// Extensions are always plain ASCII in practice (jpg, cr2, heic, ...) - casting to
+// unsigned char before std::tolower() is the standard-safe way to call it on a UTF-8
+// byte sequence (a raw signed char with the high bit set is undefined behavior for
+// <cctype> functions otherwise); any actual multi-byte UTF-8 sequence here just won't
+// match any of the ASCII comparisons below, correctly falling through to Unknown.
+std::string lowerExt(const std::string &filename) {
+    size_t dot = filename.find_last_of('.');
+    if (dot == std::string::npos || dot == filename.size() - 1) return {};
+    std::string ext = filename.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                    [](unsigned char c) { return (char)std::tolower(c); });
     return ext;
 }
 } // namespace
 
-Format classifyFormat(const std::wstring &filename) {
-    std::wstring ext = lowerExt(filename);
+Format classifyFormat(const std::string &filename) {
+    std::string ext = lowerExt(filename);
     if (ext.empty()) return Format::Unknown;
 
-    if (ext == L"jpg" || ext == L"jpeg" || ext == L"jpe") return Format::Jpeg;
-    if (ext == L"png") return Format::Png;
-    if (ext == L"heic" || ext == L"heif") return Format::Heic;
-    if (ext == L"cr2" || ext == L"cr3" || ext == L"nef" || ext == L"arw" || ext == L"dng" || ext == L"orf" ||
-        ext == L"rw2" || ext == L"raf" || ext == L"pef" || ext == L"srw")
+    if (ext == "jpg" || ext == "jpeg" || ext == "jpe") return Format::Jpeg;
+    if (ext == "png") return Format::Png;
+    if (ext == "heic" || ext == "heif") return Format::Heic;
+    if (ext == "cr2" || ext == "cr3" || ext == "nef" || ext == "arw" || ext == "dng" || ext == "orf" ||
+        ext == "rw2" || ext == "raf" || ext == "pef" || ext == "srw")
         return Format::Raw;
-    if (ext == L"tif" || ext == L"tiff") return Format::Tiff;
-    if (ext == L"webp") return Format::Webp;
-    if (ext == L"avif") return Format::Avif;
-    if (ext == L"mp4" || ext == L"mov" || ext == L"m4v" || ext == L"avi" || ext == L"mkv" || ext == L"webm")
+    if (ext == "tif" || ext == "tiff") return Format::Tiff;
+    if (ext == "webp") return Format::Webp;
+    if (ext == "avif") return Format::Avif;
+    if (ext == "mp4" || ext == "mov" || ext == "m4v" || ext == "avi" || ext == "mkv" || ext == "webm")
         return Format::Video;
 
     return Format::Unknown;

@@ -1,8 +1,6 @@
 #include "TestHarness.h"
 #include "TestPaths.h"
 
-#include <Windows.h>
-
 #include "db/Schema.h"
 #include "decode/JpegCodec.h"
 #include "thumb/ThumbGenerator.h"
@@ -10,13 +8,6 @@
 using namespace pixet;
 
 namespace {
-
-void writeFile(const std::wstring &path, const std::vector<uint8_t> &data) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    DWORD written = 0;
-    WriteFile(h, data.data(), (DWORD)data.size(), &written, nullptr);
-    CloseHandle(h);
-}
 
 std::vector<uint8_t> makeGradientJpeg(int w, int h, int quality) {
     RgbImage img;
@@ -44,18 +35,18 @@ PIXET_TEST(ThumbGeneratorUnsupportedFormatSkipsDecode) {
     // Format::Unknown, not a specific format: every real format now has a decoder
     // (see test_{png,raw,video,tiff,webp,avif,heif}codec.cpp) - Unknown is the only
     // value that's permanently, correctly Unsupported by definition.
-    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.xyz", Format::Unknown);
+    ThumbResult result = generateThumb("Z:\\does\\not\\exist.xyz", Format::Unknown);
     PIXET_CHECK(result.tier == ThumbTier::Unsupported);
 }
 
 PIXET_TEST(ThumbGeneratorFailsOnMissingFile) {
-    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.jpg", Format::Jpeg);
+    ThumbResult result = generateThumb("Z:\\does\\not\\exist.jpg", Format::Jpeg);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }
 
 PIXET_TEST(ThumbGeneratorDecodesAndDownscalesLargeJpeg) {
-    auto path = testTempPath(L"thumbgen_large.jpg");
-    writeFile(path, makeGradientJpeg(1600, 1200, 90));
+    auto path = testTempPath("thumbgen_large.jpg");
+    writeTestFile(path, makeGradientJpeg(1600, 1200, 90));
 
     ThumbResult result = generateThumb(path, Format::Jpeg, 320, 85);
     PIXET_CHECK(result.tier == ThumbTier::Decoded); // no EXIF thumb present -> main-image path
@@ -80,8 +71,8 @@ PIXET_TEST(ThumbGeneratorDecodesAndDownscalesLargeJpeg) {
 }
 
 PIXET_TEST(ThumbGeneratorDoesNotUpscaleSmallJpeg) {
-    auto path = testTempPath(L"thumbgen_small.jpg");
-    writeFile(path, makeGradientJpeg(100, 80, 90));
+    auto path = testTempPath("thumbgen_small.jpg");
+    writeTestFile(path, makeGradientJpeg(100, 80, 90));
 
     ThumbResult result = generateThumb(path, Format::Jpeg, 320, 85);
     PIXET_CHECK(result.tier == ThumbTier::Decoded);

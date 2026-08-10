@@ -7,7 +7,7 @@
 using namespace pixet;
 
 PIXET_TEST(SchemaCreatesExpectedTables) {
-    Database db(testTempPath(L"schema_index.db"), testTempPath(L"schema_thumbs.db"));
+    Database db(testTempPath("schema_index.db"), testTempPath("schema_thumbs.db"));
 
     for (const char *table : {"dirs", "files", "claims", "journal", "bookmarks"}) {
         auto stmt = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?");
@@ -26,23 +26,23 @@ PIXET_TEST(SchemaCreatesExpectedTables) {
 
 PIXET_TEST(SchemaIsIdempotent) {
     // Opening the same DB twice must not fail (CREATE TABLE IF NOT EXISTS).
-    auto indexPath = testTempPath(L"schema_idempotent_index.db");
-    auto thumbsPath = testTempPath(L"schema_idempotent_thumbs.db");
+    auto indexPath = testTempPath("schema_idempotent_index.db");
+    auto thumbsPath = testTempPath("schema_idempotent_thumbs.db");
     { Database db1(indexPath, thumbsPath); }
     { Database db2(indexPath, thumbsPath); }
 }
 
 PIXET_TEST(ClassifyFormatMapsExtensions) {
-    PIXET_CHECK(classifyFormat(L"IMG_0001.JPG") == Format::Jpeg);
-    PIXET_CHECK(classifyFormat(L"photo.jpeg") == Format::Jpeg);
-    PIXET_CHECK(classifyFormat(L"scan.png") == Format::Png);
-    PIXET_CHECK(classifyFormat(L"phone.HEIC") == Format::Heic);
-    PIXET_CHECK(classifyFormat(L"DSC001.CR2") == Format::Raw);
-    PIXET_CHECK(classifyFormat(L"scan.tiff") == Format::Tiff);
-    PIXET_CHECK(classifyFormat(L"clip.mov") == Format::Video);
+    PIXET_CHECK(classifyFormat("IMG_0001.JPG") == Format::Jpeg);
+    PIXET_CHECK(classifyFormat("photo.jpeg") == Format::Jpeg);
+    PIXET_CHECK(classifyFormat("scan.png") == Format::Png);
+    PIXET_CHECK(classifyFormat("phone.HEIC") == Format::Heic);
+    PIXET_CHECK(classifyFormat("DSC001.CR2") == Format::Raw);
+    PIXET_CHECK(classifyFormat("scan.tiff") == Format::Tiff);
+    PIXET_CHECK(classifyFormat("clip.mov") == Format::Video);
     PIXET_CHECK(kindForFormat(Format::Video) == Kind::Video);
     PIXET_CHECK(kindForFormat(Format::Jpeg) == Kind::Image);
-    PIXET_CHECK(classifyFormat(L"Thumbs.db") == Format::Unknown);
-    PIXET_CHECK(classifyFormat(L"notes.txt") == Format::Unknown);
-    PIXET_CHECK(classifyFormat(L"no_extension") == Format::Unknown);
+    PIXET_CHECK(classifyFormat("Thumbs.db") == Format::Unknown);
+    PIXET_CHECK(classifyFormat("notes.txt") == Format::Unknown);
+    PIXET_CHECK(classifyFormat("no_extension") == Format::Unknown);
 }

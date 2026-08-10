@@ -1,8 +1,6 @@
 #include "TestHarness.h"
 #include "TestPaths.h"
 
-#include <Windows.h>
-
 #include <webp/encode.h>
 
 #include "db/Schema.h"
@@ -13,13 +11,6 @@
 using namespace pixet;
 
 namespace {
-
-void writeFile(const std::wstring &path, const std::vector<uint8_t> &data) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    DWORD written = 0;
-    WriteFile(h, data.data(), (DWORD)data.size(), &written, nullptr);
-    CloseHandle(h);
-}
 
 RgbImage makeGradientImage(int w, int h) {
     RgbImage img;
@@ -79,8 +70,8 @@ PIXET_TEST(ReadWebpDimensionsMatchesSource) {
 }
 
 PIXET_TEST(ThumbGeneratorDecodesAndDownscalesLargeWebp) {
-    auto path = testTempPath(L"thumbgen_large.webp");
-    writeFile(path, encodeWebpForTest(makeGradientImage(1600, 1200)));
+    auto path = testTempPath("thumbgen_large.webp");
+    writeTestFile(path, encodeWebpForTest(makeGradientImage(1600, 1200)));
 
     ThumbResult result = generateThumb(path, Format::Webp, 320, 85);
     PIXET_CHECK(result.tier == ThumbTier::Decoded);
@@ -101,8 +92,8 @@ PIXET_TEST(ThumbGeneratorDecodesAndDownscalesLargeWebp) {
 }
 
 PIXET_TEST(ThumbGeneratorDoesNotUpscaleSmallWebp) {
-    auto path = testTempPath(L"thumbgen_small.webp");
-    writeFile(path, encodeWebpForTest(makeGradientImage(100, 80)));
+    auto path = testTempPath("thumbgen_small.webp");
+    writeTestFile(path, encodeWebpForTest(makeGradientImage(100, 80)));
 
     ThumbResult result = generateThumb(path, Format::Webp, 320, 85);
     PIXET_CHECK(result.tier == ThumbTier::Decoded);
@@ -113,6 +104,6 @@ PIXET_TEST(ThumbGeneratorDoesNotUpscaleSmallWebp) {
 }
 
 PIXET_TEST(ThumbGeneratorFailsOnMissingWebpFile) {
-    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.webp", Format::Webp);
+    ThumbResult result = generateThumb("Z:\\does\\not\\exist.webp", Format::Webp);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

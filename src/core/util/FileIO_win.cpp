@@ -4,10 +4,13 @@
 
 #include <algorithm>
 
+#include "StringUtil.h"
+
 namespace pixet {
 
-bool readWholeFile(const std::wstring &path, std::vector<uint8_t> &out) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+bool readWholeFile(const std::string &path, std::vector<uint8_t> &out) {
+    std::wstring widePath = toUtf16(path);
+    HANDLE h = CreateFileW(widePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                             FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
 

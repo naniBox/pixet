@@ -1,14 +1,12 @@
 #include "RawRenderer.h"
 
-#include <Windows.h>
-
 #include <QTimer>
 
 #include "db/Database.h"
 #include "db/Schema.h"
 #include "scan/Indexer.h"
 #include "util/AppPaths.h"
-#include "util/StringUtil.h"
+#include "util/ProcessId.h"
 
 namespace {
 // Gentler than BackgroundReconciler's already-gentle per-directory pacing - a full RAW
@@ -54,16 +52,16 @@ void RawRenderer::renderNext() {
     }
 
     int64_t dirId = 0;
-    std::wstring dirPath;
+    std::string dirPath;
 
     if (!priorityDir_.isEmpty()) {
         auto sel = db_->prepare("SELECT dirs.id, dirs.path FROM files JOIN dirs ON files.dir_id = dirs.id "
                                  "WHERE files.state=? AND dirs.path=? LIMIT 1");
         sel.bind(1, (int64_t)pixet::FileState::DoneNeedsRender);
-        sel.bind(2, pixet::toUtf8(priorityDir_.toStdWString()));
+        sel.bind(2, priorityDir_.toStdString());
         if (sel.step()) {
             dirId = sel.columnInt64(0);
-            dirPath = pixet::toUtf16(sel.columnText(1));
+            dirPath = sel.columnText(1);
         } else {
             priorityDir_.clear(); // nothing left there - stop favoring it, resume the normal rotation below
         }
@@ -79,7 +77,7 @@ void RawRenderer::renderNext() {
         sel.bind(1, (int64_t)pixet::FileState::DoneNeedsRender);
         if (sel.step()) {
             dirId = sel.columnInt64(0);
-            dirPath = pixet::toUtf16(sel.columnText(1));
+            dirPath = sel.columnText(1);
         }
     }
 
@@ -95,7 +93,7 @@ void RawRenderer::renderNext() {
     // BackgroundReconciler ("gui:bg:pid:...") - if either is actively working this
     // same directory right now, Indexer's own claim check just skips it for this
     // round rather than contending; the next round tries again.
-    opts.owner = "gui:rawrender:pid:" + std::to_string(GetCurrentProcessId());
+    opts.owner = "gui:rawrender:pid:" + std::to_string(pixet::currentProcessId());
 
     pixet::Indexer indexer(*db_, opts);
     pixet::IndexStats stats;
@@ -105,7 +103,7 @@ void RawRenderer::renderNext() {
     // watch progress on a large RAW folder rather than wait for it in one lump -
     // Indexer flushes progress per file during a renderRaws pass specifically (see
     // Indexer.cpp) rather than its usual batch-of-64, so this fires once per file.
-    QString dirPathQt = QString::fromStdWString(dirPath);
+    QString dirPathQt = QString::fromStdString(dirPath);
     pixet::IndexCallbacks callbacks;
     callbacks.onProgress = [this, &dirPathQt](const pixet::IndexStats &) { emit directoryChanged(dirPathQt); };
 

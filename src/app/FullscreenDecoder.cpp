@@ -35,7 +35,7 @@ void FullscreenDecoder::processOne() {
 
     QImage result;
     pixet::RgbImage img;
-    if (pixet::decodeForDisplay(req.filePath.toStdWString(), (pixet::Format)req.fmt, req.targetLongEdge, img)) {
+    if (pixet::decodeForDisplay(req.filePath.toStdString(), (pixet::Format)req.fmt, req.targetLongEdge, img)) {
         result = rgbImageToQImage(img);
     }
 

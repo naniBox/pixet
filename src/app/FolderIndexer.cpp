@@ -1,10 +1,9 @@
 #include "FolderIndexer.h"
 
-#include <Windows.h>
-
 #include "db/Database.h"
 #include "scan/Indexer.h"
 #include "util/AppPaths.h"
+#include "util/ProcessId.h"
 
 FolderIndexer::FolderIndexer(QObject *parent) : QObject(parent) {
     moveToThread(&thread_);
@@ -25,16 +24,16 @@ void FolderIndexer::indexFolder(QString path, bool force, bool forceRethumbnail)
     opts.recursive = false;
     opts.forceRescan = force;
     opts.forceRethumbnail = forceRethumbnail;
-    opts.owner = "gui:pid:" + std::to_string(GetCurrentProcessId());
+    opts.owner = "gui:pid:" + std::to_string(pixet::currentProcessId());
 
     pixet::Indexer indexer(*db_, opts);
     pixet::IndexStats stats;
 
     pixet::IndexCallbacks callbacks;
-    callbacks.onFilesListed = [this, path](int64_t, const std::wstring &) { emit filesListed(path); };
+    callbacks.onFilesListed = [this, path](int64_t, const std::string &) { emit filesListed(path); };
     callbacks.onProgress = [this, path](const pixet::IndexStats &) { emit thumbsProgress(path); };
 
-    indexer.run(path.toStdWString(), stats, callbacks);
+    indexer.run(path.toStdString(), stats, callbacks);
 
     emit finished(path);
 }

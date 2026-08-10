@@ -41,7 +41,8 @@ struct ThumbResult {
 // rendered from the actual sensor data, which is what makes it worth an explicit
 // opt-in "no really, do the expensive real render" escape hatch (see
 // FileState::DoneNeedsRender and IndexOptions::renderRaws).
-ThumbResult generateThumb(const std::wstring &filePath, Format fmt, int targetLongEdge = 320, int quality = 85,
+// `filePath` is UTF-8.
+ThumbResult generateThumb(const std::string &filePath, Format fmt, int targetLongEdge = 320, int quality = 85,
                            bool forceFullRender = false);
 
 } // namespace pixet

@@ -1,5 +1,3 @@
-#include <Windows.h>
-
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -8,7 +6,7 @@
 #include "scan/Indexer.h"
 #include "util/AppPaths.h"
 #include "util/PathUtil.h"
-#include "util/StringUtil.h"
+#include "util/ProcessId.h"
 #include "version.h"
 
 using namespace pixet;
@@ -45,7 +43,7 @@ int main(int argc, char *argv[]) {
     }
 
     IndexOptions opts;
-    opts.owner = "pid:" + std::to_string(GetCurrentProcessId());
+    opts.owner = "pid:" + std::to_string(currentProcessId());
     std::string rootArg = argv[1];
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -54,10 +52,10 @@ int main(int argc, char *argv[]) {
         if (arg == "--render-raws") opts.renderRaws = true;
     }
 
-    std::wstring rootPath = normalizePath(toUtf16(rootArg));
+    std::string rootPath = normalizePath(rootArg);
     std::printf("pixet-index %s\n", pixet::version());
     std::printf("root:    %s\n", rootArg.c_str());
-    std::printf("cache:   %s\n", toUtf8(appDataDir()).c_str());
+    std::printf("cache:   %s\n", appDataDir().c_str());
     std::printf("options: recursive=%s force=%s render-raws=%s\n\n", opts.recursive ? "yes" : "no",
                  opts.forceRescan ? "yes" : "no", opts.renderRaws ? "yes" : "no");
 

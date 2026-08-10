@@ -1,8 +1,6 @@
 #include "TestHarness.h"
 #include "TestPaths.h"
 
-#include <Windows.h>
-
 #include <cstring>
 
 #include <tiffio.h>
@@ -15,13 +13,6 @@
 using namespace pixet;
 
 namespace {
-
-void writeFile(const std::wstring &path, const std::vector<uint8_t> &data) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    DWORD written = 0;
-    WriteFile(h, data.data(), (DWORD)data.size(), &written, nullptr);
-    CloseHandle(h);
-}
 
 RgbImage makeGradientImage(int w, int h) {
     RgbImage img;
@@ -129,8 +120,8 @@ PIXET_TEST(ReadTiffDimensionsMatchesSource) {
 }
 
 PIXET_TEST(ThumbGeneratorDecodesAndDownscalesLargeTiff) {
-    auto path = testTempPath(L"thumbgen_large.tiff");
-    writeFile(path, encodeTiffForTest(makeGradientImage(1600, 1200)));
+    auto path = testTempPath("thumbgen_large.tiff");
+    writeTestFile(path, encodeTiffForTest(makeGradientImage(1600, 1200)));
 
     ThumbResult result = generateThumb(path, Format::Tiff, 320, 85);
     PIXET_CHECK(result.tier == ThumbTier::Decoded);
@@ -151,8 +142,8 @@ PIXET_TEST(ThumbGeneratorDecodesAndDownscalesLargeTiff) {
 }
 
 PIXET_TEST(ThumbGeneratorDoesNotUpscaleSmallTiff) {
-    auto path = testTempPath(L"thumbgen_small.tiff");
-    writeFile(path, encodeTiffForTest(makeGradientImage(100, 80)));
+    auto path = testTempPath("thumbgen_small.tiff");
+    writeTestFile(path, encodeTiffForTest(makeGradientImage(100, 80)));
 
     ThumbResult result = generateThumb(path, Format::Tiff, 320, 85);
     PIXET_CHECK(result.tier == ThumbTier::Decoded);
@@ -163,6 +154,6 @@ PIXET_TEST(ThumbGeneratorDoesNotUpscaleSmallTiff) {
 }
 
 PIXET_TEST(ThumbGeneratorFailsOnMissingTiffFile) {
-    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.tiff", Format::Tiff);
+    ThumbResult result = generateThumb("Z:\\does\\not\\exist.tiff", Format::Tiff);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

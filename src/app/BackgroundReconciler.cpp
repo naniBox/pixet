@@ -1,13 +1,11 @@
 #include "BackgroundReconciler.h"
 
-#include <Windows.h>
-
 #include <QTimer>
 
 #include "db/Database.h"
 #include "scan/Indexer.h"
 #include "util/AppPaths.h"
-#include "util/StringUtil.h"
+#include "util/ProcessId.h"
 
 namespace {
 // Deliberately gentle - this is background hygiene, not a race to finish. A directory
@@ -49,7 +47,7 @@ void BackgroundReconciler::loadDirList() {
     cursor_ = 0;
     auto sel = db_->prepare("SELECT id, path FROM dirs ORDER BY id");
     while (sel.step()) {
-        pending_.emplace_back(sel.columnInt64(0), pixet::toUtf16(sel.columnText(1)));
+        pending_.emplace_back(sel.columnInt64(0), sel.columnText(1));
     }
 }
 
@@ -73,7 +71,7 @@ void BackgroundReconciler::sweepNext() {
     // which is exactly the drift this sweep exists to catch.
     opts.forceRescan = true;
     opts.forceRethumbnail = false; // only re-thumbnail files whose (mtime, size) actually changed
-    opts.owner = "gui:bg:pid:" + std::to_string(GetCurrentProcessId());
+    opts.owner = "gui:bg:pid:" + std::to_string(pixet::currentProcessId());
 
     pixet::Indexer indexer(*db_, opts);
     pixet::IndexStats stats;
@@ -81,7 +79,7 @@ void BackgroundReconciler::sweepNext() {
 
     bool changed = stats.filesRemoved > 0 || stats.thumbsEmbedded > 0 || stats.thumbsDecoded > 0 ||
                    stats.thumbsUnsupported > 0 || stats.thumbsFailed > 0;
-    if (changed) emit directoryChanged(QString::fromStdWString(dirPath));
+    if (changed) emit directoryChanged(QString::fromStdString(dirPath));
 
     timer_->start(kPerDirectoryDelayMs);
 }

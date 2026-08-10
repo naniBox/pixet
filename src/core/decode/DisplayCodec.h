@@ -7,11 +7,10 @@
 
 namespace pixet {
 
-// Decodes any supported still-image format to an RgbImage for on-screen display (the
-// side preview pane, the fullscreen viewer) - as opposed to ThumbGenerator's job
-// (thumbnail generation for storage, which also tracks tier/native dimensions and
-// re-encodes to JPEG for thumbs.db). No Video - poster-frame extraction belongs to
-// ThumbGenerator's indexing path, not a live "decode this for display" call.
+// Decodes any supported format (including Video, via its poster frame) to an RgbImage
+// for on-screen display (the side preview pane, the fullscreen viewer) - as opposed to
+// ThumbGenerator's job (thumbnail generation for storage, which also tracks
+// tier/native dimensions and re-encodes to JPEG for thumbs.db). `filePath` is UTF-8.
 //
 // targetLongEdge > 0 ("fit" mode - the side preview pane, or the fullscreen viewer
 // before a zoom) uses the same embedded-preview-first ladder ThumbGenerator's
@@ -24,7 +23,7 @@ namespace pixet {
 //
 // Applies orientation explicitly for JPEG (the only format whose decoder doesn't
 // already auto-apply it - see JpegCodec.h vs. RawCodec.h/TiffCodec.h/HeifCodec.h).
-// Returns false for Video/Unknown or any decode failure.
-bool decodeForDisplay(const std::wstring &filePath, Format fmt, int targetLongEdge, RgbImage &out);
+// Returns false for Unknown or any decode failure.
+bool decodeForDisplay(const std::string &filePath, Format fmt, int targetLongEdge, RgbImage &out);
 
 } // namespace pixet

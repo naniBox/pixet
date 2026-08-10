@@ -36,6 +36,6 @@ PIXET_TEST(ThumbGeneratorHeicIsNoLongerUnsupported) {
     // Missing file, not garbage bytes - if Heic were still gated as Unsupported, this
     // would come back Unsupported instead of Failed. Confirms Format::Heic actually
     // reaches the HEIF decode path now - the last format in the P4 priority list.
-    ThumbResult result = generateThumb(L"Z:\\does\\not\\exist.heic", Format::Heic);
+    ThumbResult result = generateThumb("Z:\\does\\not\\exist.heic", Format::Heic);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

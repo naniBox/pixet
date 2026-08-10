@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -52,7 +53,7 @@ private:
     std::unique_ptr<pixet::Database> db_;
     QTimer *timer_ = nullptr;
 
-    std::vector<std::pair<int64_t, std::wstring>> pending_; // dirs left in the current cycle
+    std::vector<std::pair<int64_t, std::string>> pending_; // dirs left in the current cycle
     size_t cursor_ = 0;
 
     void loadDirList();

@@ -58,7 +58,7 @@ struct IndexCallbacks {
     // or all thumbnails are still pending. Lets a GUI show filenames immediately
     // instead of waiting for Pass B to finish. Also fires for an already-fresh
     // directory (nothing to do), so callers don't need to special-case that.
-    std::function<void(int64_t dirId, const std::wstring &dirPath)> onFilesListed;
+    std::function<void(int64_t dirId, const std::string &dirPath)> onFilesListed;
 
     // Fired after each Pass B batch commits (a handful of thumbnails just became
     // available) and once per directory visited overall. A GUI can use this to pull
@@ -74,16 +74,16 @@ class Indexer {
 public:
     Indexer(Database &db, IndexOptions opts);
 
-    void run(const std::wstring &rootPath, IndexStats &stats, const IndexCallbacks &callbacks = {});
+    void run(const std::string &rootPath, IndexStats &stats, const IndexCallbacks &callbacks = {});
 
 private:
     Database &db_;
     IndexOptions opts_;
     ClaimManager claims_;
 
-    int64_t upsertDir(const std::wstring &path, int64_t parentId);
-    void indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
-                            std::vector<std::pair<int64_t, std::wstring>> &subdirsOut, IndexStats &stats,
+    int64_t upsertDir(const std::string &path, int64_t parentId);
+    void indexOneDirectory(int64_t dirId, const std::string &dirPath,
+                            std::vector<std::pair<int64_t, std::string>> &subdirsOut, IndexStats &stats,
                             const IndexCallbacks &callbacks);
 };
 

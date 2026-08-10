@@ -21,10 +21,10 @@ int64_t fileTimeToUnix(const FILETIME &ft) {
 
 } // namespace
 
-std::vector<DirEntry> listDir(const std::wstring &path) {
+std::vector<DirEntry> listDir(const std::string &path) {
     std::vector<DirEntry> entries;
 
-    std::wstring pattern = path;
+    std::wstring pattern = toUtf16(path);
     if (!pattern.empty() && pattern.back() != L'\\') pattern += L'\\';
     pattern += L'*';
 
@@ -33,7 +33,7 @@ std::vector<DirEntry> listDir(const std::wstring &path) {
                                  FIND_FIRST_EX_LARGE_FETCH);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD err = GetLastError();
-        throw std::runtime_error("listDir failed (" + std::to_string(err) + "): " + toUtf8(path));
+        throw std::runtime_error("listDir failed (" + std::to_string(err) + "): " + path);
     }
 
     do {
@@ -41,7 +41,7 @@ std::vector<DirEntry> listDir(const std::wstring &path) {
         if (name == L"." || name == L"..") continue;
 
         DirEntry entry;
-        entry.name = name;
+        entry.name = toUtf8(name);
         entry.isDir = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
         entry.mtimeUnix = fileTimeToUnix(findData.ftLastWriteTime);
         if (!entry.isDir) {
@@ -57,10 +57,11 @@ std::vector<DirEntry> listDir(const std::wstring &path) {
     return entries;
 }
 
-int64_t dirMtimeUnix(const std::wstring &path) {
+int64_t dirMtimeUnix(const std::string &path) {
+    std::wstring wide = toUtf16(path);
     WIN32_FILE_ATTRIBUTE_DATA data;
-    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
-        throw std::runtime_error("dirMtimeUnix failed: " + toUtf8(path));
+    if (!GetFileAttributesExW(wide.c_str(), GetFileExInfoStandard, &data)) {
+        throw std::runtime_error("dirMtimeUnix failed: " + path);
     }
     return fileTimeToUnix(data.ftLastWriteTime);
 }
