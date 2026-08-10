@@ -5,6 +5,56 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-10 — desktop — Preferences pane: video player, thumbnail size, re-index, and a database reset
+
+New `Tools > Preferences...` dialog (`src/app/Preferences.h/.cpp` for storage,
+`PreferencesDialog.h/.cpp` for the UI), backed by the same `QSettings("pixet",
+"pixet")` store window/layout state already uses.
+
+**Default video player** - system default or a custom override. Wired all the way
+through: double-clicking a video in the grid now checks `prefs::useSystemVideoPlayer()`
+and either `QDesktopServices::openUrl()`s it (also the fallback if "Custom" is
+selected with no path ever set - silently doing nothing on activation would look like
+the double-click didn't register) or `QProcess::startDetached()`s the configured
+player. Non-video activation is unchanged (opens the fullscreen viewer).
+
+**Grid thumbnail size** - a `QSpinBox` (80-400px). Live-applies on OK, not just on
+next launch: `ThumbLoader` and `ThumbGridView`'s `kThumbIconSize` constant became
+`prefs::thumbnailIconSize()` everywhere it was referenced (7 call sites across 3
+files), and a new `ThumbGridView::applyIconSizeChange()` resets `lastFitWidth_`
+before re-running `updateGridSize()` - without that reset, its jitter guard (see the
+class's long comment on `updateGridSize()`) would see an unchanged viewport width and
+wrongly skip recomputing, since it has no way to know the *cell* size is what
+changed, not the width. `IndexOptions::targetLongEdge` (what new thumbnails actually
+get generated/stored at) now derives from the same preference too
+(`prefs::thumbnailTargetLongEdge()` = `max(320, iconSize*2)`, generous HiDPI
+headroom) - threaded into `FolderIndexer`, `BackgroundReconciler`, and `RawRenderer`,
+which previously all silently left this at the 320 struct default.
+
+**"Re-index Known Folders"** - `BackgroundReconciler::triggerFullSweepNow()` (new
+public slot): reloads its directory list and jumps its own timer to 0, same trick as
+`RawRenderer::prioritize()`. Reuses the sweep's existing forceRescan-only behavior
+(never touches new folders, never force-re-renders) rather than adding a second,
+parallel implementation of "walk every known directory."
+
+**"Reset Index"** (Danger Zone, red button, `Yes`/`No` confirmation defaulting to
+`No`) - deletes every scanned folder/file/thumbnail row (`dirs`, `files`, `claims`,
+`journal`, `thumbs.thumbs`) and `VACUUM`s both schemas to actually reclaim disk space,
+deliberately leaving `bookmarks` alone (user-curated, not scan-derived - a rescan
+can't regenerate them). Runs synchronously on `MainWindow::db_` under a wait cursor -
+a rare, deliberate, already-confirmed action, not worth a background worker for -
+then force-rescans whatever folder is on screen so the grid doesn't just go empty
+until a manual Refresh.
+
+Also: fullscreen viewer's Z key now toggles fit<->1:1 zoom, same as a click but
+centered on the image's middle instead of a click point (`toggleZoomKeyboard()` in
+`FullscreenViewer`) - same prefetch/upscale-fallback path either way.
+
+Build + full test suite (47/47) clean. Not live-clicked through this round - the user
+is testing the video-player wiring directly.
+
+---
+
 ## 2026-08-10 — desktop — P5 prep: audited and fixed every macOS portability blocker reachable from this machine
 
 Nothing to actually build/test for macOS from a Windows box, but everything that
