@@ -5,6 +5,235 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-10 — desktop — Fixed "no preview" for video: DisplayCodec never handled it, and 22 real videos were stuck on stale state from before video support existed
+
+User: "no preview" persists for movies. Two independent bugs stacked on the same files.
+
+**Bug 1 - `decodeForDisplay()` explicitly excluded Video.** It bailed on `fmt ==
+Format::Video` before ever reaching a switch case, so the side preview pane (and,
+incidentally, the fullscreen viewer, gated by the same `hasFullscreenDecoder()`) never
+even tried. Added a Video branch calling `decodeVideoPosterFrame()` directly (same
+function `ThumbGenerator::generateVideoThumb()` already uses for the grid thumbnail) -
+handled *before* the generic `readWholeFile()` call the other formats share, since video
+files are too large to read wholesale just to seek a few seconds in (see
+`decodeVideoPosterFrame`'s own doc comment). `targetLongEdge > 0` downscales via
+`resizeBoxDownscale()`; `<= 0` (fullscreen zoom) keeps native resolution - there's no
+embedded-preview tier to prefer for video, it's already just the one extracted frame.
+Also dropped Video from `FullscreenViewer::hasFullscreenDecoder()`'s exclusion list,
+since it's now got exactly as much of a decoder as any image format - fullscreen used to
+just blow up the small cached grid thumbnail for video, same blurry-thumbnail problem as
+today's earlier JPEG fix, for the same reason.
+
+**Bug 2 - real videos found stuck at `FileState::Unsupported`.** Queried the real
+`index.db` for the folder the user was looking at
+(`InstantUpload\Camera\2026\07`) - all 22 real `.mp4` files (Pixel phone recordings) sat
+at `state=3` (Unsupported), `width/height/thumb_id` all NULL. Confirmed via a scratch
+copy of one file through `pixet-index` that today's decoder handles it fine (`1 decoded,
+0 unsupported, 0 failed`) - so this wasn't a current decode failure, it was the exact
+same shape of bug as the RAW `DoneNeedsRender` migration above: these files were scanned
+by a build from before video support existed (or worked), and Pass B only ever looks at
+`state=New` rows, so `Unsupported` is a dead end forever once hit, regardless of
+whether the format gains real support later. Checked whether this could still happen
+today for a genuinely-unsupported format: `ThumbGenerator`'s dispatch handles every
+`Format` value from 1-8 explicitly now (Video before the switch, the other seven in it),
+and `Format::Unknown` files never even get a `files` row (Indexer's Pass A skips them) -
+so `FileState::Unsupported` can no longer be produced by anything reachable today,
+making it safe to treat as unconditionally stale. Extended the same migration mechanism
+(`Database::runMigrations()`, now version 2): `UPDATE files SET state=New WHERE
+state=Unsupported`, format-agnostic - covers this class of bug for good, not just video.
+
+Live-verified against the real folder: after the migration, all 22 mp4s got real poster
+frames in the grid (previously blank), correct dimensions in the status bar (previously
+blank, e.g. 3840×2160), a working side preview (confirmed by alternating with a visually
+distinct photo first, since two of the videos happen to look nearly identical to their
+JPG neighbors from the same sitting - the preview genuinely tracks the selection), and a
+working fullscreen view. Build + full test suite (47/47) clean.
+
+---
+
+## 2026-08-10 — desktop — Fullscreen zoom prefetch: native decode starts before the click, not on it
+
+User: zooming a RAW to 1:1 in fullscreen shows the fit view instantly, but the sharp
+native render only appears after a ~1s pause. Not a bug exactly - `requestZoom()` was
+always purely reactive (fired only by the actual click/scroll), and a full RAW demosaic
+genuinely takes about that long even at the fastest quality setting already in use. But
+the current row is known the moment it's shown, well before any click - no reason not to
+have that decode already running by the time the user gets there.
+
+Added a debounced prefetch (`FullscreenViewer::prefetchZoom()`, `kZoomPrefetchDelayMs =
+400`): `showRow()` restarts a singleshot timer on every navigation, so holding next/prev
+to skim a folder never fires it for images only passed through - only the row the user
+actually settles on for 400ms+ gets its native decode requested ahead of time, via the
+same `requestZoom()` used by the real click (its existing "already cached / already in
+flight" guards make this safe to call speculatively with no special-casing). Runs on a
+**second** `FullscreenDecoder` instance/thread (`zoomDecoder_`), separate from the one
+handling fit-mode prefetch (`decoder_`) - otherwise a slow prefetched zoom decode could
+sit in front of the fit-mode decode next/prev actually needs to feel instant, on the same
+single-threaded queue. Both funnel into the same `onDecoded()`, which already dispatches
+by request id rather than by source.
+
+Live-verified: opened fullscreen on a real ARW, waited 2s (past the debounce plus decode
+time), clicked to zoom, screenshotted in the same call immediately after the click - fully
+sharp native-resolution detail already on screen, no visible pause. Build + full test
+suite (47/47) clean.
+
+---
+
+## 2026-08-10 — desktop — Fixed a regression from the decodeForDisplay() unification: fullscreen JPG showed thumbnail quality until zoomed
+
+User: fullscreening a JPG showed only thumbnail quality, sharpening up only once zoomed.
+Introduced by the `decodeForDisplay()` unification two entries down - the old
+`FullscreenDecoder`/`PreviewDecoder` JPEG-only code always decoded the full file with
+`decodeJpeg()`'s scaled-DCT path directly; `decodeForDisplay()`'s JPEG case, copying the
+"prefer the embedded preview" pattern that's correct for RAW/HEIC (their embedded
+previews are typically large, near-full-size), added a branch that decodes the file's
+*EXIF* thumbnail first instead - a completely different thing, conventionally tiny
+(~160×120), meant for OS file-browser previews, not real viewing. Fine for the grid's own
+~320px thumbnails (a 160px source is a reasonable match), badly wrong for fullscreen fit
+mode where the target is the whole screen (1920px+): the tiny EXIF thumbnail decoded,
+couldn't be upscaled by a downscale-only DCT step, and got stretched to fill the window -
+exactly "looks like the thumbnail." Fullscreen zoom mode (`targetLongEdge<=0`) was never
+affected - it already skips the embedded-preview branch entirely.
+
+Fixed with a size check in `DisplayCodec.cpp` shared across all three embedded-preview
+branches (JPEG's EXIF thumb, RAW's embedded preview, HEIC's embedded preview): if the
+decoded preview comes up smaller than the caller's `targetLongEdge`, discard it and fall
+through to the real decode instead of accepting whatever came back. Cheap when the
+preview was already big enough (the common RAW/HEIC case, and JPEG at grid-thumbnail-size
+targets), correct when it wasn't (JPEG at fullscreen-size targets). Also applies to the
+side preview pane, which had the identical latent bug for plain JPEGs, just not yet hit
+in testing.
+
+Live-verified: fullscreened a real camera JPEG immediately after the fix - sharp on
+first frame, no zoom needed. Full test suite (47/47) still clean.
+
+---
+
+## 2026-08-10 — desktop — Fixed three real bugs found via the user's own library, plus folder-navigation prioritization
+
+User reported two problems from actual use, against a real folder
+(`_EDITING\2026\2026-03\2026-03-01`, 32 ARW files): RAW files there weren't getting
+auto-rendered even on repeat visits, and clicking a RAW showed "no preview" in the side
+pane. Also asked for the background updater to prioritize whatever folder is currently
+on screen, and to update the grid progressively rather than after the whole folder
+finishes, so a 600-RAW folder doesn't mean minutes of waiting before anything shows.
+
+**Root cause #1 - stuck-forever migration gap.** Queried the real `index.db` directly
+(read-only, via Python - Bash-tool sqlite queries against Windows paths silently fail,
+use PowerShell instead) and found all 32 files sitting at plain `Done`, not
+`DoneNeedsRender`. That folder had been scanned by a build of the app from *before*
+`DoneNeedsRender` existed (see the entry below), so it got the old undifferentiated
+`Done` treatment - permanently invisible to `RawRenderer`'s state-based query, forever,
+for every RAW file indexed before that code landed. Fixed with a new
+`Database::runMigrations()`, gated by `PRAGMA user_version`: reclassifies every
+`(fmt=Raw, state=Done)` row back to `DoneNeedsRender` once, idempotent (re-rendering an
+already-fully-rendered file just wastes some CPU once, not incorrect). This is the
+general mechanism for "the meaning of a stored value changed" fixes going forward, not
+just this one bug.
+
+**Root cause #2 - preview pane was JPEG-only.** `PreviewDecoder::doDecode()` only ever
+handled `Format::Jpeg` - the same limitation the fullscreen viewer had, flagged as an
+unaddressed scope note two entries down ("worth a follow-up if fullscreen full-res
+viewing of RAW/HEIC/etc. turns out to matter in practice" - turned out to matter sooner,
+for the *side* pane instead). Fixed by extracting a shared `decodeForDisplay()`
+(`src/core/decode/DisplayCodec.h/.cpp`) covering every format, used by both
+`PreviewDecoder` and `FullscreenDecoder` now. One signal, two behaviors:
+`targetLongEdge > 0` (side pane, fullscreen fit-to-screen) prefers the fast embedded
+preview; `<= 0` (fullscreen zoom-to-native) skips straight to a full decode, since an
+embedded preview is never true native resolution. `FullscreenViewer`'s two
+`fmt != Jpeg → bail` gates replaced with a real per-format check.
+
+**Root cause #3 - found live, not reported: sideways RAW previews.** Screenshotting the
+fix above showed the preview pane rendering the right file, oriented 90° off from the
+grid thumbnail of the same file. `decodeRaw()` (full demosaic) gets orientation applied
+automatically by LibRaw's own pipeline; `decodeRawThumb()` (embedded preview) decodes the
+embedded JPEG's raw bytes directly and never got any rotation applied at all - same class
+of bug as JPEG needing its own explicit `applyOrientation()` call, just missed for RAW's
+fast path. Confirmed LibRaw's `sizes.flip` encoding against dcraw's own
+`t_flip = "50132467"[exifOrientation & 7]` table in `tiff.cpp` (the inverse of that table
+gives `flip → EXIF orientation`), added `exifOrientationForFlip()` and an
+`applyOrientation()` call in `decodeRawThumb()`. This bug wasn't limited to the new
+preview pane - `ThumbGenerator::generateRawThumb()` calls the same `decodeRawThumb()`,
+so it affected the *stored grid thumbnails* for any RAW file still on its embedded-preview
+tier. Verified via `pixet-index` against a scratch copy of one real ARW (kept out of the
+GUI/RawRenderer entirely to avoid racing the background upgrade): extracted the resulting
+thumbnail blob straight from `thumbs.db` and viewed it - upright, correct.
+
+**Prioritization + progressive updates.** `RawRenderer::prioritize(QString path)` (new
+public slot) sets a `priorityDir_` checked before the normal "any pending directory"
+query, and restarts its timer at 0ms so a folder switch doesn't sit out whatever's left
+of the up-to-60s idle wait. `MainWindow::navigateTo()` now emits
+`requestRawRenderPriority` alongside the existing `requestIndex`. Separately,
+`Indexer.cpp`'s Pass B batch-commit loop (`kBatchSize=64`) now flushes after every single
+item when it was a forced RAW render (`batch.size() >= kBatchSize || forceFullRender`),
+not just every 64 - otherwise a large folder would sit fully silent until 64 slow
+demosaic decodes finished. `RawRenderer`'s `onProgress` callback now emits
+`directoryChanged` per-file instead of once at the very end.
+
+**Live-verified against the exact reported folder and file.** Reset all 32 ARW rows back
+to pending (`thumb_id=NULL, state=0`, old blobs deleted) to recreate a real backlog, then
+relaunched pointed at that folder: grid and correctly-oriented preview populated in under
+2s (embedded-preview pass), status bar read "32 RAW: 0 rendered, 32 preview"; by ~30s
+later, fully caught up to "32 RAW: 32 rendered, 0 preview" with zero user interaction -
+both the auto-render and the no-preview bugs confirmed fixed on the user's own data, not
+just a fixture. (Note: build requires `scripts/build.ps1`, not a bare `cmake --build` - it
+enters the MSVC dev shell itself; running the built `pixet.exe` directly also needs
+`C:\Qt\6.8.3\msvc2022_64\bin` on `PATH`, not baked into the exe.)
+
+Build + full test suite (47/47) clean.
+
+---
+
+## 2026-08-10 — desktop — Automatic background RAW rendering + status bar counts
+
+Follow-up to `pixet-index --render-raws` below: that only reached RAW files through an
+explicit CLI invocation. Added the GUI-automatic equivalent, plus a status bar
+indicator the user specifically asked for ("how many have proper thumbnails and how
+many have embedded").
+
+**Real bug found and fixed first**: Pass B's success path (`Indexer.cpp`) inserted a
+new `thumbs.thumbs` row and repointed `files.thumb_id` at it, but never deleted the
+*old* blob a file already had - harmless before today (a state=New file's thumb_id was
+always already NULL), but `FileState::DoneNeedsRender` made "regenerate a thumbnail for
+a file that already has one" a real, common case for the first time, and every
+`--render-raws` upgrade would have silently leaked its old embedded-preview blob in
+`thumbs.db` forever. Fixed by carrying the pre-existing `thumb_id` through
+`PendingThumb` and deleting it once the new one is committed. Live-verified against a
+real ARW: old thumb_id present as a real blob before, gone after, new thumb_id present
+- both confirmed via direct `thumbs.thumbs` queries in a throwaway temp DB.
+
+**`RawRenderer`** (`src/app/RawRenderer.h/.cpp`): same shape as `BackgroundReconciler`
+(own thread, `QThread::LowestPriority`, `Indexer` wrapper) but queries directly for
+"any directory with a `DoneNeedsRender` RAW file" rather than rotating through every
+known directory - a newly-preview-only RAW file doesn't have to wait for an unrelated,
+much slower whole-library drift-detection cycle to reach that directory. Runs
+`IndexOptions::renderRaws` one directory at a time (Indexer's own Pass B batching
+handles every pending RAW file in that directory together), paced more gently than
+BackgroundReconciler (4s vs 1.5s between directories - a real demosaic decode is
+genuinely expensive, unlike a cheap mtime check), with a 60s idle retry when there's
+nothing pending. Shares `MainWindow::onBackgroundDirectoryChanged` with
+BackgroundReconciler's own signal - both mean "a directory's thumbnails changed,
+refresh the grid if it's on screen," so one slot handles both.
+
+**Status bar**: `ThumbGridModel` gained `rawRenderedCount()`/`rawPreviewCount()`,
+computed in `setDirectory()` like the existing `imageCount()`/`videoCount()`
+aggregates, but *also* kept live in `refreshThumbStates()` - unlike those two, a RAW
+file's state can flip from `DoneNeedsRender` to `Done` without a full model reset
+(exactly what a background render finishing looks like), so the counts need to track
+that incremental path too. New `rawStatusLabel_` shows "N RAW: X rendered, Y preview"
+next to the existing folder-stats label, blank when the folder has no RAW files.
+
+**Live-verified together, real end-to-end**: pointed the app at a real folder with 7
+ARW files, launched fresh. Status bar read "7 RAW: 0 rendered, 7 preview" immediately
+(fast embedded-preview pass already done by normal indexing) - 30 seconds later, with
+zero user interaction, "7 RAW: 7 rendered, 0 preview" (RawRenderer had found and fully
+rendered all 7 in the background, and the status bar picked up the change live).
+Screenshots confirm both states.
+
+Build + full test suite (47/47) clean.
+
+---
+
 ## 2026-08-10 — desktop — Two-pass RAW rendering (`pixet-index --render-raws`)
 
 Follow-up to P4's RAW support below: the user shoots a lot of RAW (ARW especially) and
