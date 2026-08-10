@@ -2,6 +2,7 @@
 
 #include <QMetaObject>
 
+#include "Preferences.h"
 #include "QtInterop.h"
 #include "db/Database.h"
 #include "decode/JpegCodec.h"
@@ -43,15 +44,17 @@ void ThumbLoader::processOne() {
     if (sel.step()) {
         std::vector<uint8_t> bytes = sel.columnBlob(0);
         pixet::RgbImage img;
-        // Stored thumbs are up to 320px; decode straight to display size (cheap
-        // scaled-DCT path) rather than decoding full-size and scaling after.
-        if (pixet::decodeJpeg(bytes.data(), bytes.size(), kThumbIconSize, img)) {
+        int iconSize = prefs::thumbnailIconSize();
+        // Stored thumbs are generated at prefs::thumbnailTargetLongEdge() (always >=
+        // this); decode straight to display size (cheap scaled-DCT path) rather than
+        // decoding full-size and scaling after.
+        if (pixet::decodeJpeg(bytes.data(), bytes.size(), iconSize, img)) {
             pixmap = QPixmap::fromImage(rgbImageToQImage(img));
             // decodeJpeg only lands *close* to the target via coarse DCT scale steps -
             // the grid needs an exact fit or oversized decorations bleed into
             // neighboring cells.
-            if (pixmap.width() > kThumbIconSize || pixmap.height() > kThumbIconSize) {
-                pixmap = pixmap.scaled(kThumbIconSize, kThumbIconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            if (pixmap.width() > iconSize || pixmap.height() > iconSize) {
+                pixmap = pixmap.scaled(iconSize, iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             }
         }
     }

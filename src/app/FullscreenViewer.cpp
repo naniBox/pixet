@@ -395,6 +395,25 @@ void FullscreenViewer::mouseReleaseEvent(QMouseEvent *event) {
     update();
 }
 
+void FullscreenViewer::toggleZoomKeyboard() {
+    if (!fitMode_) {
+        fitMode_ = true;
+        updateCursor();
+        update();
+        return;
+    }
+
+    QSize nativeSize = nativeSizeForRow(currentRow_);
+    if (nativeSize.width() <= 0 || nativeSize.height() <= 0) return; // no known size - can't compute a zoom target
+
+    centerImagePoint_ = QPointF(nativeSize.width() / 2.0, nativeSize.height() / 2.0);
+    scale_ = 1.0;
+    fitMode_ = false;
+    updateCursor();
+    requestZoom(currentRow_);
+    update();
+}
+
 void FullscreenViewer::mouseDoubleClickEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton) return;
     // The first click of the double-click already ran through mouseReleaseEvent (Qt
@@ -465,6 +484,9 @@ void FullscreenViewer::keyPressEvent(QKeyEvent *event) {
             trueFullscreen_ = !trueFullscreen_;
             if (trueFullscreen_) showFullScreen(); else showMaximized();
             updateWindowTitle();
+            return;
+        case Qt::Key_Z:
+            toggleZoomKeyboard();
             return;
         case Qt::Key_I:
             // Only two states for now (off/on) rather than a real per-field EXIF

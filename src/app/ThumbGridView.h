@@ -51,6 +51,13 @@ public:
     // jumping to a specific file) are left untouched.
     void scrollTo(const QModelIndex &index, ScrollHint hint = EnsureVisible) override;
 
+    // Call after prefs::setThumbnailIconSize() changes - re-derives the grid layout
+    // (cell size, column count) for the new size. Resets lastFitWidth_ first: without
+    // that, updateGridSize()'s jitter guard would see an unchanged viewport width and
+    // skip recomputing entirely, since it has no way to know the *cell* size (not
+    // just the width) is what actually changed.
+    void applyIconSizeChange();
+
 signals:
     // Ctrl+arrow is folder navigation (see MainWindow), not grid navigation - this
     // view just recognizes the chord and hands off the direction; it doesn't know

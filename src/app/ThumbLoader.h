@@ -22,13 +22,6 @@ class ThumbLoader : public QObject {
     Q_OBJECT
 
 public:
-    // Stored thumbnails are up to 320px (P1's target); the grid displays them much
-    // smaller, so pixmaps are scaled down to fit this box (aspect-preserved) before
-    // ever reaching the model - otherwise an oversized decoration bleeds into
-    // neighboring grid cells. MainWindow's grid iconSize is derived from this too, so
-    // there's one source of truth for how big a grid cell actually is.
-    static constexpr int kThumbIconSize = 150;
-
     explicit ThumbLoader(QObject *parent = nullptr);
     ~ThumbLoader() override;
 

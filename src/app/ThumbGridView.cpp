@@ -9,7 +9,7 @@
 #include <QTimer>
 #include <QWheelEvent>
 
-#include "ThumbLoader.h"
+#include "Preferences.h"
 
 void ThumbGridDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const {
     painter->save();
@@ -22,10 +22,11 @@ void ThumbGridDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     painter->drawRect(cellRect.adjusted(0, 0, -1, -1));
 
     // Thumbnail centered within a fixed-size image area at the top of the cell -
-    // pixmaps are already scaled to fit within kThumbIconSize (aspect preserved, see
-    // ThumbLoader), so they're frequently smaller than the box in one dimension.
+    // pixmaps are already scaled to fit within prefs::thumbnailIconSize() (aspect
+    // preserved, see ThumbLoader), so they're frequently smaller than the box in one
+    // dimension.
     QRect imageArea(cellRect.left() + kCellPadding, cellRect.top() + kCellPadding,
-                     cellRect.width() - 2 * kCellPadding, ThumbLoader::kThumbIconSize);
+                     cellRect.width() - 2 * kCellPadding, prefs::thumbnailIconSize());
     QVariant deco = index.data(Qt::DecorationRole);
     if (deco.canConvert<QPixmap>()) {
         QPixmap pix = deco.value<QPixmap>();
@@ -65,8 +66,8 @@ QSize ThumbGridDelegate::sizeHint(const QStyleOptionViewItem &option, const QMod
     }
     // Fallback for the (practically never hit) case of no parent view yet - a
     // reasonable single-column-width guess using the same layout constants.
-    int height = kCellPadding + ThumbLoader::kThumbIconSize + kTextTopGap + kTextRowHeight + kCellPadding;
-    return QSize(ThumbLoader::kThumbIconSize + 2 * kCellPadding, height);
+    int height = kCellPadding + prefs::thumbnailIconSize() + kTextTopGap + kTextRowHeight + kCellPadding;
+    return QSize(prefs::thumbnailIconSize() + 2 * kCellPadding, height);
 }
 
 ThumbGridView::ThumbGridView(QWidget *parent) : QListView(parent) {
@@ -97,6 +98,11 @@ void ThumbGridView::resizeEvent(QResizeEvent *event) {
     resizeDebounce_->start(); // (re)starts - only fires once resizing actually pauses
 }
 
+void ThumbGridView::applyIconSizeChange() {
+    lastFitWidth_ = -1;
+    updateGridSize();
+}
+
 void ThumbGridView::updateGridSize() {
     int vw = viewport()->width();
     // Width close to one we already found a working fit for - most likely our own
@@ -105,7 +111,7 @@ void ThumbGridView::updateGridSize() {
     if (lastFitWidth_ >= 0 && qAbs(vw - lastFitWidth_) <= kWidthJitterTolerance) return;
     if (vw <= 0) return;
 
-    int cellHeight = ThumbGridDelegate::kCellPadding + ThumbLoader::kThumbIconSize + ThumbGridDelegate::kTextTopGap +
+    int cellHeight = ThumbGridDelegate::kCellPadding + prefs::thumbnailIconSize() + ThumbGridDelegate::kTextTopGap +
                       ThumbGridDelegate::kTextRowHeight + ThumbGridDelegate::kCellPadding;
 
     int columns = idealColumns();
@@ -166,7 +172,7 @@ void ThumbGridView::updateGridSize() {
 int ThumbGridView::idealColumns() const {
     int viewportWidth = viewport()->width();
     if (viewportWidth <= 0) return 1;
-    int baseCellWidth = ThumbLoader::kThumbIconSize + 2 * ThumbGridDelegate::kCellPadding;
+    int baseCellWidth = prefs::thumbnailIconSize() + 2 * ThumbGridDelegate::kCellPadding;
     return qMax(1, viewportWidth / baseCellWidth);
 }
 

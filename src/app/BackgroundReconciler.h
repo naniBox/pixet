@@ -37,6 +37,14 @@ public:
     // is up, so the first sweep doesn't compete with startup.
     void start();
 
+public slots:
+    // "Re-index Known Folders" (Preferences dialog) - reloads the directory list and
+    // jumps the queue so the next sweep starts right away instead of waiting out
+    // however much of the current per-directory pacing or full-cycle rest period is
+    // left. Same forceRescan-only behavior as every other sweep pass (see the class
+    // comment) - deliberately not a forceRethumbnail, per the button's own scope.
+    void triggerFullSweepNow();
+
 signals:
     // A directory the sweep just revisited actually had something change (new/removed/
     // re-thumbnailed files) - lets MainWindow refresh the grid if that directory

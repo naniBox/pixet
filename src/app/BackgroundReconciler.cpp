@@ -2,6 +2,7 @@
 
 #include <QTimer>
 
+#include "Preferences.h"
 #include "db/Database.h"
 #include "scan/Indexer.h"
 #include "util/AppPaths.h"
@@ -29,6 +30,15 @@ BackgroundReconciler::~BackgroundReconciler() {
 
 void BackgroundReconciler::start() {
     QMetaObject::invokeMethod(this, &BackgroundReconciler::beginLoop, Qt::QueuedConnection);
+}
+
+void BackgroundReconciler::triggerFullSweepNow() {
+    if (!timer_) return; // start() hasn't run its first beginLoop() yet - that already covers this
+    loadDirList();
+    // Jump the queue - same trick as RawRenderer::prioritize(): restarting an
+    // already-running singleshot timer replaces whatever was left of its wait
+    // (including a possible kFullCycleRestDelayMs rest period) with a fresh one.
+    timer_->start(0);
 }
 
 void BackgroundReconciler::beginLoop() {
@@ -71,6 +81,7 @@ void BackgroundReconciler::sweepNext() {
     // which is exactly the drift this sweep exists to catch.
     opts.forceRescan = true;
     opts.forceRethumbnail = false; // only re-thumbnail files whose (mtime, size) actually changed
+    opts.targetLongEdge = prefs::thumbnailTargetLongEdge();
     opts.owner = "gui:bg:pid:" + std::to_string(pixet::currentProcessId());
 
     pixet::Indexer indexer(*db_, opts);

@@ -44,6 +44,11 @@ add_executable(pixet ${PIXET_APP_TYPE}
 
     RawRenderer.h
     RawRenderer.cpp
+
+    Preferences.h
+    Preferences.cpp
+    PreferencesDialog.h
+    PreferencesDialog.cpp
 )
 
 target_link_libraries(pixet PRIVATE

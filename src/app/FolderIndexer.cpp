@@ -1,5 +1,6 @@
 #include "FolderIndexer.h"
 
+#include "Preferences.h"
 #include "db/Database.h"
 #include "scan/Indexer.h"
 #include "util/AppPaths.h"
@@ -24,6 +25,7 @@ void FolderIndexer::indexFolder(QString path, bool force, bool forceRethumbnail)
     opts.recursive = false;
     opts.forceRescan = force;
     opts.forceRethumbnail = forceRethumbnail;
+    opts.targetLongEdge = prefs::thumbnailTargetLongEdge();
     opts.owner = "gui:pid:" + std::to_string(pixet::currentProcessId());
 
     pixet::Indexer indexer(*db_, opts);

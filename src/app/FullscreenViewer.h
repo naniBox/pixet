@@ -15,13 +15,15 @@ class FullscreenDecoder;
 
 // Fullscreen image viewer (P3). Opened via double-click/Enter on a thumbnail. Shows
 // the current image scaled to fit the screen by default. Click zooms to 1:1 native
-// pixels, centered on the clicked point; Ctrl+scroll zooms continuously, centered on
-// the cursor; click-drag pans while zoomed; click again (or double-click) leaves
-// zoom/closes. Left/Right/Up/Down or plain scroll move to the previous/next file in
-// the same folder, keeping the main window's grid selection in sync (rowChanged) so
-// closing lands back on whatever was last shown here. F toggles between borderless
-// fullscreen and a maximized window with a title bar (showing the current image's
-// full path); I toggles an info overlay; Escape or double-click closes.
+// pixels, centered on the clicked point; Z does the same fit<->1:1 toggle from the
+// keyboard, centered on the image's middle instead (see toggleZoomKeyboard()); Ctrl+
+// scroll zooms continuously, centered on the cursor; click-drag pans while zoomed;
+// click again (or double-click) leaves zoom/closes. Left/Right/Up/Down or plain
+// scroll move to the previous/next file in the same folder, keeping the main
+// window's grid selection in sync (rowChanged) so closing lands back on whatever was
+// last shown here. F toggles between borderless fullscreen and a maximized window
+// with a title bar (showing the current image's full path); I toggles an info
+// overlay; Escape or double-click closes.
 //
 // A small ring buffer keeps the current image's +/-2 neighbors' fit-scaled decodes
 // prefetched, so next/prev is normally instant. Separately, the *current* row's full
@@ -142,6 +144,10 @@ private:
     void prefetchZoom();
 
     void zoomAtCursor(const QPoint &cursorPos, int angleDeltaY);
+    // Z key: same fit<->1:1 toggle as a plain click (see mouseReleaseEvent()), but
+    // with no click position to derive a zoom target from - centers on the image's
+    // middle instead, same as clicking dead-center of it would.
+    void toggleZoomKeyboard();
     void clampCenterImagePoint();
     void updateCursor();
     void updateWindowTitle();

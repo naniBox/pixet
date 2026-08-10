@@ -42,6 +42,9 @@ signals:
     void requestIndex(QString path, bool force, bool forceRethumbnail);
     // Connected (queued, cross-thread) to RawRenderer::prioritize.
     void requestRawRenderPriority(QString path);
+    // Connected (queued, cross-thread) to BackgroundReconciler::triggerFullSweepNow -
+    // the Preferences dialog's "Re-index Known Folders" button.
+    void requestFullReindex();
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -59,6 +62,7 @@ private slots:
     void onAddBookmark();
     void onRefresh();
     void onForceRethumbnail();
+    void onPreferences();
     void onIndexerStarted(QString path);
     void onFilesListed(QString path);
     void onThumbsProgress(QString path);
@@ -160,6 +164,13 @@ private:
     void removeBookmark(qint64 id);
     void restoreLastDirectory();
     void saveLastDirectory(const QString &path);
+    // "Reset Index" (Preferences dialog, already confirmed there) - deletes every
+    // scanned folder/file/thumbnail row (dirs, files, claims, journal,
+    // thumbs.thumbs), deliberately leaving bookmarks alone, then VACUUMs both
+    // schemas to actually reclaim disk space. Runs synchronously on db_ (the same
+    // connection bookmarks/metadata queries already use) - a rare, deliberate,
+    // user-confirmed action, not something worth a background worker for.
+    void nukeDatabase();
 
     // Window position/size and splitter layout persistence (QSettings) - see
     // restoreWindowState()'s doc comment in the .cpp for the off-screen/reset behavior.

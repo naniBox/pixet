@@ -3,6 +3,7 @@
 #include <QAction>
 #include <QCloseEvent>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
 #include <QFileSystemModel>
@@ -14,6 +15,7 @@
 #include <QLocale>
 #include <QMenu>
 #include <QMenuBar>
+#include <QProcess>
 #include <QScreen>
 #include <QScrollBar>
 #include <QSettings>
@@ -21,12 +23,15 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include "BackgroundReconciler.h"
 #include "FolderIndexer.h"
 #include "FolderTreeView.h"
 #include "FullscreenViewer.h"
+#include "Preferences.h"
+#include "PreferencesDialog.h"
 #include "PreviewDecoder.h"
 #include "PreviewPane.h"
 #include "RawRenderer.h"
@@ -119,7 +124,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // this doesn't lose any actual behavior, just the redundant/conflicting one.
     grid_->setResizeMode(QListView::Fixed);
     grid_->setMovement(QListView::Static);
-    grid_->setIconSize(QSize(ThumbLoader::kThumbIconSize, ThumbLoader::kThumbIconSize));
+    grid_->setIconSize(QSize(prefs::thumbnailIconSize(), prefs::thumbnailIconSize()));
     // Cell size (grid size) is self-managed by ThumbGridView, recomputed on resize so
     // columns stretch to fill the viewport width evenly - see
     // ThumbGridView::updateGridSize().
@@ -236,6 +241,8 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     backgroundReconciler_ = std::make_unique<BackgroundReconciler>();
     connect(backgroundReconciler_.get(), &BackgroundReconciler::directoryChanged, this,
             &MainWindow::onBackgroundDirectoryChanged);
+    connect(this, &MainWindow::requestFullReindex, backgroundReconciler_.get(),
+            &BackgroundReconciler::triggerFullSweepNow);
     backgroundReconciler_->start();
 
     rawRenderer_ = std::make_unique<RawRenderer>();
@@ -254,6 +261,9 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
 
     auto *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
     viewMenu->addAction(QStringLiteral("Refresh"), this, &MainWindow::onRefresh, QKeySequence(QStringLiteral("F5")));
+
+    auto *toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
+    toolsMenu->addAction(QStringLiteral("Preferences..."), this, &MainWindow::onPreferences);
 
     // Fixed pixel widths, sized generously for typical content (not a hard guarantee
     // against every possible value, e.g. an absurdly large dimension could clip) -
@@ -463,6 +473,23 @@ void MainWindow::onGridContextMenu(const QPoint &pos) {
 
 void MainWindow::onGridItemActivated(const QModelIndex &index) {
     if (!index.isValid()) return;
+
+    // Video has no playback engine in the fullscreen viewer (poster frame only, see
+    // FullscreenViewer's class comment) - activating one launches an actual player
+    // instead, per the user's own preference, rather than opening the viewer at all.
+    if ((pixet::Format)index.data(ThumbGridModel::FormatRole).toInt() == pixet::Format::Video) {
+        QString filePath = currentPath_ + QStringLiteral("\\") + index.data(Qt::DisplayRole).toString();
+        if (prefs::useSystemVideoPlayer() || prefs::customVideoPlayerPath().isEmpty()) {
+            // Also the fallback when "Custom" is selected but no path was ever set -
+            // silently doing nothing on activation would look like the double-click
+            // just didn't register.
+            QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
+        } else {
+            QProcess::startDetached(prefs::customVideoPlayerPath(), {filePath});
+        }
+        return;
+    }
+
     fullscreenViewer_->openAt(gridModel_, currentPath_, index.row());
 }
 
@@ -520,6 +547,22 @@ void MainWindow::onRefresh() {
 
 void MainWindow::onForceRethumbnail() {
     if (!currentPath_.isEmpty()) navigateTo(currentPath_, /*forceReindex=*/true, /*forceRethumbnail=*/true);
+}
+
+void MainWindow::onPreferences() {
+    PreferencesDialog dlg(this);
+    connect(&dlg, &PreferencesDialog::reindexRequested, this, [this]() { emit requestFullReindex(); });
+    connect(&dlg, &PreferencesDialog::thumbnailSizeChanged, this, [this]() {
+        int size = prefs::thumbnailIconSize();
+        grid_->setIconSize(QSize(size, size));
+        grid_->applyIconSizeChange();
+        // Already-decoded pixmaps in the model are sized for the *old* icon size -
+        // reloading re-requests every visible thumbnail fresh from ThumbLoader, which
+        // now decodes to the new size (see ThumbLoader::processOne()).
+        if (!currentPath_.isEmpty()) gridModel_->setDirectory(currentPath_);
+    });
+    connect(&dlg, &PreferencesDialog::nukeDatabaseRequested, this, &MainWindow::nukeDatabase);
+    dlg.exec();
 }
 
 void MainWindow::onIndexerStarted(QString path) {
@@ -617,6 +660,31 @@ void MainWindow::restoreLastDirectory() {
 void MainWindow::saveLastDirectory(const QString &path) {
     QSettings settings(QStringLiteral("pixet"), QStringLiteral("pixet"));
     settings.setValue(QStringLiteral("lastDirectory"), path);
+}
+
+void MainWindow::nukeDatabase() {
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+
+    // Deliberately not `bookmarks` - those are user-curated navigation shortcuts,
+    // not scan-derived cache, and re-scanning can't regenerate them. Everything else
+    // here is exactly what a fresh rescan rebuilds from scratch.
+    db_->exec("DELETE FROM files;");
+    db_->exec("DELETE FROM dirs;");
+    db_->exec("DELETE FROM claims;");
+    db_->exec("DELETE FROM journal;");
+    db_->exec("DELETE FROM thumbs.thumbs;");
+    // Reclaims the actual disk space the deleted rows/blobs held - without this the
+    // files would just have a lot of internally-tracked free space, which doesn't
+    // match "nuke" for a cache that can genuinely run to several GB of thumbnails.
+    db_->exec("VACUUM;");
+    db_->exec("VACUUM thumbs;");
+
+    QGuiApplication::restoreOverrideCursor();
+
+    // Every row the grid/tree/status bar currently reference is gone - force a fully
+    // fresh Pass A/B of whatever's on screen right now rather than leaving an empty
+    // grid the user has to manually Refresh to escape.
+    if (!currentPath_.isEmpty()) navigateTo(currentPath_, /*forceReindex=*/true);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {

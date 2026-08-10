@@ -2,6 +2,7 @@
 
 #include <QTimer>
 
+#include "Preferences.h"
 #include "db/Database.h"
 #include "db/Schema.h"
 #include "scan/Indexer.h"
@@ -89,6 +90,7 @@ void RawRenderer::renderNext() {
     pixet::IndexOptions opts;
     opts.recursive = false;
     opts.renderRaws = true;
+    opts.targetLongEdge = prefs::thumbnailTargetLongEdge();
     // Distinct owner id from both the on-demand FolderIndexer ("gui:pid:...") and
     // BackgroundReconciler ("gui:bg:pid:...") - if either is actively working this
     // same directory right now, Indexer's own claim check just skips it for this
