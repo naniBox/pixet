@@ -59,6 +59,20 @@ public:
     int videoCount() const { return videoCount_; }
     qint64 totalBytes() const { return totalBytes_; }
 
+    // RAW files whose current thumbnail is a full demosaic render (state=Done) vs.
+    // still the fast embedded-preview one (state=DoneNeedsRender) - see
+    // RawRenderer/`pixet-index --render-raws`. Unlike imageCount()/videoCount()/
+    // totalBytes(), these *do* need to stay live across refreshThumbStates() too (not
+    // just setDirectory()), since a RAW file's state can flip from DoneNeedsRender to
+    // Done via exactly the incremental Pass-B-progress path refreshThumbStates()
+    // exists for - a background render finishing while this folder is on screen.
+    // Zero rawRenderedCount()+rawPreviewCount() means either no RAW files in this
+    // folder, or none have reached either state yet (still New/Failed) - callers
+    // wanting "are there any RAW files at all" should check imageCount() context or
+    // just treat 0+0 as "nothing to report" either way.
+    int rawRenderedCount() const { return rawRenderedCount_; }
+    int rawPreviewCount() const { return rawPreviewCount_; }
+
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
 
@@ -92,4 +106,6 @@ private:
     int imageCount_ = 0;
     int videoCount_ = 0;
     qint64 totalBytes_ = 0;
+    int rawRenderedCount_ = 0;
+    int rawPreviewCount_ = 0;
 };

@@ -32,6 +32,9 @@ add_executable(pixet WIN32
 
     BackgroundReconciler.h
     BackgroundReconciler.cpp
+
+    RawRenderer.h
+    RawRenderer.cpp
 )
 
 target_link_libraries(pixet PRIVATE

@@ -9,6 +9,7 @@
 #include <memory>
 
 class QPainter;
+class QTimer;
 class ThumbGridModel;
 class FullscreenDecoder;
 
@@ -23,15 +24,25 @@ class FullscreenDecoder;
 // full path); I toggles an info overlay; Escape or double-click closes.
 //
 // A small ring buffer keeps the current image's +/-2 neighbors' fit-scaled decodes
-// prefetched, so next/prev is normally instant. Never blocks on decode: a cache miss
-// (prefetch not caught up, or a fresh zoom request still in flight) falls back to
-// instantly showing/upscaling whatever's already available - the grid's cached
-// thumbnail, or the fit-scaled image in the zoom case - and swaps in the real decode
-// once it lands. There is never a blank frame.
+// prefetched, so next/prev is normally instant. Separately, the *current* row's full
+// native-resolution decode is also prefetched in the background (on its own decoder/
+// thread, see zoomDecoder_) after a short idle debounce - a real decode of a RAW file
+// is expensive enough (~1s) that doing it only reactively on the zoom click itself
+// meant a visible pause before the sharp image appeared. The debounce means rapid
+// next/prev browsing never triggers it for images only passed through; only the row
+// the user actually settles on gets the native decode started ahead of time, so by the
+// time a zoom click/scroll actually happens it is often already there. Never blocks on
+// decode either way: a cache miss (prefetch not caught up, or a fresh zoom request
+// still in flight) falls back to instantly showing/upscaling whatever's already
+// available - the grid's cached thumbnail, or the fit-scaled image in the zoom case -
+// and swaps in the real decode once it lands. There is never a blank frame.
 //
-// Only JPEG has a full decoder right now (see JpegCodec) - other formats just show
-// their already-cached grid thumbnail, same graceful degradation as elsewhere in the
-// app; zoom/pan is unavailable for them since it needs the image's real dimensions.
+// Every format has a full decoder (see DisplayCodec) except Unknown, which just shows
+// its already-cached grid thumbnail (there is none for Unknown in practice - unrecognized
+// files aren't indexed at all), same graceful degradation as elsewhere in the app. Video
+// "zooms" to its one extracted poster frame at native resolution, same as any still
+// image - there's no live playback here (see decodeVideoPosterFrame), just a sharper
+// look at the same frame the grid thumbnail was made from.
 class FullscreenViewer : public QWidget {
     Q_OBJECT
 
@@ -70,7 +81,17 @@ private:
     int currentRow_ = -1;
 
     std::unique_ptr<FullscreenDecoder> decoder_;
+    // Separate instance/thread from decoder_ specifically so a slow native-resolution
+    // decode (zoom, whether prefetched or click-triggered) can never sit in front of a
+    // fit-scaled decode that's needed right now for next/prev to feel instant - see the
+    // class comment. Both share requestCounter_'s id space and funnel into the same
+    // onDecoded() - it dispatches by id, not by which decoder produced it.
+    std::unique_ptr<FullscreenDecoder> zoomDecoder_;
     qint64 requestCounter_ = 0;
+    // Debounced trigger for prefetching the current row's native decode - see the class
+    // comment. Restarted (not just started) on every row change, so it only actually
+    // fires once the user stops navigating for a moment.
+    QTimer *zoomPrefetchTimer_ = nullptr;
 
     struct FitEntry {
         QPixmap pixmap;
@@ -116,6 +137,9 @@ private:
     void prefetchNeighbors();
     void trimFitCache();
     void requestZoom(int row);
+    // zoomPrefetchTimer_'s timeout handler - requestZoom() for whichever row the user
+    // has actually settled on.
+    void prefetchZoom();
 
     void zoomAtCursor(const QPoint &cursorPos, int angleDeltaY);
     void clampCenterImagePoint();

@@ -13,6 +13,8 @@ void ThumbGridModel::setDirectory(const QString &path) {
     imageCount_ = 0;
     videoCount_ = 0;
     totalBytes_ = 0;
+    rawRenderedCount_ = 0;
+    rawPreviewCount_ = 0;
     dirId_ = 0;
 
     std::string pathUtf8 = pixet::toUtf8(path.toStdWString());
@@ -38,6 +40,10 @@ void ThumbGridModel::setDirectory(const QString &path) {
             if (pixet::kindForFormat(row.fmt) == pixet::Kind::Video) videoCount_++;
             else imageCount_++;
             totalBytes_ += row.size;
+            if (row.fmt == pixet::Format::Raw) {
+                if (row.state == pixet::FileState::Done) rawRenderedCount_++;
+                else if (row.state == pixet::FileState::DoneNeedsRender) rawPreviewCount_++;
+            }
             rowByFileId_[row.id] = rows_.size();
             rowByName_[row.name] = rows_.size();
             rows_.push_back(std::move(row));
@@ -78,6 +84,17 @@ void ThumbGridModel::refreshThumbStates() {
 
         if (thumbId != rows_[row].thumbId || state != rows_[row].state || width != rows_[row].width ||
             height != rows_[row].height || takenAt != rows_[row].takenAt || durationMs != rows_[row].durationMs) {
+            if (rows_[row].fmt == pixet::Format::Raw && state != rows_[row].state) {
+                // Keep rawRenderedCount_/rawPreviewCount_ live across this incremental
+                // path too, not just a full setDirectory() reload - a RAW file
+                // finishing a background render is exactly the kind of change that
+                // arrives here (see the class comment on why these two counts can't
+                // just be setDirectory()-only like imageCount_/videoCount_).
+                if (rows_[row].state == pixet::FileState::Done) rawRenderedCount_--;
+                else if (rows_[row].state == pixet::FileState::DoneNeedsRender) rawPreviewCount_--;
+                if (state == pixet::FileState::Done) rawRenderedCount_++;
+                else if (state == pixet::FileState::DoneNeedsRender) rawPreviewCount_++;
+            }
             rows_[row].thumbId = thumbId;
             rows_[row].state = state;
             rows_[row].width = width;

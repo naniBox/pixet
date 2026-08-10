@@ -29,6 +29,7 @@
 #include "FullscreenViewer.h"
 #include "PreviewDecoder.h"
 #include "PreviewPane.h"
+#include "RawRenderer.h"
 #include "ThumbGridModel.h"
 #include "ThumbGridView.h"
 #include "ThumbLoader.h"
@@ -238,6 +239,11 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
             &MainWindow::onBackgroundDirectoryChanged);
     backgroundReconciler_->start();
 
+    rawRenderer_ = std::make_unique<RawRenderer>();
+    connect(rawRenderer_.get(), &RawRenderer::directoryChanged, this, &MainWindow::onBackgroundDirectoryChanged);
+    connect(this, &MainWindow::requestRawRenderPriority, rawRenderer_.get(), &RawRenderer::prioritize);
+    rawRenderer_->start();
+
     previewDebounce_ = new QTimer(this);
     previewDebounce_->setSingleShot(true);
     previewDebounce_->setInterval(80);
@@ -260,6 +266,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
         return label;
     };
     folderStatsLabel_ = makeStatusLabel(300);
+    rawStatusLabel_ = makeStatusLabel(190);
     fileNameLabel_ = makeStatusLabel(240);
     formatLabel_ = makeStatusLabel(50);
     dimsLabel_ = makeStatusLabel(150);
@@ -335,6 +342,9 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
 
     saveLastDirectory(normalized);
     emit requestIndex(normalized, forceReindex, forceRethumbnail);
+    // Whatever RAW files here still need a full render jump ahead of any unrelated
+    // backlog elsewhere in the library - see RawRenderer::prioritize().
+    emit requestRawRenderPriority(normalized);
 }
 
 void MainWindow::repositionTreeToTop(const QModelIndex &idx) {
@@ -698,6 +708,17 @@ void MainWindow::updateSelectionStatus() {
                                                      .arg(videoCount)
                                                      .arg(QLocale().formattedDataSize(gridModel_->totalBytes()))
                                                : QString());
+
+    // How many of this folder's RAW files have a real full-render thumbnail vs. still
+    // just the fast embedded-preview one - see RawRenderer/`pixet-index --render-raws`.
+    // Blank whenever there's nothing to report (no RAW files here, or none have
+    // reached either state yet) rather than showing "0 rendered, 0 preview".
+    int rawRendered = gridModel_->rawRenderedCount();
+    int rawPreview = gridModel_->rawPreviewCount();
+    int rawKnown = rawRendered + rawPreview;
+    rawStatusLabel_->setText(rawKnown > 0
+                                  ? QStringLiteral("%1 RAW: %2 rendered, %3 preview").arg(rawKnown).arg(rawRendered).arg(rawPreview)
+                                  : QString());
 
     QModelIndex idx = grid_->currentIndex();
     if (!idx.isValid()) {

@@ -4,9 +4,7 @@
 
 #include "QtInterop.h"
 #include "db/Schema.h"
-#include "decode/JpegCodec.h"
-#include "meta/JpegExif.h"
-#include "util/FileIO.h"
+#include "decode/DisplayCodec.h"
 #include "util/StringUtil.h"
 
 PreviewDecoder::PreviewDecoder(QObject *parent) : QObject(parent) {
@@ -29,16 +27,9 @@ void PreviewDecoder::doDecode(qint64 requestId, QString filePath, int fmt, int t
     if (requestId != latestRequestId_.load()) return; // already superseded, don't bother
 
     QImage result;
-    if ((pixet::Format)fmt == pixet::Format::Jpeg) {
-        std::vector<uint8_t> fileBytes;
-        if (pixet::readWholeFile(filePath.toStdWString(), fileBytes)) {
-            pixet::ExifInfo exif = pixet::parseJpegExif(fileBytes.data(), fileBytes.size());
-            pixet::RgbImage img;
-            if (pixet::decodeJpeg(fileBytes.data(), fileBytes.size(), targetLongEdge, img)) {
-                pixet::applyOrientation(img, exif.orientation);
-                result = rgbImageToQImage(img);
-            }
-        }
+    pixet::RgbImage img;
+    if (pixet::decodeForDisplay(filePath.toStdWString(), (pixet::Format)fmt, targetLongEdge, img)) {
+        result = rgbImageToQImage(img);
     }
 
     if (requestId != latestRequestId_.load()) return; // superseded while we were decoding

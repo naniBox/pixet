@@ -7,6 +7,7 @@
 #include <QLocale>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QTimer>
 #include <QWheelEvent>
 
 #include <cmath>
@@ -16,6 +17,11 @@
 #include "db/Schema.h"
 
 namespace {
+// Every format ThumbGenerator supports also has a decodeForDisplay() path (see
+// DisplayCodec.h) - Video included, via its poster frame (see decodeVideoPosterFrame) -
+// only Unknown has none, and falls back to the grid's cached thumbnail like before.
+bool hasFullscreenDecoder(pixet::Format fmt) { return fmt != pixet::Format::Unknown; }
+
 // Movement beyond this many pixels between press and release means "drag", not
 // "click" - below it, small hand tremor while clicking shouldn't be read as a pan
 // attempt and swallow the zoom toggle.
@@ -26,6 +32,13 @@ constexpr int kDragThreshold = 4;
 constexpr qreal kMinScale = 0.1;
 constexpr qreal kMaxScale = 8.0;
 constexpr qreal kScaleStepPerNotch = 1.15;
+
+// How long the user has to stay on one image before its native-resolution decode
+// starts prefetching in the background - long enough that holding next/prev to skim
+// through a folder doesn't fire it for every image only briefly passed through, short
+// enough that a real pause-to-look almost always has it ready before an actual zoom
+// click/scroll follows.
+constexpr int kZoomPrefetchDelayMs = 400;
 } // namespace
 
 FullscreenViewer::FullscreenViewer(QWidget *parent) : QWidget(parent) {
@@ -38,6 +51,13 @@ FullscreenViewer::FullscreenViewer(QWidget *parent) : QWidget(parent) {
     // worker members; the same applies here.
     decoder_ = std::make_unique<FullscreenDecoder>();
     connect(decoder_.get(), &FullscreenDecoder::decoded, this, &FullscreenViewer::onDecoded);
+    zoomDecoder_ = std::make_unique<FullscreenDecoder>();
+    connect(zoomDecoder_.get(), &FullscreenDecoder::decoded, this, &FullscreenViewer::onDecoded);
+
+    zoomPrefetchTimer_ = new QTimer(this);
+    zoomPrefetchTimer_->setSingleShot(true);
+    zoomPrefetchTimer_->setInterval(kZoomPrefetchDelayMs);
+    connect(zoomPrefetchTimer_, &QTimer::timeout, this, &FullscreenViewer::prefetchZoom);
 }
 
 FullscreenViewer::~FullscreenViewer() = default;
@@ -53,6 +73,8 @@ void FullscreenViewer::openAt(ThumbGridModel *model, const QString &directoryPat
     zoomRequestId_ = -1;
     zoomRequestRow_ = -1;
     decoder_->cancelPending();
+    zoomDecoder_->cancelPending();
+    zoomPrefetchTimer_->stop();
     infoOverlayLevel_ = 0;
 
     // trueFullscreen_ deliberately isn't reset here - it's a session-level display
@@ -76,6 +98,10 @@ void FullscreenViewer::showRow(int row, bool resetZoom) {
 
     requestFit(row);
     prefetchNeighbors();
+    // Restarting an already-running singleshot timer replaces whatever was left of its
+    // wait with a fresh one, so this naturally debounces - only the row the user is
+    // still on kZoomPrefetchDelayMs later actually triggers prefetchZoom().
+    zoomPrefetchTimer_->start();
     updateWindowTitle();
     emit rowChanged(row);
     update();
@@ -108,7 +134,7 @@ QSize FullscreenViewer::nativeSizeForRow(int row) const {
 
 void FullscreenViewer::requestFit(int row) {
     if (!model_ || row < 0 || row >= model_->rowCount()) return;
-    if ((pixet::Format)formatForRow(row) != pixet::Format::Jpeg) return; // no decoder yet - thumbnail fallback only
+    if (!hasFullscreenDecoder((pixet::Format)formatForRow(row))) return; // thumbnail fallback only
 
     auto it = fitCache_.find(row);
     if (it != fitCache_.end() && (!it->pixmap.isNull() || it->requested)) return; // already have it or already asked
@@ -139,13 +165,18 @@ void FullscreenViewer::trimFitCache() {
 
 void FullscreenViewer::requestZoom(int row) {
     if (!model_ || row < 0 || row >= model_->rowCount()) return;
-    if ((pixet::Format)formatForRow(row) != pixet::Format::Jpeg) return; // no decoder yet
-    if (zoomPixmapRow_ == row && !zoomPixmap_.isNull()) return;          // already have it
+    if (!hasFullscreenDecoder((pixet::Format)formatForRow(row))) return;
+    if (zoomPixmapRow_ == row && !zoomPixmap_.isNull()) return; // already have it
     if (zoomRequestRow_ == row) return;                                 // already in flight
 
     zoomRequestId_ = ++requestCounter_;
     zoomRequestRow_ = row;
-    decoder_->request(zoomRequestId_, pathForRow(row), formatForRow(row), /*targetLongEdge=*/0);
+    zoomDecoder_->request(zoomRequestId_, pathForRow(row), formatForRow(row), /*targetLongEdge=*/0);
+}
+
+void FullscreenViewer::prefetchZoom() {
+    if (!model_ || currentRow_ < 0) return;
+    requestZoom(currentRow_); // no-op if already cached or already in flight
 }
 
 void FullscreenViewer::onDecoded(qint64 requestId, QImage image) {
@@ -451,6 +482,8 @@ void FullscreenViewer::keyPressEvent(QKeyEvent *event) {
 
 void FullscreenViewer::closeEvent(QCloseEvent *event) {
     decoder_->cancelPending();
+    zoomDecoder_->cancelPending();
+    zoomPrefetchTimer_->stop();
     if (parentWidget()) parentWidget()->activateWindow();
     QWidget::closeEvent(event);
 }

@@ -4,9 +4,7 @@
 
 #include "QtInterop.h"
 #include "db/Schema.h"
-#include "decode/JpegCodec.h"
-#include "meta/JpegExif.h"
-#include "util/FileIO.h"
+#include "decode/DisplayCodec.h"
 
 FullscreenDecoder::FullscreenDecoder(QObject *parent) : QObject(parent) {
     moveToThread(&thread_);
@@ -36,16 +34,9 @@ void FullscreenDecoder::processOne() {
     Req req = stack_.takeLast(); // LIFO - most recently requested (nearest to the user) wins ties
 
     QImage result;
-    if ((pixet::Format)req.fmt == pixet::Format::Jpeg) {
-        std::vector<uint8_t> fileBytes;
-        if (pixet::readWholeFile(req.filePath.toStdWString(), fileBytes)) {
-            pixet::ExifInfo exif = pixet::parseJpegExif(fileBytes.data(), fileBytes.size());
-            pixet::RgbImage img;
-            if (pixet::decodeJpeg(fileBytes.data(), fileBytes.size(), req.targetLongEdge, img)) {
-                pixet::applyOrientation(img, exif.orientation);
-                result = rgbImageToQImage(img);
-            }
-        }
+    pixet::RgbImage img;
+    if (pixet::decodeForDisplay(req.filePath.toStdWString(), (pixet::Format)req.fmt, req.targetLongEdge, img)) {
+        result = rgbImageToQImage(img);
     }
 
     emit decoded(req.requestId, result);

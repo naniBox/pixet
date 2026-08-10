@@ -23,6 +23,7 @@ class PreviewDecoder;
 class PreviewPane;
 class FolderIndexer;
 class BackgroundReconciler;
+class RawRenderer;
 class FullscreenViewer;
 
 namespace pixet {
@@ -39,6 +40,8 @@ public:
 signals:
     // Connected (queued, cross-thread) to FolderIndexer::indexFolder.
     void requestIndex(QString path, bool force, bool forceRethumbnail);
+    // Connected (queued, cross-thread) to RawRenderer::prioritize.
+    void requestRawRenderPriority(QString path);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -70,8 +73,10 @@ private slots:
     // to the previous/next sibling folder, left to the parent, right into the first
     // subfolder.
     void onNavigateFolderRequested(Qt::Key direction);
-    // BackgroundReconciler found and corrected drift in a directory - refresh the grid
-    // if that's the one currently on screen (no-op otherwise).
+    // BackgroundReconciler found and corrected drift in a directory, or RawRenderer
+    // upgraded a RAW file to a full render there - refresh the grid (and the RAW
+    // rendered/preview status) if that's the one currently on screen (no-op otherwise).
+    // Connected to both workers' directoryChanged signals - same handling either way.
     void onBackgroundDirectoryChanged(QString path);
 
 private:
@@ -93,6 +98,8 @@ private:
     // browsing (arrow keys, clicking through images) doesn't visually jitter as
     // filenames/values change length - see updateSelectionStatus().
     QLabel *folderStatsLabel_;
+    // Empty unless the current folder has any RAW files - see updateSelectionStatus().
+    QLabel *rawStatusLabel_;
     QLabel *fileNameLabel_;
     QLabel *formatLabel_;
     QLabel *dimsLabel_;
@@ -119,6 +126,9 @@ private:
     // Low-priority background sweep that keeps already-indexed folders honest against
     // files changed on disk outside pixet - see BackgroundReconciler's class comment.
     std::unique_ptr<BackgroundReconciler> backgroundReconciler_;
+    // Low-priority background upgrade of RAW files from their fast embedded-preview
+    // thumbnail to a full demosaic render - see RawRenderer's class comment.
+    std::unique_ptr<RawRenderer> rawRenderer_;
 
     QTimer *previewDebounce_;
     QString currentPath_;

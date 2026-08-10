@@ -63,6 +63,12 @@ public:
 
 private:
     void applySchema();
+    // One-time, idempotent data fixups keyed off PRAGMA user_version - for changes to
+    // what a stored value *means* that CREATE TABLE IF NOT EXISTS can't express (new
+    // columns/tables are handled by the schema SQL itself; this is for the case where
+    // existing rows' data needs correcting in place). See Database.cpp for the specific
+    // migrations.
+    void runMigrations();
 
     sqlite3 *db_ = nullptr;
 };

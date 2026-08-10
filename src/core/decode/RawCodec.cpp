@@ -5,6 +5,7 @@
 #include <libraw/libraw.h>
 
 #include "JpegCodec.h"
+#include "RgbImage.h"
 
 namespace pixet {
 
@@ -13,6 +14,26 @@ namespace {
 // LibRaw's open_buffer() takes a non-const pointer even though it only reads - it
 // never mutates the caller's buffer.
 void *nonConst(const uint8_t *data) { return const_cast<uint8_t *>(data); }
+
+// LibRaw/dcraw's "flip" encoding (0/1/2/3/4/5/6/7) is not EXIF's orientation encoding
+// (1-8), even though both describe the same eight cases - see tiff.cpp's
+// `t_flip = "50132467"[exifOrientation & 7]` table, which this is the inverse of.
+// Needed because decodeRawThumb(), unlike decodeRaw(), decodes the embedded preview
+// JPEG directly rather than going through LibRaw's own dcraw_process()/output_flip
+// pipeline, so nothing rotates it to upright automatically.
+int exifOrientationForFlip(int flip) {
+    switch (flip) {
+        case 0: return 1;
+        case 1: return 2;
+        case 2: return 4;
+        case 3: return 3;
+        case 4: return 5;
+        case 5: return 8;
+        case 6: return 6;
+        case 7: return 7;
+        default: return 1;
+    }
+}
 
 } // namespace
 
@@ -52,6 +73,14 @@ bool decodeRawThumb(const uint8_t *data, size_t size, int targetLongEdge, RgbIma
     }
 
     raw.dcraw_clear_mem(thumb);
+
+    // The embedded JPEG's own bytes are stored as the sensor saw them, not upright -
+    // decodeJpeg() above has no EXIF of its own to correct that (it's raw thumbnail
+    // data extracted by LibRaw, not a standalone EXIF-bearing JPEG file), so apply the
+    // file's own orientation (sizes.flip, same field readRawDimensions() reads)
+    // ourselves. decodeRaw()'s dcraw_process() path does this internally instead.
+    if (ok) applyOrientation(out, exifOrientationForFlip(raw.imgdata.sizes.flip));
+
     return ok;
 }
 

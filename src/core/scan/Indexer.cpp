@@ -29,6 +29,10 @@ struct ExistingFile {
 struct PendingThumb {
     int64_t fileId;
     Format fmt;
+    int64_t oldThumbId; // 0 = none. Nonzero means this thumb is *replacing* an
+                         // existing one (e.g. a RAW file upgrading from
+                         // embedded-preview to full render via --render-raws) - that
+                         // old blob needs deleting or it leaks in thumbs.db forever.
     ThumbResult result;
 };
 
@@ -186,17 +190,18 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
     // plus state=DoneNeedsRender too when a --render-raws pass is asking to catch up
     // every RAW file still sitting on its fast embedded-preview thumbnail (see
     // IndexOptions::renderRaws).
-    std::string pendingSql = "SELECT id, name, fmt FROM files WHERE dir_id=? AND (state=" +
+    std::string pendingSql = "SELECT id, name, fmt, thumb_id FROM files WHERE dir_id=? AND (state=" +
                               std::to_string((int64_t)FileState::New);
     if (opts_.renderRaws) pendingSql += " OR state=" + std::to_string((int64_t)FileState::DoneNeedsRender);
     pendingSql += ")";
 
-    std::vector<std::pair<int64_t, std::wstring>> pending; // (fileId, name)
+    std::vector<std::tuple<int64_t, std::wstring, int64_t>> pending; // (fileId, name, existingThumbId)
     {
         auto sel = db_.prepare(pendingSql);
         sel.bind(1, dirId);
         while (sel.step()) {
-            pending.emplace_back(sel.columnInt64(0), toUtf16(sel.columnText(1)));
+            int64_t existingThumbId = sel.columnIsNull(3) ? 0 : sel.columnInt64(3);
+            pending.emplace_back(sel.columnInt64(0), toUtf16(sel.columnText(1)), existingThumbId);
         }
     }
 
@@ -243,6 +248,12 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
                     updFile.bind(6, pt.fileId);
                     updFile.step();
 
+                    if (pt.oldThumbId != 0) {
+                        auto delThumb = db_.prepare("DELETE FROM thumbs.thumbs WHERE id=?");
+                        delThumb.bind(1, pt.oldThumbId);
+                        delThumb.step();
+                    }
+
                     if (pt.result.tier == ThumbTier::EmbeddedPreview) stats.thumbsEmbedded++;
                     else stats.thumbsDecoded++;
                     break;
@@ -267,15 +278,20 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::wstring &dirPath,
         if (callbacks.onProgress) callbacks.onProgress(stats);
     };
 
-    for (auto &[fileId, name] : pending) {
+    for (auto &[fileId, name, existingThumbId] : pending) {
         Format fmt = classifyFormat(name);
         // Also forces a fresh (state=New) RAW file straight to a full render during a
         // --render-raws run - see IndexOptions::renderRaws.
         bool forceFullRender = opts_.renderRaws && fmt == Format::Raw;
         ThumbResult result =
             generateThumb(joinPath(dirPath, name), fmt, opts_.targetLongEdge, opts_.quality, forceFullRender);
-        batch.push_back({fileId, fmt, std::move(result)});
-        if (batch.size() >= kBatchSize) flushBatch();
+        batch.push_back({fileId, fmt, existingThumbId, std::move(result)});
+        // A forced full RAW render is slow enough (real demosaic decode, not a cheap
+        // embedded-preview extraction) that batching it in with up to 63 more before
+        // the caller hears about it would defeat the point of wanting to *watch*
+        // progress on a large RAW folder rather than wait for it in one lump - flush
+        // every such item immediately instead of only at the usual batch size.
+        if (batch.size() >= kBatchSize || forceFullRender) flushBatch();
     }
     flushBatch();
 

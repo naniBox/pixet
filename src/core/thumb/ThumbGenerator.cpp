@@ -223,11 +223,12 @@ ThumbResult generateRawThumb(const std::vector<uint8_t> &fileBytes, int targetLo
                               bool forceFullRender) {
     ThumbResult result;
 
-    // LibRaw's decode pipeline (both the embedded-thumb and full-demosaic paths)
-    // applies the file's embedded orientation to its output automatically -
-    // orientation stays at its default (1, "no further rotation needed"), unlike
-    // JPEG's explicit applyOrientation() step. readRawDimensions() already accounts
-    // for that same rotation when reporting origWidth/origHeight.
+    // decodeRaw() (full demosaic) applies the file's embedded orientation to its
+    // output automatically via LibRaw's own pipeline; decodeRawThumb() (embedded
+    // preview) does its own explicit applyOrientation() call instead, same idea as
+    // JPEG's, since it decodes the embedded preview JPEG's raw bytes directly rather
+    // than going through that pipeline - see RawCodec.cpp. readRawDimensions()
+    // already accounts for the same rotation when reporting origWidth/origHeight.
     readRawDimensions(fileBytes.data(), fileBytes.size(), result.origWidth, result.origHeight);
 
     RgbImage img;

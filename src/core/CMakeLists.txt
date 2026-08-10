@@ -56,6 +56,8 @@ add_library(pixet_core STATIC
     decode/AvifCodec.cpp
     decode/HeifCodec.h
     decode/HeifCodec.cpp
+    decode/DisplayCodec.h
+    decode/DisplayCodec.cpp
 
     thumb/ThumbGenerator.h
     thumb/ThumbGenerator.cpp

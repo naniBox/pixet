@@ -129,6 +129,51 @@ Database::~Database() {
 void Database::applySchema() {
     exec(kIndexSchemaSql);
     exec(kThumbsSchemaSql);
+    runMigrations();
+}
+
+void Database::runMigrations() {
+    int64_t version = 0;
+    {
+        auto sel = prepare("PRAGMA user_version");
+        if (sel.step()) version = sel.columnInt64(0);
+    }
+
+    if (version < 1) {
+        // FileState::DoneNeedsRender didn't exist before this - every RAW file already
+        // sitting at Done was thumbnailed by code that couldn't tell "fast embedded
+        // preview" and "full demosaic render" apart, so it's genuinely ambiguous which
+        // one any given row actually got. Reclassify all of them back to
+        // DoneNeedsRender so RawRenderer/`--render-raws` gives every one of them a real
+        // (or confirming) pass - safe even for ones that already happened to be fully
+        // rendered, since re-rendering is idempotent (some wasted CPU once, not an
+        // incorrect result). Without this, any RAW file indexed before this migration
+        // existed would sit at Done forever, invisible to the render-upgrade path -
+        // exactly what happened in practice (see devlog).
+        exec("UPDATE files SET state=" + std::to_string((int64_t)FileState::DoneNeedsRender) +
+             " WHERE fmt=" + std::to_string((int64_t)Format::Raw) +
+             " AND state=" + std::to_string((int64_t)FileState::Done));
+        exec("PRAGMA user_version = 1");
+    }
+
+    if (version < 2) {
+        // FileState::Unsupported can only be produced today by ThumbGenerator's
+        // per-format switch falling through to its default case - and every format
+        // that can actually reach ThumbGenerator (i.e. every Format enum value except
+        // Unknown, which never gets a files row at all - see Indexer's Pass A) has
+        // explicit handling there now. So any row sitting at Unsupported today is
+        // necessarily stale: it was marked that way by an older build, from before
+        // that format's decoder existed (Video was the concrete case found in
+        // practice - see devlog), and normal re-scanning never revisits it since Pass
+        // B only processes State::New (or DoneNeedsRender, for a --render-raws pass) -
+        // an already-Unsupported row is invisible to it forever otherwise. Reclassify
+        // back to New so Pass B gives every one of them a real pass with today's
+        // actual format support. Safe even for a row that would genuinely still fail -
+        // it just lands back on Unsupported/Failed again, no worse than before.
+        exec("UPDATE files SET state=" + std::to_string((int64_t)FileState::New) +
+             " WHERE state=" + std::to_string((int64_t)FileState::Unsupported));
+        exec("PRAGMA user_version = 2");
+    }
 }
 
 void Database::exec(const std::string &sql) {
