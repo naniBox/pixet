@@ -5,6 +5,86 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-10 — desktop — P5 prep: audited and fixed every macOS portability blocker reachable from this machine
+
+Nothing to actually build/test for macOS from a Windows box, but everything that
+*can* be verified here (still compiling and behaving correctly on Windows) is done -
+next machine's P5 session should be `.app` bundling, signing, and writing the small
+number of `_mac.cpp` files this now clearly calls out, not an open-ended audit.
+
+**Audit first** (via a research-only subagent sweep of the whole tree): direct WinAPI
+usage, `std::wstring`-as-path-type throughout `pixet_core` (an MSVC-only convention -
+`std::ifstream`/`Database` accepting a `wstring` path doesn't even compile against
+libstdc++/libc++), CMake's `WIN32` executable flag, `GetCurrentProcessId()`, and the
+PowerShell-only `scripts/*.ps1`. Full punch list came back; worked through everything
+except the PowerShell scripts (a macOS session writes its own `configure.sh`/`build.sh`
+- nothing to "port" there, they're a different tool for the same job) and the actual
+`_mac.cpp` implementations themselves (can't write *and verify* platform code with no
+platform to run it on - a confidently-wrong guess is worse than an honest gap).
+
+**The real work: migrated `pixet_core`'s path/filename type from `std::wstring` to
+UTF-8 `std::string` everywhere** (`AppPaths`, `PathUtil`, `FileIO`, `DirWalker`,
+`Database`'s ctor, `Schema::classifyFormat`, `Indexer`, `ThumbGenerator`,
+`DisplayCodec`, `VideoCodec` - every path-carrying signature in the library). This was
+the single biggest blocker and, unlike the WinAPI calls themselves, was fully
+verifiable right here: `pixet_core`'s public API is now identical UTF-8 `std::string`
+on every platform, with the four functions that must still cross into an actual WinAPI
+call (`AppPaths`, `PathUtil`, `FileIO`, `DirWalker`) renamed to `*_win.cpp` and
+converting to/from UTF-16 only right at that boundary (`StringUtil`'s `toUtf8`/
+`toUtf16`, now scoped to exactly that - previously a general-purpose-looking helper,
+misleadingly, since almost nothing actually needed UTF-16 outside these four files).
+`CMakeLists.txt` now has an explicit `if(WIN32) ... else() message(FATAL_ERROR
+"needs util/FileIO, util/PathUtil, ...") endif()` block instead of silently expecting
+Windows - a macOS build fails immediately with a list of exactly what's missing,
+rather than a wall of undefined-reference linker errors.
+
+Net effect on the *existing* Windows code, not just macOS-readiness: a lot of
+`QString::toStdWString()` → `pixet::toUtf8()` → SQL bind (and the reverse on the way
+out) round-trips throughout `src/app/*.cpp` turned out to be pure overhead - `sel.
+columnText()` was always UTF-8 (SQLite storage already was), `QString::toStdString()`/
+`fromStdString()` already round-trip UTF-8 directly. Removing the wstring hop instead
+of just retyping around it made `RawRenderer`, `BackgroundReconciler`, `FolderIndexer`,
+`MainWindow`, `ThumbGridModel`, `PreviewDecoder`, and `FullscreenDecoder` all
+genuinely simpler, not just "equally complex but portable."
+
+**Smaller pieces**: `GetCurrentProcessId()` (4 call sites, used only to build claim-
+owner strings) replaced with a new `util/ProcessId.h`/`.cpp` -
+`#ifdef _WIN32` internally (`GetCurrentProcessId()` vs. POSIX `getpid()`) rather than a
+separate file, since it's a one-line function, not a file's worth of platform logic.
+`add_executable(pixet WIN32 ...)` - harmless on macOS (CMake ignores `WIN32` there) but
+produces a bare Unix binary, not a real `.app` - now branches to `MACOSX_BUNDLE` under
+`if(APPLE)`. Added `mac-debug`/`mac-release` `CMakePresets.json` entries mirroring the
+existing ones, `condition`-gated to Darwin so they don't clutter `cmake --list-presets`
+here; `CMAKE_PREFIX_PATH` points at the official-installer Qt default location
+(`~/Qt/6.8.3/macos`) per the plan's own stated install method - genuinely untested,
+flagged as such, first thing to check if configure fails on the mac.
+
+**Tests**: `TestPaths.h` rewritten on `std::filesystem` (`temp_directory_path()`,
+`create_directories`, `remove`) instead of raw `GetTempPathW`/`CreateDirectoryW` -
+fully portable as written, since test fixture paths are always plain ASCII (ASCII is a
+subset of both UTF-8 and the Windows ANSI codepage, so the usual UTF-8-vs-codepage
+`std::ifstream(string)` pitfall that makes production code need the `_win.cpp` WinAPI
+route doesn't apply to test scaffolding at all). Consolidated four copy-pasted
+`writeFile()` helpers (one per codec test file, each doing its own raw `CreateFileW`)
+into one `writeTestFile()` in `TestPaths.h`. Dropped `<Windows.h>` from five test files
+entirely.
+
+**Deliberately not attempted**: the `_mac.cpp` implementations themselves
+(`AppPaths`/`PathUtil`/`FileIO`/`DirWalker`/`StringUtil`'s Windows-only helpers have no
+POSIX equivalents written yet - `FileIO`'s in particular could likely just be a single
+portable `std::ifstream`-based implementation shared by both platforms once written,
+no `_mac.cpp` needed there at all, but that's a call better made *with* a mac to build
+against). `.app` bundling/signing/`macdeployqt`. Actually running anything on macOS.
+
+**Live-verified no Windows regression** from the `wstring`→UTF-8 migration - the
+highest-risk part, since a mishandled encoding boundary could have silently mangled
+non-ASCII filenames. Full test suite (47/47) clean, then the real library:
+navigated to a folder with an accented filename for real
+(`Photos\Models\mdl.2011-05-15_Noémie\...Noémie_DMO6831.jpg`) - path bar, tree,
+status bar, and thumbnails all render the "é" correctly, nothing mangled.
+
+---
+
 ## 2026-08-10 — desktop — Fixed "no preview" for video: DisplayCodec never handled it, and 22 real videos were stuck on stale state from before video support existed
 
 User: "no preview" persists for movies. Two independent bugs stacked on the same files.
