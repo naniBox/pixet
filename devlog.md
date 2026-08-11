@@ -5,6 +5,54 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-11 — desktop — Fix side-panel-toggle scroll loss, add configurable keybindings
+
+**`T` (toggle side panel) was losing the current selection off-screen.** Hiding/
+showing `leftPanel_` changes the grid's column count (e.g. 3-wide -> 6-wide), but
+`ThumbGridView`'s scroll position is a raw pixel offset with no idea rows just got
+reflowed - the same offset lands on a completely different set of rows once the
+column count changes. Fix: `MainWindow::onToggleSidePanel()` now re-centers on
+`grid_->currentRow()` after the toggle, deferred via `QTimer::singleShot(0, ...)`
+since `QSplitter`'s space redistribution is a posted layout request, not
+synchronous - scrolling immediately would still measure against the pre-toggle
+viewport width.
+
+**Configurable keybindings.** New `KeyBindings.h/.cpp`: a small action registry (7
+actions) backed by `prefs::settingsStore()`, plus a `keybindings::matches(QKeyEvent*,
+QKeySequence)` helper both `ThumbGridView` and `FullscreenViewer` now check ahead of
+their fixed-navigation `switch` statements. Deliberately scoped to "single action
+trigger" keys only - Toggle Side Panel, Refresh, Add Bookmark, and the fullscreen
+viewer's true-fullscreen/zoom/info-overlay toggles plus its open/close (shared with
+the grid's open-in-fullscreen key, preserving the existing toggle behavior) - not
+grid/fullscreen directional navigation (arrows, Home/End, PageUp/PageDown, Space,
+Ctrl+arrow folder nav) or Escape-to-close, which stay fixed as conventions nobody
+really wants to remap. Escape always closes the fullscreen viewer regardless of what
+the configurable open/close binding gets reassigned to, so there's no way to lock
+yourself out of it by rebinding.
+
+`PreferencesDialog` gained a "Keybindings" section: one `QKeySequenceEdit` per
+action (capped to a single key/chord via `setMaximumSequenceLength(1)`) plus "Reset
+All to Defaults". Validated on OK against a reserved-key list (the fixed navigation
+keys above) and against each other - a conflict blocks the whole dialog from closing
+rather than silently letting one binding shadow another.
+
+Live-verified end to end: rebound a key via the editor, confirmed it landed in
+`pixet.ini` under a new `[keybindings]` group, and confirmed pressing an unmodified
+default (`I` for the fullscreen info overlay) still triggers correctly through the
+new indirection - both the `FullscreenViewer` `matches()` path and `MainWindow`'s
+`QAction`-based path (`T` for toggle side panel, tested together with the scroll fix
+above) work correctly. One live-testing note for future reference, not an app bug:
+Application Verifier / page-heap-style tooling aside, plain synthetic key injection
+(`SendInput`) proved unreliable against this specific modal dialog in ways
+`WScript.Shell.SendKeys` wasn't - and separately, the physical NumLock key doesn't
+seem to reach `QWidget::keyPressEvent()` as a normal key the way letter keys do
+(Windows/Qt likely treat toggle keys specially), so it's a poor choice for testing
+even though `QKeySequenceEdit` captures and stores it just fine.
+
+Build + full test suite (47/47) clean on both debug and release presets.
+
+---
+
 ## 2026-08-11 — desktop — Grid rewrite (QListView column-fit bug) + a real heap corruption fix
 
 **The grid column-fit bug came back, and this time it got root-caused properly.**
