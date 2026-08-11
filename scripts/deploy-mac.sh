@@ -28,9 +28,21 @@
 #     ./scripts/deploy-mac.sh
 #
 # (PIXET_NOTARY_PROFILE is a keychain profile previously stored with
-#  `xcrun notarytool store-credentials`.) The hardened runtime is enabled unconditionally
-# below, because notarization requires it and turning it on later can surface new failures -
-# better that it's always the configuration being tested.
+#  `xcrun notarytool store-credentials`.)
+#
+# The hardened runtime is enabled only when a real identity is supplied, and that is not
+# timidity - enabling it with an ad-hoc signature produces an app that cannot launch at all:
+#
+#   dyld: Library not loaded: @rpath/QtWidgets.framework/...
+#         code signature ... not valid for use in process:
+#         mapping process and mapped file (non-platform) have different Team IDs
+#
+# The hardened runtime turns on *library validation*, which only lets a process load libraries
+# sharing its own Team ID. Ad-hoc signatures have no Team ID, so every embedded Qt framework
+# gets rejected - found, then refused. With a Developer ID the whole bundle is signed by one
+# team and it's a non-issue, which is why it's switched on exactly there and nowhere else.
+# (The alternative, a com.apple.security.cs.disable-library-validation entitlement, would
+# weaken the notarized build to fix the unsigned one. Wrong trade.)
 
 set -euo pipefail
 
@@ -74,20 +86,47 @@ echo "==> Running macdeployqt (embedding Qt frameworks + the Cocoa plugin)"
 "$MACDEPLOYQT" "$APP" -always-overwrite
 
 echo "==> Signing (identity: $IDENTITY)"
-# Sign inside-out: nested frameworks and the plugin first, then the bundle. --deep is
-# deprecated and known to miss nested code, so the frameworks are signed explicitly instead.
-find "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" -type f \( -name "*.dylib" -o -perm -u+x \) 2>/dev/null \
-    | while read -r binary; do
-        codesign --force --timestamp --options runtime --sign "$IDENTITY" "$binary" 2>/dev/null || true
-    done
+# --options runtime and --timestamp only apply to a real identity: see the header comment for
+# why the hardened runtime breaks an ad-hoc-signed bundle outright, and --timestamp needs a
+# trusted identity plus a network round-trip to Apple to mean anything.
+SIGN_OPTS=(--force)
+if [ "$IDENTITY" != "-" ]; then
+    SIGN_OPTS+=(--timestamp --options runtime)
+fi
+
+# Sign inside-out: nested Mach-O files first, then each framework bundle, then the app.
+# --deep is deprecated and documented as missing nested code, so this walks it explicitly.
+while IFS= read -r binary; do
+    codesign "${SIGN_OPTS[@]}" --sign "$IDENTITY" "$binary" 2>/dev/null || true
+done < <(find "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" -type f \( -name "*.dylib" -o -perm -u+x \) 2>/dev/null)
+
 for fw in "$APP"/Contents/Frameworks/*.framework; do
     [ -d "$fw" ] || continue
-    codesign --force --timestamp --options runtime --sign "$IDENTITY" "$fw"
+    codesign "${SIGN_OPTS[@]}" --sign "$IDENTITY" "$fw"
 done
-codesign --force --timestamp --options runtime --sign "$IDENTITY" "$APP"
+codesign "${SIGN_OPTS[@]}" --sign "$IDENTITY" "$APP"
 
 echo "==> Verifying signature"
 codesign --verify --deep --strict --verbose=2 "$APP"
+
+echo "==> Verifying nothing still links against the build machine's Qt"
+# Cheap guard against the classic "works only on the machine that built it" bundle. Not a
+# substitute for the ~/Qt-moved-aside test printed at the end - that one also catches
+# signature problems this can't see - but it catches a macdeployqt step that silently failed
+# to rewrite an install name, without touching the user's Qt install.
+LEAKED=0
+while IFS= read -r macho; do
+    if otool -L "$macho" 2>/dev/null | tail -n +2 | grep -q "$HOME/Qt"; then
+        echo "  LEAK: $macho still references $HOME/Qt" >&2
+        LEAKED=1
+    fi
+done < <(find "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" \
+              -type f \( -name "*.dylib" -o -perm -u+x \) 2>/dev/null)
+if [ "$LEAKED" -ne 0 ]; then
+    echo "error: the bundle is not self-contained - see the leaks above." >&2
+    exit 1
+fi
+echo "  clean - all Qt references are @rpath/@executable_path relative"
 
 echo "==> Building DMG"
 rm -rf "$STAGE"

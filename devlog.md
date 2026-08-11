@@ -5,6 +5,205 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-11 — mac — P5 delivered: pixet builds, indexes and runs on Apple Silicon
+
+First entry from the Mac (tagged `mac`; the Windows box is `desktop`). P5 prep's punch list
+is done and the app is real: `pixet.app` launches, browses, thumbnails, previews, goes
+fullscreen and hands videos to the system player. Landed as three commits on
+`feature/osx-port` rather than `master`.
+
+**The `_mac.cpp` files, and the one place I reversed P5 prep's own suggestion.**
+`AppPaths_mac` (→ `~/Library/Application Support/pixet`), `DirWalker_mac`
+(`opendir`/`readdir` + `fstatat`), `PathUtil_mac`, and an `elseif(APPLE)` branch.
+`StringUtil.h` moved *into* the `if(WIN32)` block - it was listed unconditionally, which
+left two `std::wstring` declarations with no definition on any non-Windows build. Its macOS
+counterpart is `util/Unicode` (see below), symmetrically Windows-absent.
+
+`normalizePath` is deliberately **lexical**, not `realpath(3)`. `GetFullPathNameW` collapses
+`.`/`..` as pure string arithmetic - it never touches the filesystem and never resolves
+symlinks. `realpath` does both. Since `dirs.path` *is* a folder's identity (`TEXT UNIQUE`),
+resolving symlinks would give the same folder two identities depending on which route the
+user navigated in by - and on macOS `/tmp`, `/var` and `/etc` are all symlinks, so that's
+not hypothetical.
+
+**`FileIO` stayed two files, contradicting P5 prep's "could likely just be a single portable
+`std::ifstream`-based implementation".** That suggestion sits two paragraphs from the note
+that undermines it: `std::ifstream`'s narrow-string constructor reads the path in the
+platform's native narrow encoding, which on MSVC is the ANSI codepage, not UTF-8. A shared
+implementation would therefore have silently broken every non-ASCII filename on Windows -
+the exact thing that entry then went and live-verified working with a real accented folder.
+This was flagged as "a call better made with a mac to build against"; made, with the
+reasoning recorded in `FileIO_mac.cpp`. (`std::filesystem::path`'s `char8_t` constructor
+would genuinely work on both and is the eventual cleanup, but it also changes Windows'
+sharing mode and read chunking, which can't be verified from here.)
+
+**`DirWalker_mac` diverges from Windows on purpose, in two ways worth knowing before
+comparing the files.** It skips dot-entries and macOS bundles, where the Windows version
+filters nothing at all (it never checks `FILE_ATTRIBUTE_HIDDEN`). Dotfiles matter less for
+the `.DS_Store` litter than for dot-*directories*: `.Trash`, `.Spotlight-V100` and `.git`
+would otherwise all get `dirs` rows and be recursed into. Bundles have no Windows analogue
+whatsoever - `Photos Library.photoslibrary` alone would bury a real library in derivative
+copies. Verified: indexing `~/Pictures` visits exactly 2 directories.
+
+It also reports symlinked directories as non-directories via `AT_SYMLINK_NOFOLLOW`, which is
+load-bearing rather than fastidious - it's the primary defense against symlink loops.
+
+**Three separator bugs, one of them in code that compiles on every platform.**
+`Indexer.cpp`'s `joinPath()` hardcoded `'\\'` - its own comment admitted it was deferred
+work - so every subdirectory would have been stored as `/Users/x/Photos\Sub`. Plus three
+inline `dir + "\\" + name` joins in the GUI (`MainWindow` ×2, `FullscreenViewer`), each
+invisible on Windows and each individually enough to break preview, fullscreen decode or
+video launch. Now one `joinPath()` in `util/PathUtil` with a `joinPathQ` wrapper in a new
+`src/app/PathQ.h`.
+
+**NFC normalization: the bug class this port was most likely to ship silently.** macOS hands
+back decomposed filenames (HFS+ stored NFD; APFS is normalization-*preserving*, not
+normalizing) while Qt and Finder produce NFC. File identity here is raw UTF-8 bytes -
+`dirs.path TEXT UNIQUE`, `UNIQUE(dir_id, name)`, and a byte-keyed `unordered_map` for
+Indexer's diffing - so an accented folder would quietly acquire a second row and
+re-thumbnail forever. New `util/Unicode` pins everything to NFC through `CFStringNormalize`
+(CoreFoundation rather than an ICU dependency for the one Unicode operation in the tree).
+Verified byte-wise against a deliberately-decomposed directory: disk holds `4e6f 65cc 816d`,
+the DB holds `4e6f c3a9`.
+
+**Two indexer fixes that are Windows fixes too.** `dirMtimeUnix()` was called bare, so a
+single unreadable directory threw out through `run()` (also unguarded), aborting the whole
+index run *and* leaking the claim row it had just taken. Tolerable where unreadable folders
+are rare; fatal on macOS, where TCC gates Documents/Downloads/Desktop and "index my home
+folder" would reliably die on the first one. And `run()`'s worklist had no visited set and no
+depth cap. Added `IndexStats::dirsSkippedUnreadable` so skipped folders are a number the
+user can see rather than a silent gap - which is also how the fix got verified (a `chmod 000`
+directory now reports `1 unreadable` and the run continues).
+
+Also noted, not fixed: `DirWalker_win.cpp`'s `while (FindNextFileW(...))` can't distinguish
+end-of-directory from a mid-enumeration error, so a failure silently truncates the listing -
+which `Indexer` reads as "everything after this was deleted" and prunes. `DirWalker_mac`
+checks `errno` after the loop and doesn't reproduce it. **Worth fixing on the next Windows
+session.**
+
+**Qt 6.8.3 does not link against the macOS 26 SDK unaided**, and the mechanism is the
+reverse of what the error suggests. `ld: framework 'AGL' not found`. Qt's own
+`FindWrapOpenGL.cmake` does `find_library(AGL)` with a fallback to a literal
+`-framework AGL` - and the lookup *succeeds*, because CMake searches the live system where
+`/System/Library/Frameworks/AGL.framework` still exists. CMake then rewrites that absolute
+path to `-framework AGL`, and the linker resolves it against the **SDK**, which has no AGL
+at all. So it breaks precisely because the find worked, which is why matching the literal
+string `"-framework AGL"` finds nothing and the filter has to catch the path form. Filtered
+in `src/app/CMakeLists.txt`; deletable when the pinned Qt moves past 6.8.
+
+**The distribution blocker nobody would have noticed locally: `minos 26.0`.** Neither our
+build nor the vcpkg ports set a deployment target, so both inherited the build machine's SDK
+default and the resulting app would have refused to launch on any macOS older than the
+machine that built it. Now pinned to 12.0 - Qt 6.8's own floor - in the two places that must
+agree: `CMAKE_OSX_DEPLOYMENT_TARGET` and a new overlay triplet
+`triplets/arm64-osx-pixet.cmake`. Two traps hit while doing it, both worth remembering:
+
+- **`set(CMAKE_OSX_DEPLOYMENT_TARGET ...)` must not be wrapped in `if(APPLE)`.** `APPLE` is
+  only defined *by* `project()`, and the variable must be set *before* it (the compiler probe
+  consumes it), so the guard silently never runs and the value stays empty. The symptom is
+  nothing at all - no warning, just `minos` unchanged and an empty `LSMinimumSystemVersion`.
+- **Changing `VCPKG_TARGET_TRIPLET` in an existing build directory leaves a poisoned cache.**
+  76 stale `arm64-osx/` paths against 7 new ones, surfacing as
+  `IMPORTED_LOCATION not set for imported target "JPEG::JPEG" configuration "Debug"`. Delete
+  the build directory; the binary cache means the dependencies don't rebuild from source.
+
+**Retina.** Every display decode was sized in logical points with no `devicePixelRatio`
+anywhere in the tree, so images decoded at half the resolution the screen can show and the
+compositor upscaled the difference - and "1:1 zoom" was really 2×. Fixed at all three decode
+sites plus `ThumbGridView`'s centring (`deviceIndependentSize()`, without which every
+thumbnail sits half its own size up and left). `FullscreenViewer`'s paint path needed no
+change at all: it already derived everything from the native size and drew into logical
+rects, so a higher-resolution source just gives it more to sample - the continuous-zoom
+rework from the P3 follow-up paid off again here.
+
+**macOS conventions.** Explicit `setMenuRole` rather than Qt's text heuristic; on Apple,
+Preferences and About live in File, because Qt relocates them into the application menu and a
+Tools menu holding only Preferences renders as a visible title with nothing under it. Added
+About, and a folder picker - there wasn't one *anywhere* in the app, survivable on Windows
+where the tree opens on a drive list but not on macOS where an unrooted `QFileSystemModel`
+shows a bare `/` (the tree now roots at `$HOME` there). Default Refresh becomes Cmd+R, since
+F5 needs Fn on a Mac keyboard. Window state now also saves from `aboutToQuit`, because Cmd+Q
+goes through the application menu and need not deliver a `closeEvent` - it would have quietly
+stopped persisting geometry for the most common way of quitting. A custom video player can now
+be an `.app` bundle (routed via `open -a`; `startDetached` can't exec a directory, and the
+native open panel hands back exactly that), and its return value is no longer discarded.
+
+**Distribution, and what it actually costs.** `scripts/deploy-mac.sh` produces a
+self-contained ad-hoc-signed DMG. Only Qt needs embedding - the `arm64-osx` triplet is
+static, so every codec is already inside the executable; there's no DLL-herding equivalent
+here. Ad-hoc signing is enough to run but *not* to hand over: a downloaded DMG gets
+quarantined and Gatekeeper refuses anything not Developer-ID-signed **and** notarized, so a
+recipient has to launch it, be refused, then use System Settings → Privacy & Security →
+"Open Anyway" (the Control-click bypass died in macOS 15). Removing that friction needs a
+$99/year Apple Developer membership, and the script is arranged so it's environment variables
+only - `PIXET_CODESIGN_IDENTITY` and `PIXET_NOTARY_PROFILE`. Decision: unsigned for now,
+recipients get told.
+
+**The one thing only an actual test caught: hardened runtime and ad-hoc signing are mutually
+exclusive.** The first version of `deploy-mac.sh` passed `--options runtime` unconditionally,
+on the reasoning that notarization requires it so it may as well always be the configuration
+being exercised. `codesign --verify` passed, `macdeployqt` reported success, the frameworks
+were all present in `Contents/Frameworks`, `otool -L` showed clean `@rpath` install names, and
+`@executable_path/../Frameworks` was correctly baked in. The app still could not launch:
+
+```
+dyld: Library not loaded: @rpath/QtWidgets.framework/Versions/A/QtWidgets
+      code signature ... not valid for use in process:
+      mapping process and mapped file (non-platform) have different Team IDs
+```
+
+The hardened runtime enables *library validation*, which permits loading only libraries
+sharing the process's own Team ID - and an ad-hoc signature has no Team ID at all, so every
+embedded Qt framework is found and then refused. With a Developer ID the whole bundle shares
+one team and it's a non-issue, so `--options runtime` (and `--timestamp`, which needs a
+trusted identity anyway) is now applied only when a real identity is supplied. The tempting
+alternative - a `com.apple.security.cs.disable-library-validation` entitlement - would weaken
+the notarized build in order to fix the unsigned one, which is the wrong way round.
+
+Worth generalising from: every signal available short of launching the thing said the bundle
+was fine. `deploy-mac.sh` now also greps every Mach-O in the bundle for lingering `$HOME/Qt`
+references and fails if it finds any, but the definitive test is still the crude one -
+`mv ~/Qt ~/Qt.aside`, launch, move it back. Now verified passing.
+
+Smaller pieces: the version string now has one source (`project(VERSION)` → `PIXET_VERSION`
+→ `version.cpp`), so the bundle's `CFBundleShortVersionString` can't drift from
+`pixet::version()`. The `&Debug` menu moved behind `PIXET_DEBUG_MENU`, default **ON** so
+nothing changes for daily use - `MainWindow.h` asks for it permanently - with
+`deploy-mac.sh` turning it off so it doesn't ship to someone else. An app icon exists at
+last (`scripts/make-icon.py`, stdlib-only, generated from a dozen parameters rather than
+checked in as an unreviewable blob). `.vscode` gained LLDB configs, and `settings.json`
+stopped pinning `cmake.configurePreset` - the presets are platform-gated, so any hardcoded
+value is wrong on one of the two machines.
+
+**What the next Windows session must re-verify**, since none of it could be tested here and
+all of it touches code Windows compiles: `joinPath` in `util/PathUtil` (+ the three GUI
+call sites), the two `Indexer` robustness fixes, `StringUtil.h`'s move into the `if(WIN32)`
+`target_sources` block (the single change most likely to break a Windows build if mistyped),
+the HiDPI decode sizing, `project(VERSION)`/`PIXET_VERSION`, and the File/Tools/Help menu
+reshuffle.
+
+**Verified here:** build clean; 65/65 tests (47 existing + 18 new covering `joinPath`,
+`normalizePath` idempotence and symlink-non-resolution, `readWholeFile`'s three contract
+corners, and NFC); `~/Pictures` → 201 files, 201 thumbnails, 0 failed, Photos library
+excluded; zero backslashes in the DB; an adversarial tree with three symlink loops
+terminating at 5 dirs with no loop rows and no leaked claims; `minos 12.0` with zero
+deployment-target mismatch warnings; `pixet.app` launches and indexes; the release build has
+the `&Debug` menu genuinely compiled out (checked with `strings`, not assumed); and a 37MB DMG
+whose app launches cleanly with `~/Qt` moved out of the way.
+
+**Not verified here, stated plainly:** no manual click-through of the fullscreen viewer,
+preview pane, bookmarks or video launch on this machine yet - the app runs and indexes, but
+the GUI interaction paths are inference from the code plus the fact that they're unchanged
+except where noted. Retina sharpness in particular deserves an eyeball next to Preview.app,
+since "it compiles and the numbers doubled" is not the same as "it looks right". The
+self-containment test was done by hiding `~/Qt` on this machine, which is a good proxy but
+still not someone else's Mac - and the Gatekeeper "Open Anyway" flow written into SETUP.md is
+reasoned from how quarantine works, not observed on a real recipient. Universal/Intel is
+untried by choice (arm64 only, though the Qt install is already universal and
+`CMAKE_OSX_ARCHITECTURES` is left overridable).
+
+---
+
 ## 2026-08-11 — desktop — Per-keybinding reset, resizable preview pane, heading contrast
 
 **Per-row keybinding reset.** "Reset All to Defaults" already existed in the
