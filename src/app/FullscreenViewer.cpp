@@ -14,6 +14,7 @@
 
 #include "FullscreenDecoder.h"
 #include "KeyBindings.h"
+#include "PathQ.h"
 #include "ThumbGridModel.h"
 #include "db/Schema.h"
 
@@ -112,7 +113,7 @@ QString FullscreenViewer::pathForRow(int row) const {
     if (!model_) return QString();
     QString name = model_->data(model_->index(row), Qt::DisplayRole).toString();
     if (name.isEmpty()) return QString();
-    return directoryPath_ + QStringLiteral("\\") + name;
+    return joinPathQ(directoryPath_, name);
 }
 
 int FullscreenViewer::formatForRow(int row) const {

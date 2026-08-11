@@ -1,23 +1,18 @@
 #include "Indexer.h"
 
+#include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "../db/Database.h"
 #include "../thumb/ThumbGenerator.h"
+#include "../util/PathUtil.h"
 #include "../util/Time.h"
 #include "DirWalker.h"
 
 namespace pixet {
 
 namespace {
-
-// Windows-separator join, matching what DirWalker/PathUtil produce - a portable
-// (std::filesystem::path::operator/-based) version is P5's job once there's a second
-// platform to join paths for.
-std::string joinPath(const std::string &dir, const std::string &name) {
-    if (!dir.empty() && dir.back() == '\\') return dir + name;
-    return dir + '\\' + name;
-}
 
 constexpr size_t kBatchSize = 64;
 
@@ -63,7 +58,21 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
         return;
     }
 
-    int64_t actualMtime = dirMtimeUnix(dirPath);
+    // dirMtimeUnix throws if the directory can't be stat'd, and this call used to be bare -
+    // which meant one unreadable folder threw straight out through run() (also unguarded),
+    // aborting the entire index run *and* leaking the claim row taken just above until its
+    // heartbeat went stale. Tolerable on Windows, where an unreadable folder in a photo
+    // tree is unusual; not on macOS, where TCC-protected directories are everywhere and
+    // "index my home folder" would reliably die on the first one. Handled the same way the
+    // listDir failure below already was: release the claim, count it, skip the folder.
+    int64_t actualMtime = 0;
+    try {
+        actualMtime = dirMtimeUnix(dirPath);
+    } catch (const std::exception &) {
+        claims_.release(dirId, opts_.owner);
+        stats.dirsSkippedUnreadable++;
+        return;
+    }
 
     int64_t storedMtime = 0, scannedAt = 0;
     {
@@ -91,6 +100,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
             entries = listDir(dirPath);
         } catch (const std::exception &) {
             claims_.release(dirId, opts_.owner);
+            stats.dirsSkippedUnreadable++;
             return; // directory vanished / permission denied mid-walk - just skip it
         }
 
@@ -301,11 +311,34 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
 void Indexer::run(const std::string &rootPath, IndexStats &stats, const IndexCallbacks &callbacks) {
     int64_t rootId = upsertDir(rootPath, -1);
 
-    std::vector<std::pair<int64_t, std::string>> queue;
-    queue.emplace_back(rootId, rootPath);
+    // This is a plain worklist, so anything that makes the directory graph cyclic turns it
+    // into a loop that keeps inserting dirs rows until the disk fills. DirWalker's macOS
+    // implementation refuses to report a symlinked directory as a directory at all (see its
+    // AT_SYMLINK_NOFOLLOW comment), which covers the common shape - /tmp -> /private/tmp and
+    // friends - but two cheap guards here cover what that can't.
+    //
+    // What each one actually buys, stated honestly:
+    //  - `visited` catches a directory reached twice by the *same* path string. That's the
+    //    realistic repeat case, and it's free.
+    //  - kMaxDepth bounds everything else. It does NOT detect a directory reached by two
+    //    different path strings (macOS firmlinks like /System/Volumes/Data, bind mounts, or
+    //    hardlinked directories) - those would still be indexed twice under two paths. Doing
+    //    that properly needs device+inode identity, which is a bigger change than a port
+    //    should carry (file identity here is deliberately (dir_id, name), not inode). The
+    //    depth cap means the failure mode is "some duplicate rows" rather than "fills the
+    //    disk", which is the part that actually matters.
+    // 64 is far deeper than any real photo library; a tree legitimately deeper than this
+    // stops being descended, silently by design rather than by oversight.
+    constexpr int kMaxDepth = 64;
+
+    std::unordered_set<std::string> visited;
+    visited.insert(rootPath);
+
+    std::vector<std::tuple<int64_t, std::string, int>> queue; // (dirId, path, depth)
+    queue.emplace_back(rootId, rootPath, 0);
 
     while (!queue.empty()) {
-        auto [dirId, dirPath] = queue.back();
+        auto [dirId, dirPath, depth] = queue.back();
         queue.pop_back();
 
         std::vector<std::pair<int64_t, std::string>> subdirs;
@@ -313,8 +346,11 @@ void Indexer::run(const std::string &rootPath, IndexStats &stats, const IndexCal
         stats.dirsVisited++;
         if (callbacks.onProgress) callbacks.onProgress(stats);
 
-        if (opts_.recursive) {
-            for (auto &sd : subdirs) queue.push_back(std::move(sd));
+        if (opts_.recursive && depth < kMaxDepth) {
+            for (auto &sd : subdirs) {
+                if (!visited.insert(sd.second).second) continue; // already walked this path
+                queue.emplace_back(sd.first, std::move(sd.second), depth + 1);
+            }
         }
     }
 }

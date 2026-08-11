@@ -32,6 +32,7 @@
 #include "FolderTreeView.h"
 #include "FullscreenViewer.h"
 #include "KeyBindings.h"
+#include "PathQ.h"
 #include "Preferences.h"
 #include "PreferencesDialog.h"
 #include "PreviewDecoder.h"
@@ -49,8 +50,11 @@
 #include "version.h"
 
 namespace {
-// dirs.path / files.name are UTF-8 in the DB; QFileSystemModel paths need the same
-// backslash-normalized form pixet_core writes, or path-string lookups silently miss.
+// dirs.path / files.name are UTF-8 in the DB; a path from QFileSystemModel has to be put
+// into the exact same form pixet_core writes before it's used as a lookup key, or the
+// query silently misses rows that are really there. That means the platform's separator
+// style (QFileSystemModel uses forward slashes even on Windows) and, on macOS, the Unicode
+// normalization form too - normalizePath() handles both.
 QString normalizeForDb(const QString &path) {
     return QString::fromStdString(pixet::normalizePath(path.toStdString()));
 }
@@ -524,7 +528,7 @@ void MainWindow::onGridItemActivated(int row) {
     // FullscreenViewer's class comment) - activating one launches an actual player
     // instead, per the user's own preference, rather than opening the viewer at all.
     if ((pixet::Format)index.data(ThumbGridModel::FormatRole).toInt() == pixet::Format::Video) {
-        QString filePath = currentPath_ + QStringLiteral("\\") + index.data(Qt::DisplayRole).toString();
+        QString filePath = joinPathQ(currentPath_, index.data(Qt::DisplayRole).toString());
         if (prefs::useSystemVideoPlayer() || prefs::customVideoPlayerPath().isEmpty()) {
             // Also the fallback when "Custom" is selected but no path was ever set -
             // silently doing nothing on activation would look like the double-click
@@ -561,7 +565,7 @@ void MainWindow::onGridSelectionChanged() {
 
     QString name = idx.data(Qt::DisplayRole).toString();
     pendingPreviewFmt_ = idx.data(ThumbGridModel::FormatRole).toInt();
-    pendingPreviewPath_ = currentPath_ + QStringLiteral("\\") + name;
+    pendingPreviewPath_ = joinPathQ(currentPath_, name);
     pathBar_->setText(pendingPreviewPath_);
 
     previewDebounce_->start();

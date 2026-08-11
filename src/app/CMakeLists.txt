@@ -1,5 +1,35 @@
 find_package(Qt6 REQUIRED COMPONENTS Widgets Sql Concurrent)
 
+# Qt 6.8.3 on the macOS 26 SDK: drop a link to a framework the SDK no longer ships.
+#
+# Without this the app fails to link with "ld: framework 'AGL' not found". AGL was Apple's
+# pre-OpenGL-3 legacy API, removed from the macOS SDK years after being deprecated.
+#
+# The mechanism is worth writing down because it's the reverse of what it looks like. Qt's
+# lib/cmake/Qt6/FindWrapOpenGL.cmake (lines 40-46) does
+# `find_library(WrapOpenGL_AGL NAMES AGL)` with a fallback to a literal `-framework AGL` if
+# that fails. The lookup does *not* fail here - CMake's find_library searches the live
+# system, where /System/Library/Frameworks/AGL.framework genuinely still exists - so
+# WrapOpenGL::WrapOpenGL ends up carrying that absolute path in its interface, and CMake
+# helpfully rewrites an absolute framework path into `-framework AGL` on the link line. The
+# linker then resolves that against the *SDK*, which has no AGL at all. So it breaks
+# precisely because the find succeeded, which is why matching the literal string
+# "-framework AGL" here finds nothing and the filter has to catch the path form.
+#
+# Removing it is safe rather than merely expedient: nothing in a Qt Widgets app calls AGL,
+# and `-framework OpenGL` - added by that same Qt file, and still in the SDK - is what Qt
+# actually uses. Done here rather than by editing the Qt install so the fix travels with the
+# repo and survives reinstalling Qt. Fixed in later Qt releases; delete this whole block
+# when the pinned Qt moves past 6.8.
+if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
+    get_target_property(_pixet_wrapopengl_libs WrapOpenGL::WrapOpenGL INTERFACE_LINK_LIBRARIES)
+    if(_pixet_wrapopengl_libs)
+        list(FILTER _pixet_wrapopengl_libs EXCLUDE REGEX "(AGL\\.framework|^-framework AGL$)")
+        set_target_properties(WrapOpenGL::WrapOpenGL PROPERTIES
+            INTERFACE_LINK_LIBRARIES "${_pixet_wrapopengl_libs}")
+    endif()
+endif()
+
 # WIN32 (no console window) only has an effect on Windows - CMake ignores it
 # elsewhere - but macOS needs the analogous MACOSX_BUNDLE instead to get a real,
 # double-clickable .app (with an Info.plist) rather than a bare Unix binary.
@@ -15,6 +45,7 @@ add_executable(pixet ${PIXET_APP_TYPE}
     MainWindow.cpp
 
     QtInterop.h
+    PathQ.h
 
     FolderTreeView.h
     FolderTreeView.cpp

@@ -1,0 +1,65 @@
+#include "FileIO.h"
+
+#include <filesystem>
+#include <fstream>
+
+namespace pixet {
+
+// A note on why this is a separate _mac.cpp rather than one shared portable
+// implementation, since devlog's P5-prep entry floated exactly that ("FileIO's in
+// particular could likely just be a single portable std::ifstream-based implementation
+// shared by both platforms... but that's a call better made *with* a mac to build
+// against"). Making that call now, with the mac: keep them separate.
+//
+// The reason is the pitfall the same devlog entry documents two paragraphs earlier:
+// std::ifstream's narrow-string constructor interprets the path in the platform's *native
+// narrow encoding*, which on MSVC is the active ANSI codepage, not UTF-8. pixet_core's
+// paths are UTF-8 by contract, so a shared std::ifstream implementation would silently
+// fail to open any file with a non-ASCII name on Windows - which the devlog specifically
+// verified working (a real folder with an accented filename). Here on macOS the native
+// narrow encoding *is* UTF-8, so the same code is correct. Sharing the file would mean
+// trading a verified-working Windows behavior for tidiness, on a platform this session
+// can't test.
+//
+// (std::filesystem::path's char8_t constructor would sidestep the encoding problem and
+// genuinely work on both - but it would also change Windows' sharing mode and read
+// chunking, which again can't be verified from here. Left as a future cleanup for a
+// session with both machines.)
+//
+// One behavioral difference from FileIO_win.cpp that is worth knowing rather than
+// "fixing": CreateFileW is called there with FILE_SHARE_READ only, so a file another
+// process holds open for writing fails to open and becomes ThumbTier::Failed. POSIX has no
+// mandatory locking, so on macOS a file that's mid-copy reads successfully and gets
+// thumbnailed from whatever partial bytes were present - and stays that way until its mtime
+// or size changes. Not worth inventing locking for; noted so that a future "why is this one
+// thumbnail corrupt" hunt doesn't start from zero.
+bool readWholeFile(const std::string &path, std::vector<uint8_t> &out) {
+    std::error_code ec;
+
+    // Reject anything that isn't a regular file. CreateFileW gets this for free (it fails
+    // on a directory without FILE_FLAG_BACKUP_SEMANTICS), but POSIX open(O_RDONLY) on a
+    // directory *succeeds* and only fails later at read() with EISDIR - so without an
+    // explicit check the two platforms would fail in different places for the same input.
+    if (!std::filesystem::is_regular_file(path, ec) || ec) return false;
+
+    uintmax_t size = std::filesystem::file_size(path, ec);
+    if (ec) return false;
+
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+
+    out.resize(static_cast<size_t>(size));
+    // An empty file is a success with an empty buffer. Matches the Windows version, where
+    // the read loop simply never runs and `ok` stays true - callers rely on being able to
+    // distinguish "read nothing" from "failed".
+    if (size == 0) return true;
+
+    f.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(size));
+    if (f.gcount() != static_cast<std::streamsize>(size)) {
+        out.clear(); // same as Windows: no partial buffers escape on failure
+        return false;
+    }
+    return true;
+}
+
+} // namespace pixet

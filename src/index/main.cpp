@@ -79,8 +79,9 @@ int main(int argc, char *argv[]) {
     double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
     printStats(stats, elapsed);
     std::printf("\n\ndone in %.1fs\n", elapsed);
-    std::printf("dirs visited:        %lld (%lld fresh-skipped, %lld claimed by another process)\n",
-                (long long)stats.dirsVisited, (long long)stats.dirsSkippedFresh, (long long)stats.dirsSkippedClaimed);
+    std::printf("dirs visited:        %lld (%lld fresh-skipped, %lld claimed by another process, %lld unreadable)\n",
+                (long long)stats.dirsVisited, (long long)stats.dirsSkippedFresh, (long long)stats.dirsSkippedClaimed,
+                (long long)stats.dirsSkippedUnreadable);
     std::printf("files: %lld new, %lld removed\n", (long long)stats.filesNew, (long long)stats.filesRemoved);
     std::printf("thumbnails: %lld embedded-preview, %lld decoded, %lld unsupported-format, %lld failed\n",
                 (long long)stats.thumbsEmbedded, (long long)stats.thumbsDecoded, (long long)stats.thumbsUnsupported,
