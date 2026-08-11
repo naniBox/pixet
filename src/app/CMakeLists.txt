@@ -49,6 +49,9 @@ add_executable(pixet ${PIXET_APP_TYPE}
     Preferences.cpp
     PreferencesDialog.h
     PreferencesDialog.cpp
+
+    KeyBindings.h
+    KeyBindings.cpp
 )
 
 target_link_libraries(pixet PRIVATE

@@ -1,12 +1,16 @@
 #pragma once
 
 #include <QDialog>
+#include <QMap>
+
+#include "KeyBindings.h"
 
 class QLineEdit;
 class QPushButton;
 class QRadioButton;
 class QSpinBox;
 class QLabel;
+class QKeySequenceEdit;
 
 // Preferences dialog: default video player (system default, or a custom override -
 // see MainWindow::onGridItemActivated() for where this is actually consumed), grid
@@ -49,8 +53,16 @@ private:
     QSpinBox *thumbnailSizeSpin_;
     QLabel *reindexStatusLabel_;
     QLabel *nukeStatusLabel_;
+    QMap<keybindings::Action, QKeySequenceEdit *> keyBindingEdits_;
 
     int originalThumbnailSize_ = 0;
 
     void updateCustomPlayerEnabled();
+    void onResetKeyBindings();
+    // Checks every keyBindingEdits_ entry against reservedSequences() and against
+    // each other; on conflict, shows a QMessageBox naming both actions involved and
+    // returns false. Called from accept() - a conflict blocks the whole dialog from
+    // closing (not just the keybindings section), same as any other invalid input
+    // would.
+    bool validateKeyBindings();
 };

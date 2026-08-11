@@ -13,6 +13,7 @@
 #include <cmath>
 
 #include "FullscreenDecoder.h"
+#include "KeyBindings.h"
 #include "ThumbGridModel.h"
 #include "db/Schema.h"
 
@@ -467,15 +468,42 @@ void FullscreenViewer::wheelEvent(QWheelEvent *event) {
 }
 
 void FullscreenViewer::keyPressEvent(QKeyEvent *event) {
+    // Checked before the fixed-navigation switch below since these are all
+    // user-configurable (see KeyBindings.h) and so can't just be case labels keyed
+    // on event->key() the way fixed navigation is. Escape always closes regardless
+    // of what ActivateFullscreen is currently bound to - guarantees there's always
+    // a way out of the viewer even if that binding gets reassigned to something
+    // unreachable from here.
+    if (event->key() == Qt::Key_Escape ||
+        keybindings::matches(event, keybindings::binding(keybindings::Action::ActivateFullscreen))) {
+        // Enter/Return (or whatever ActivateFullscreen is rebound to) is what opened
+        // this (grid's activated() fires on it too, see MainWindow::
+        // onGridItemActivated) - closing on it too makes it a toggle rather than an
+        // open-only action.
+        close();
+        return;
+    }
+    if (keybindings::matches(event, keybindings::binding(keybindings::Action::FullscreenToggleTrueFullscreen))) {
+        trueFullscreen_ = !trueFullscreen_;
+        if (trueFullscreen_) showFullScreen(); else showMaximized();
+        updateWindowTitle();
+        return;
+    }
+    if (keybindings::matches(event, keybindings::binding(keybindings::Action::FullscreenToggleZoom))) {
+        toggleZoomKeyboard();
+        return;
+    }
+    if (keybindings::matches(event, keybindings::binding(keybindings::Action::FullscreenToggleInfoOverlay))) {
+        // Only two states for now (off/on) rather than a real per-field EXIF cycle -
+        // the app doesn't parse EXIF tags beyond orientation yet (see ExifInfo), so
+        // there's no richer data to cycle through today. The overlay itself reuses
+        // the same fields the main window's status bar shows.
+        infoOverlayLevel_ = (infoOverlayLevel_ + 1) % 2;
+        update();
+        return;
+    }
+
     switch (event->key()) {
-        case Qt::Key_Escape:
-        // Enter/Return is what opened this (grid's activated() fires on it too, see
-        // MainWindow::onGridItemActivated) - closing on it too makes it a toggle
-        // rather than an open-only action.
-        case Qt::Key_Return:
-        case Qt::Key_Enter:
-            close();
-            return;
         case Qt::Key_Left:
         case Qt::Key_Up:
             showRow(currentRow_ - 1, /*resetZoom=*/true);
@@ -484,23 +512,6 @@ void FullscreenViewer::keyPressEvent(QKeyEvent *event) {
         case Qt::Key_Down:
         case Qt::Key_Space:
             showRow(currentRow_ + 1, /*resetZoom=*/true);
-            return;
-        case Qt::Key_F:
-            trueFullscreen_ = !trueFullscreen_;
-            if (trueFullscreen_) showFullScreen(); else showMaximized();
-            updateWindowTitle();
-            return;
-        case Qt::Key_Z:
-            toggleZoomKeyboard();
-            return;
-        case Qt::Key_I:
-            // Only two states for now (off/on) rather than a real per-field EXIF
-            // cycle - the app doesn't parse EXIF tags beyond orientation yet (see
-            // ExifInfo), so there's no richer data to cycle through today. The
-            // overlay itself reuses the same fields the main window's status bar
-            // shows.
-            infoOverlayLevel_ = (infoOverlayLevel_ + 1) % 2;
-            update();
             return;
         default:
             QWidget::keyPressEvent(event);

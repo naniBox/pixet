@@ -31,6 +31,7 @@
 #include "FolderIndexer.h"
 #include "FolderTreeView.h"
 #include "FullscreenViewer.h"
+#include "KeyBindings.h"
 #include "Preferences.h"
 #include "PreferencesDialog.h"
 #include "PreviewDecoder.h"
@@ -242,13 +243,17 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(previewDebounce_, &QTimer::timeout, this, &MainWindow::triggerPreviewRequest);
 
     // --- menu ---
+    // Shortcuts are user-configurable (see KeyBindings.h/PreferencesDialog) - the
+    // QAction pointers are kept as members so onPreferences() can re-apply their
+    // shortcuts after the editor closes, since QAction doesn't watch settings
+    // itself.
     auto *bookmarksMenu = menuBar()->addMenu(QStringLiteral("&Bookmarks"));
-    bookmarksMenu->addAction(QStringLiteral("Add Current Folder"), this, &MainWindow::onAddBookmark, QKeySequence(QStringLiteral("Ctrl+D")));
+    addBookmarkAction_ = bookmarksMenu->addAction(QStringLiteral("Add Current Folder"), this, &MainWindow::onAddBookmark);
 
     auto *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
-    viewMenu->addAction(QStringLiteral("Refresh"), this, &MainWindow::onRefresh, QKeySequence(QStringLiteral("F5")));
-    viewMenu->addAction(QStringLiteral("Toggle Side Panel"), this, &MainWindow::onToggleSidePanel,
-                         QKeySequence(Qt::Key_T));
+    refreshAction_ = viewMenu->addAction(QStringLiteral("Refresh"), this, &MainWindow::onRefresh);
+    toggleSidePanelAction_ = viewMenu->addAction(QStringLiteral("Toggle Side Panel"), this, &MainWindow::onToggleSidePanel);
+    applyKeyBindingShortcuts();
 
     auto *toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
     toolsMenu->addAction(QStringLiteral("Preferences..."), this, &MainWindow::onPreferences);
@@ -556,6 +561,16 @@ void MainWindow::onPreferences() {
     });
     connect(&dlg, &PreferencesDialog::nukeDatabaseRequested, this, &MainWindow::nukeDatabase);
     dlg.exec();
+    // Cheap enough to always re-apply regardless of whether the keybindings editor
+    // actually changed anything (Cancel discards its own edits before this point) -
+    // no need for a dedicated changed-detection signal just for this.
+    applyKeyBindingShortcuts();
+}
+
+void MainWindow::applyKeyBindingShortcuts() {
+    refreshAction_->setShortcut(keybindings::binding(keybindings::Action::Refresh));
+    toggleSidePanelAction_->setShortcut(keybindings::binding(keybindings::Action::ToggleSidePanel));
+    addBookmarkAction_->setShortcut(keybindings::binding(keybindings::Action::AddBookmark));
 }
 
 void MainWindow::onToggleSidePanel() {

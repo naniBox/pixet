@@ -5,6 +5,7 @@
 
 #include <memory>
 
+class QAction;
 class QCloseEvent;
 class QFileSystemModel;
 class QLabel;
@@ -101,6 +102,12 @@ private:
     // (shown/hidden) for every fullscreen session rather than per-activation.
     FullscreenViewer *fullscreenViewer_;
     QLineEdit *pathBar_;
+    // Shortcuts are user-configurable (see KeyBindings.h) - kept as members so
+    // applyKeyBindingShortcuts() can re-apply them after the Preferences dialog's
+    // keybindings editor closes.
+    QAction *refreshAction_;
+    QAction *toggleSidePanelAction_;
+    QAction *addBookmarkAction_;
     // Status bar: separate fixed-width labels rather than one joined string, so
     // browsing (arrow keys, clicking through images) doesn't visually jitter as
     // filenames/values change length - see updateSelectionStatus().
@@ -174,6 +181,13 @@ private:
     // connection bookmarks/metadata queries already use) - a rare, deliberate,
     // user-confirmed action, not something worth a background worker for.
     void nukeDatabase();
+
+    // Re-reads keybindings::binding() for refreshAction_/toggleSidePanelAction_/
+    // addBookmarkAction_ and applies it via QAction::setShortcut() - called once at
+    // construction and again after the Preferences dialog's keybindings editor
+    // closes, since a QAction's shortcut doesn't update itself when the underlying
+    // setting changes.
+    void applyKeyBindingShortcuts();
 
     // Window position/size and splitter layout persistence (QSettings) - see
     // restoreWindowState()'s doc comment in the .cpp for the off-screen/reset behavior.

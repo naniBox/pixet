@@ -10,6 +10,8 @@
 #include <QScrollBar>
 #include <QWheelEvent>
 
+#include "KeyBindings.h"
+
 ThumbGridView::ThumbGridView(QWidget *parent) : QAbstractScrollArea(parent) {
     // Always reserve the vertical scrollbar's width, even when nothing needs
     // scrolling, rather than the default show/hide-as-needed - see the class
@@ -240,6 +242,15 @@ void ThumbGridView::keyPressEvent(QKeyEvent *event) {
         }
     }
 
+    // Checked before the fixed-navigation switch below since the configured key
+    // could be anything - it isn't necessarily Return/Enter anymore once rebound,
+    // so it can't just be a case label keyed on event->key() the way the others are.
+    if (keybindings::matches(event, keybindings::binding(keybindings::Action::ActivateFullscreen))) {
+        if (currentRow_ >= 0) emit activated(currentRow_);
+        event->accept();
+        return;
+    }
+
     switch (event->key()) {
         case Qt::Key_Left:
             moveCurrentRow(-1);
@@ -271,11 +282,6 @@ void ThumbGridView::keyPressEvent(QKeyEvent *event) {
             return;
         case Qt::Key_PageDown:
             moveCurrentRow(qMax(1, viewport()->height() / qMax(1, cellHeight_)) * columns_);
-            event->accept();
-            return;
-        case Qt::Key_Return:
-        case Qt::Key_Enter:
-            if (currentRow_ >= 0) emit activated(currentRow_);
             event->accept();
             return;
         default:

@@ -5,6 +5,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -13,6 +14,9 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include <iterator>
+
+#include "KeyBindings.h"
 #include "Preferences.h"
 
 PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
@@ -55,6 +59,23 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     thumbnailSizeSpin_->setValue(originalThumbnailSize_);
     thumbLayout->addRow(QStringLiteral("Grid thumbnail size:"), thumbnailSizeSpin_);
     layout->addWidget(thumbGroup);
+
+    // --- Keybindings ---
+    // Deliberately only these action-trigger keys, not grid/fullscreen directional
+    // navigation (arrows, Home/End, PageUp/PageDown, Space, Ctrl+arrow folder nav)
+    // or Escape-to-close - see KeyBindings.h's class comment.
+    auto *keyGroup = new QGroupBox(QStringLiteral("Keybindings"), this);
+    auto *keyLayout = new QFormLayout(keyGroup);
+    for (const keybindings::ActionInfo &a : keybindings::allActions()) {
+        auto *edit = new QKeySequenceEdit(keybindings::binding(a.action), keyGroup);
+        edit->setMaximumSequenceLength(1); // a single key/chord, not a multi-step sequence
+        keyBindingEdits_[a.action] = edit;
+        keyLayout->addRow(a.displayName + QStringLiteral(":"), edit);
+    }
+    auto *resetKeysButton = new QPushButton(QStringLiteral("Reset All to Defaults"), keyGroup);
+    keyLayout->addRow(resetKeysButton);
+    layout->addWidget(keyGroup);
+    connect(resetKeysButton, &QPushButton::clicked, this, &PreferencesDialog::onResetKeyBindings);
 
     // --- Index ---
     auto *indexGroup = new QGroupBox(QStringLiteral("Index"), this);
@@ -135,13 +156,56 @@ void PreferencesDialog::onNukeClicked() {
     nukeStatusLabel_->setText(QStringLiteral("Index reset."));
 }
 
+void PreferencesDialog::onResetKeyBindings() {
+    for (auto it = keyBindingEdits_.constBegin(); it != keyBindingEdits_.constEnd(); ++it) {
+        it.value()->setKeySequence(keybindings::info(it.key()).defaultSequence);
+    }
+}
+
+bool PreferencesDialog::validateKeyBindings() {
+    // QMap iteration order is by key (Action, an enum) - stable and good enough for
+    // a deterministic "which pair conflicts" message, no need to sort by anything
+    // more meaningful for an error dialog that should rarely actually appear.
+    for (auto it = keyBindingEdits_.constBegin(); it != keyBindingEdits_.constEnd(); ++it) {
+        QKeySequence seq = it.value()->keySequence();
+        if (seq.isEmpty()) continue; // clearing a binding is valid - just disables it
+
+        if (keybindings::reservedSequences().contains(seq)) {
+            QMessageBox::warning(this, QStringLiteral("Keybinding conflict"),
+                                  QStringLiteral("\"%1\" is already used for navigation and can't be reassigned to "
+                                                 "\"%2\".")
+                                      .arg(seq.toString(), keybindings::info(it.key()).displayName));
+            return false;
+        }
+
+        for (auto other = std::next(it); other != keyBindingEdits_.constEnd(); ++other) {
+            if (other.value()->keySequence() == seq) {
+                QMessageBox::warning(
+                    this, QStringLiteral("Keybinding conflict"),
+                    QStringLiteral("\"%1\" is assigned to both \"%2\" and \"%3\" - pick a different key for one of "
+                                    "them.")
+                        .arg(seq.toString(), keybindings::info(it.key()).displayName,
+                             keybindings::info(other.key()).displayName));
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 void PreferencesDialog::accept() {
+    if (!validateKeyBindings()) return; // leaves the dialog open so the conflict can be fixed
+
     prefs::setUseSystemVideoPlayer(systemPlayerRadio_->isChecked());
     prefs::setCustomVideoPlayerPath(customPlayerPathEdit_->text());
 
     int newSize = thumbnailSizeSpin_->value();
     prefs::setThumbnailIconSize(newSize);
     if (newSize != originalThumbnailSize_) emit thumbnailSizeChanged();
+
+    for (auto it = keyBindingEdits_.constBegin(); it != keyBindingEdits_.constEnd(); ++it) {
+        keybindings::setBinding(it.key(), it.value()->keySequence());
+    }
 
     QDialog::accept();
 }
