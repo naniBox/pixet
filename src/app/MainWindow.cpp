@@ -37,6 +37,8 @@
 #include "PreviewDecoder.h"
 #include "PreviewPane.h"
 #include "RawRenderer.h"
+#include "StatusBarRow.h"
+#include "StatusLabel.h"
 #include "ThumbGridModel.h"
 #include "ThumbGridView.h"
 #include "ThumbLoader.h"
@@ -263,23 +265,24 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     auto *debugMenu = menuBar()->addMenu(QStringLiteral("&Debug"));
     debugMenu->addAction(QStringLiteral("Copy Grid Debug Info"), this, &MainWindow::onCopyGridDebugInfo);
 
-    // Fixed pixel widths, sized generously for typical content (not a hard guarantee
-    // against every possible value, e.g. an absurdly large dimension could clip) -
-    // the point is stability across normal browsing, not exact-fit sizing.
-    auto makeStatusLabel = [this](int width) {
-        auto *label = new QLabel(this);
-        label->setFixedWidth(width);
-        statusBar()->addPermanentWidget(label);
-        return label;
-    };
-    folderStatsLabel_ = makeStatusLabel(300);
-    rawStatusLabel_ = makeStatusLabel(190);
-    fileNameLabel_ = makeStatusLabel(240);
-    formatLabel_ = makeStatusLabel(50);
-    dimsLabel_ = makeStatusLabel(150);
-    sizeLabel_ = makeStatusLabel(85);
-    dateLabel_ = makeStatusLabel(115);
-    durationLabel_ = makeStatusLabel(45);
+    // Nominal pixel widths, sized generously for typical content - shrink together
+    // proportionally (see StatusBarRow.h) if the window is too narrow for all of
+    // them at once, rather than either overlapping (a QHBoxLayout of Qt::Fixed-
+    // policy cells can't shrink them, so it has nothing left to do but position the
+    // next cell at an X offset that assumes a smaller size than the previous one is
+    // actually rendered at) or every cell collapsing to the same tiny floor
+    // regardless of its own nominal width (what a QHBoxLayout of shrinkable cells
+    // actually did here) - both confirmed live via real bugs, not hypothetical ones.
+    auto *statusRow = new StatusBarRow(this);
+    folderStatsLabel_ = statusRow->addLabel(300);
+    rawStatusLabel_ = statusRow->addLabel(190);
+    fileNameLabel_ = statusRow->addLabel(240);
+    formatLabel_ = statusRow->addLabel(50);
+    dimsLabel_ = statusRow->addLabel(150);
+    sizeLabel_ = statusRow->addLabel(85);
+    dateLabel_ = statusRow->addLabel(115);
+    durationLabel_ = statusRow->addLabel(45);
+    statusBar()->addPermanentWidget(statusRow);
 
     loadBookmarks();
     restoreLastDirectory();
@@ -851,12 +854,12 @@ void MainWindow::updateSelectionStatus() {
     int imageCount = gridModel_->imageCount();
     int videoCount = gridModel_->videoCount();
     int totalCount = imageCount + videoCount;
-    folderStatsLabel_->setText(totalCount > 0 ? QStringLiteral("%1 items (%2 img, %3 vid)  ·  %4")
-                                                     .arg(totalCount)
-                                                     .arg(imageCount)
-                                                     .arg(videoCount)
-                                                     .arg(QLocale().formattedDataSize(gridModel_->totalBytes()))
-                                               : QString());
+    folderStatsLabel_->setStatusText(totalCount > 0 ? QStringLiteral("%1 items (%2 img, %3 vid)  ·  %4")
+                                                           .arg(totalCount)
+                                                           .arg(imageCount)
+                                                           .arg(videoCount)
+                                                           .arg(QLocale().formattedDataSize(gridModel_->totalBytes()))
+                                                     : QString());
 
     // How many of this folder's RAW files have a real full-render thumbnail vs. still
     // just the fast embedded-preview one - see RawRenderer/`pixet-index --render-raws`.
@@ -865,31 +868,29 @@ void MainWindow::updateSelectionStatus() {
     int rawRendered = gridModel_->rawRenderedCount();
     int rawPreview = gridModel_->rawPreviewCount();
     int rawKnown = rawRendered + rawPreview;
-    rawStatusLabel_->setText(rawKnown > 0
-                                  ? QStringLiteral("%1 RAW: %2 rendered, %3 preview").arg(rawKnown).arg(rawRendered).arg(rawPreview)
-                                  : QString());
+    rawStatusLabel_->setStatusText(
+        rawKnown > 0 ? QStringLiteral("%1 RAW: %2 rendered, %3 preview").arg(rawKnown).arg(rawRendered).arg(rawPreview)
+                     : QString());
 
     QModelIndex idx = gridModel_->index(grid_->currentRow());
     if (!idx.isValid()) {
-        fileNameLabel_->clear();
-        fileNameLabel_->setToolTip(QString());
-        formatLabel_->clear();
-        dimsLabel_->clear();
-        sizeLabel_->clear();
-        dateLabel_->clear();
-        durationLabel_->clear();
+        fileNameLabel_->setStatusText(QString());
+        formatLabel_->setStatusText(QString());
+        dimsLabel_->setStatusText(QString());
+        sizeLabel_->setStatusText(QString());
+        dateLabel_->setStatusText(QString());
+        durationLabel_->setStatusText(QString());
         return;
     }
 
-    QString name = idx.data(Qt::DisplayRole).toString();
     // Elided rather than left to wrap/clip raggedly - the label's fixed width means a
     // long filename would otherwise just get cut off mid-character. Full name still
-    // available on hover.
-    fileNameLabel_->setText(fileNameLabel_->fontMetrics().elidedText(name, Qt::ElideMiddle, fileNameLabel_->width()));
-    fileNameLabel_->setToolTip(name);
+    // available on hover (StatusLabel::setStatusText() sets it as a tooltip).
+    QString name = idx.data(Qt::DisplayRole).toString();
+    fileNameLabel_->setStatusText(name, Qt::ElideMiddle);
 
     int fmt = idx.data(ThumbGridModel::FormatRole).toInt();
-    formatLabel_->setText(QString::fromUtf8(pixet::formatName((pixet::Format)fmt)));
+    formatLabel_->setStatusText(QString::fromUtf8(pixet::formatName((pixet::Format)fmt)));
 
     int w = idx.data(ThumbGridModel::WidthRole).toInt();
     int h = idx.data(ThumbGridModel::HeightRole).toInt();
@@ -898,24 +899,26 @@ void MainWindow::updateSelectionStatus() {
         // Only known once the preview decode lands (see currentPreviewBpp_) - may be
         // briefly absent right after selecting, same as the async width/height fields.
         if (currentPreviewBpp_ > 0) dims += QStringLiteral(" (%1bpp)").arg(currentPreviewBpp_);
-        dimsLabel_->setText(dims);
+        dimsLabel_->setStatusText(dims);
     } else {
-        dimsLabel_->clear();
+        dimsLabel_->setStatusText(QString());
     }
 
     qint64 size = idx.data(ThumbGridModel::SizeRole).toLongLong();
-    sizeLabel_->setText(size > 0 ? QLocale().formattedDataSize(size) : QString());
+    sizeLabel_->setStatusText(size > 0 ? QLocale().formattedDataSize(size) : QString());
 
     qint64 takenAt = idx.data(ThumbGridModel::TakenAtRole).toLongLong();
-    dateLabel_->setText(takenAt > 0 ? QDateTime::fromSecsSinceEpoch(takenAt).toString(QStringLiteral("yyyy-MM-dd hh:mm"))
-                                     : QString());
+    dateLabel_->setStatusText(takenAt > 0
+                                   ? QDateTime::fromSecsSinceEpoch(takenAt).toString(QStringLiteral("yyyy-MM-dd hh:mm"))
+                                   : QString());
 
     qint64 durationMs = idx.data(ThumbGridModel::DurationMsRole).toLongLong();
     if (durationMs > 0) {
         qint64 totalSec = durationMs / 1000;
-        durationLabel_->setText(QStringLiteral("%1:%2").arg(totalSec / 60).arg(totalSec % 60, 2, 10, QChar('0')));
+        durationLabel_->setStatusText(
+            QStringLiteral("%1:%2").arg(totalSec / 60).arg(totalSec % 60, 2, 10, QChar('0')));
     } else {
-        durationLabel_->clear();
+        durationLabel_->setStatusText(QString());
     }
 }
 

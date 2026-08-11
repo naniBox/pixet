@@ -17,6 +17,7 @@ class QSplitter;
 class QTimer;
 
 class FolderTreeView;
+class StatusLabel;
 class ThumbGridModel;
 class ThumbGridView;
 class ThumbLoader;
@@ -108,18 +109,19 @@ private:
     QAction *refreshAction_;
     QAction *toggleSidePanelAction_;
     QAction *addBookmarkAction_;
-    // Status bar: separate fixed-width labels rather than one joined string, so
-    // browsing (arrow keys, clicking through images) doesn't visually jitter as
-    // filenames/values change length - see updateSelectionStatus().
-    QLabel *folderStatsLabel_;
+    // Status bar: separate labels (capped, not fixed, width - see makeStatusLabel()
+    // in the constructor) rather than one joined string, so browsing (arrow keys,
+    // clicking through images) doesn't visually jitter as filenames/values change
+    // length - see updateSelectionStatus().
+    StatusLabel *folderStatsLabel_;
     // Empty unless the current folder has any RAW files - see updateSelectionStatus().
-    QLabel *rawStatusLabel_;
-    QLabel *fileNameLabel_;
-    QLabel *formatLabel_;
-    QLabel *dimsLabel_;
-    QLabel *sizeLabel_;
-    QLabel *dateLabel_;
-    QLabel *durationLabel_;
+    StatusLabel *rawStatusLabel_;
+    StatusLabel *fileNameLabel_;
+    StatusLabel *formatLabel_;
+    StatusLabel *dimsLabel_;
+    StatusLabel *sizeLabel_;
+    StatusLabel *dateLabel_;
+    StatusLabel *durationLabel_;
 
     // splitter_: left column (tree+bookmarks+preview) vs. the thumbnail grid, 40/60.
     // topSplitter_: within the left column's top area, tree vs. bookmarks, 70/30.

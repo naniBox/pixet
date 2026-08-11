@@ -52,6 +52,11 @@ add_executable(pixet ${PIXET_APP_TYPE}
 
     KeyBindings.h
     KeyBindings.cpp
+
+    StatusLabel.h
+    StatusLabel.cpp
+    StatusBarRow.h
+    StatusBarRow.cpp
 )
 
 target_link_libraries(pixet PRIVATE
