@@ -5,6 +5,94 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-11 — desktop — Grid rewrite (QListView column-fit bug) + a real heap corruption fix
+
+**The grid column-fit bug came back, and this time it got root-caused properly.**
+Windowed mode showed 3 columns; maximizing dropped it to 1, even though 2-3 clearly
+fit. A previous session's fix (a smaller, deterministic `QListView` column-count
+patch) was re-verified and found to not hold up: two real debug dumps from the same
+session showed a 748px-wide viewport with 187px cells rendering 4 columns correctly
+(4×187=748, exact), while an 8px-wider 756px viewport with 189px cells - an equally
+exact division, 4×189=756 - rendered only 3, with `devicePixelRatio()==1` in both
+cases, ruling out DPI rounding. `QListView`'s `IconMode` flow layout has some
+internal rounding that can't be predicted from outside, full stop.
+
+**Fix: `ThumbGridView` no longer uses `QListView`/`QAbstractItemView` at all.**
+Rewritten from scratch on `QAbstractScrollArea` - the app computes every cell's
+row/column itself (`row = index / columns`, `col = index % columns`) and paints
+visible cells directly in `paintEvent()`, so there's no second layout engine left
+that could ever disagree with the column count the app already decided on.
+"Computed" and "actually rendered" are the same number by construction now, not
+something to separately verify. Reimplemented from scratch on top of
+`QAbstractScrollArea`: selection, keyboard nav (arrows/Home/End/PageUp/PageDown),
+mouse click/double-click, wheel scroll, and the Ctrl+arrow folder-navigation hand-off
+all needed rebuilding (previously free from `QAbstractItemView`). `ThumbGridModel`
+needed zero changes - only `modelReset`/`dataChanged` were ever used.
+
+Added a permanent (now not even debug-gated, see below) **"Copy Grid Debug Info"**
+menu item (`&Debug` menu) specifically because synthetic repro attempts kept not
+matching what was actually being seen live - it dumps window/splitter/grid geometry,
+DPI, computed vs. rendered column counts, and folder state to the clipboard in one
+shot. This is what made the 748/756px repro possible to diagnose at all, and is
+kept around permanently as the fast path for "it happened again, here's the exact
+state."
+
+Live-verified after the rewrite: both historically-broken viewport widths now
+render the correct column count; click-select, double-click/Enter to open
+fullscreen (and Enter to close, a toggle), keyboard nav, wheel scroll, and the
+right-click context menu were all independently exercised and confirmed working.
+
+**Separately, a real heap corruption bug turned up during that verification pass**
+and got fully root-caused and fixed. `pixet.exe` crashed (`STATUS_HEAP_CORRUPTION`)
+in a completely unrelated spot - FFmpeg's H.264 decoder cleanup - which is the classic
+signature of heap corruption: the crash site is wherever `free()` next happens to
+touch the damaged block, not where the actual bad write occurred. Root-caused via
+Application Verifier's page heap (`appverif -enable Heaps -for pixet.exe`, no
+elevation needed on this machine) plus WinDbg, which turns a corrupting write into
+an immediate, precisely-located stop instead of a random later crash. Two
+independent runs stopped at the *exact* same corrupted-block size, both inside
+`RgbImage`'s destructor at the end of `generateVideoThumb()`
+(`ThumbGenerator.cpp:293`) - live locals showed `img.w=360, img.h=640`, a portrait
+frame, confirming the trigger was a rotated phone video (`PXL_*.mp4`, Google Pixel
+naming) picked up by `BackgroundReconciler`'s ongoing background sweep, not
+anything tied to whatever folder was on screen.
+
+Root cause: `decodeVideoPosterFrame()` (`VideoCodec.cpp`) sized its RGB24 output
+buffer to the exact `w*h*3` bytes needed before handing it to FFmpeg's `sws_scale`.
+`sws_scale`'s SIMD-chunked conversion kernels don't evenly divide RGB24's
+3-bytes/pixel stride, and can write a few bytes past the exact end of the
+destination on the final row - a known class of `libswscale` gotcha, invisible from
+our own source since the overwriting instructions are inside FFmpeg's compiled code.
+Fix: decode into a padded (64-byte) scratch buffer and copy out exactly `w*h*3`
+bytes into `RgbImage::pixels`, so `sws_scale` has somewhere harmless to overshoot
+into while every downstream consumer (`resizeBoxDownscale`, `applyOrientation`,
+`encodeJpeg`) still sees the exact tightly-packed buffer `RgbImage`'s contract
+promises. Verified fixed: the same page-heap-instrumented repro that crashed twice
+in under 3 minutes ran clean, and a normal (no verifier), completely untouched
+15-minute idle run - actively re-thumbnailing the same phone-video folder in the
+background the whole time - stayed alive and responsive throughout.
+
+Also confirmed a genuine debugging false lead during this session: a launch that
+appeared hung with zero windows ever appearing turned out to be the Windows loader
+stuck raising a "DLL not found" hard error (`STATUS_DLL_NOT_FOUND`) because that
+particular shell session's `PATH` didn't include Qt's `bin` directory - not an app
+bug, just an artifact of launching outside `scripts/build.ps1`/the VS Code launch
+config, both of which set `PATH` correctly. Worth remembering: `MainWindowHandle`
+staying `0` for many seconds after `Start-Process` on a Qt app is a strong signal to
+check `PATH` before assuming the app itself is hung.
+
+**Debug menu is no longer debug-build-only.** `&Debug > Copy Grid Debug Info` (and
+`ThumbGridView`'s `debugComputedColumns()`/`debugRenderedColumnCount()`/
+`debugCellSize()` accessors it depends on) had their `#ifndef NDEBUG` guards
+removed and now build into release too, so the fast-path diagnostic is available on
+the daily-driver build without needing a separate debug build/relaunch. Left a TODO
+at each site to reconsider before any wider distribution - harmless to expose, but
+not something an end user needs.
+
+Build + full test suite (47/47) clean on both debug and release presets.
+
+---
+
 ## 2026-08-11 — desktop — Small QOL batch + settings moved out of the registry
 
 **Fullscreen: Enter now closes too** (`Qt::Key_Return`/`Qt::Key_Enter` alongside
