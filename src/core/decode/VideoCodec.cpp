@@ -115,12 +115,23 @@ bool decodeVideoPosterFrame(const std::string &path, RgbImage &out) {
     RgbImage decoded;
     decoded.w = frame->width;
     decoded.h = frame->height;
-    decoded.pixels.resize((size_t)decoded.w * decoded.h * 3);
-    uint8_t *dstData[1] = {decoded.pixels.data()};
+    // sws_scale's SIMD-optimized conversion paths can write a handful of bytes past
+    // the exact end of the requested output on the final row - confirmed in
+    // production via Application Verifier's page heap catching a real 1-byte heap-
+    // suffix overrun here (RGB24's 3-bytes/pixel stride doesn't align to the widths
+    // those kernels process in). Give it a padded scratch buffer to land any of that
+    // overshoot in, then copy out exactly w*h*3 bytes - RgbImage's "tightly packed,
+    // no padding" contract (see RgbImage.h) needs to hold for every other consumer
+    // (resizeBoxDownscale, applyOrientation, encodeJpeg), so the padding can't just
+    // leak into decoded.pixels itself.
+    constexpr size_t kSwsScalePadding = 64;
+    std::vector<uint8_t> scratch((size_t)decoded.w * decoded.h * 3 + kSwsScalePadding);
+    uint8_t *dstData[1] = {scratch.data()};
     int dstLinesize[1] = {decoded.w * 3};
     if (sws_scale(sws.get(), frame->data, frame->linesize, 0, frame->height, dstData, dstLinesize) <= 0) {
         return false;
     }
+    decoded.pixels.assign(scratch.begin(), scratch.begin() + (size_t)decoded.w * decoded.h * 3);
 
     const AVPacketSideData *displaySd = av_packet_side_data_get(
         stream->codecpar->coded_side_data, stream->codecpar->nb_coded_side_data, AV_PKT_DATA_DISPLAYMATRIX);
