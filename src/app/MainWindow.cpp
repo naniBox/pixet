@@ -561,9 +561,17 @@ void MainWindow::onPreferences() {
 void MainWindow::onToggleSidePanel() {
     // QSplitter automatically gives a hidden child's space to the remaining visible
     // one(s) - grid_ expands to fill the whole width - and ThumbGridView already
-    // recomputes its column count on any resize (see updateGridSize()), so hiding/
-    // showing leftPanel_ is the entire feature; no extra relayout call needed here.
+    // recomputes its column count on any resize (see relayout()), so hiding/showing
+    // leftPanel_ handles the layout itself. But the scroll position is a raw pixel
+    // offset, not row-aware - the same offset lands on a completely different set of
+    // rows once the column count changes (e.g. 3-wide -> 6-wide), so the current
+    // selection can end up scrolled off screen. Re-center on it explicitly, deferred
+    // to the next event loop turn since QSplitter's redistribution is a posted
+    // layout request rather than synchronous - scrolling immediately here would
+    // still measure against the pre-toggle viewport width/column count.
     leftPanel_->setVisible(!leftPanel_->isVisible());
+    int row = grid_->currentRow();
+    if (row >= 0) QTimer::singleShot(0, grid_, [this, row]() { grid_->scrollToRow(row, /*center=*/true); });
 }
 
 void MainWindow::onCopyGridDebugInfo() {
