@@ -125,10 +125,14 @@ private:
 
     // splitter_: left column (tree+bookmarks+preview) vs. the thumbnail grid, 40/60.
     // topSplitter_: within the left column's top area, tree vs. bookmarks, 70/30.
-    // leftPanel_: the widget whose width drives the preview pane's forced-square
-    // height - see updateLeftSquarePreview().
+    // leftSplitter_: within the left column, top area vs. preview pane (vertical) -
+    // user-draggable, state persisted the same way as the other two (see
+    // closeEvent()/the constructor's deferred restore block).
+    // leftPanel_: just a thin QWidget wrapper around leftSplitter_ so onToggleSidePanel()
+    // has a single thing to show/hide.
     QSplitter *splitter_;
     QSplitter *topSplitter_;
+    QSplitter *leftSplitter_;
     QWidget *leftPanel_;
     bool resetLayout_;
 
@@ -195,10 +199,6 @@ private:
     // restoreWindowState()'s doc comment in the .cpp for the off-screen/reset behavior.
     void restoreWindowState();
     bool isWindowOnScreen() const;
-    // Forces preview_'s height to match leftPanel_'s current width, so the pane stays
-    // square as the window or the main splitter is resized. Called from eventFilter()
-    // whenever leftPanel_ itself resizes.
-    void updateLeftSquarePreview();
 
     // TODO: was debug-build-only; kept in release too for now (2026-08-11) so it's
     // available on the daily-driver build without a separate debug build/relaunch.

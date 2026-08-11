@@ -62,21 +62,27 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
 
     db_ = std::make_unique<pixet::Database>(pixet::indexDbPath(), pixet::thumbsDbPath(), false);
 
-    // --- left panel: folder tree + bookmarks (top), preview (bottom, forced square) ---
+    // --- left panel: folder tree + bookmarks (top), preview (bottom, user-resizable) ---
+    // palette(mid) (previously used for both titles below) turned out to read as
+    // basically black on this app's dark theme - too close to the background to
+    // actually see. placeholder-text is Qt's actual semantic role for "muted but
+    // still legible" text.
+    auto makeSectionTitle = [](const QString &text, QWidget *parent) {
+        auto *title = new QLabel(text, parent);
+        title->setStyleSheet(QStringLiteral("color: palette(placeholder-text); font-weight: bold;"));
+        return title;
+    };
+
     bookmarks_ = new QListWidget(this);
     bookmarks_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(bookmarks_, &QListWidget::itemClicked, this, &MainWindow::onBookmarkClicked);
     connect(bookmarks_, &QListWidget::customContextMenuRequested, this, &MainWindow::onBookmarksContextMenu);
 
-    // Wrapped with its own title, unlike tree_ (a folder tree is self-explanatory;
-    // an otherwise-unlabeled list of paths next to it is not, at a glance).
     auto *bookmarksPanel = new QWidget(this);
     auto *bookmarksLayout = new QVBoxLayout(bookmarksPanel);
     bookmarksLayout->setContentsMargins(0, 0, 0, 0);
     bookmarksLayout->setSpacing(2);
-    auto *bookmarksTitle = new QLabel(QStringLiteral("Bookmarks"), bookmarksPanel);
-    bookmarksTitle->setStyleSheet(QStringLiteral("color: palette(mid); font-weight: bold;"));
-    bookmarksLayout->addWidget(bookmarksTitle);
+    bookmarksLayout->addWidget(makeSectionTitle(QStringLiteral("Bookmarks"), bookmarksPanel));
     bookmarksLayout->addWidget(bookmarks_, /*stretch=*/1);
 
     fsModel_ = new QFileSystemModel(this);
@@ -99,28 +105,45 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onTreeSelectionChanged);
     connect(fsModel_, &QFileSystemModel::directoryLoaded, this, &MainWindow::onTreeDirectoryLoaded);
 
+    // Wrapped with its own title now too, matching bookmarksPanel - previously
+    // considered self-explanatory next to a labeled list, but side by side the
+    // asymmetry read as a missing label rather than an intentional omission.
+    auto *treePanel = new QWidget(this);
+    auto *treePanelLayout = new QVBoxLayout(treePanel);
+    treePanelLayout->setContentsMargins(0, 0, 0, 0);
+    treePanelLayout->setSpacing(2);
+    treePanelLayout->addWidget(makeSectionTitle(QStringLiteral("Folders"), treePanel));
+    treePanelLayout->addWidget(tree_, /*stretch=*/1);
+
     // --- right: preview pane (constructed here so topSplitter_/leftPanel_ below can
     // reference it - actually placed at the bottom of the left column, see layout) ---
     preview_ = new PreviewPane(this);
 
     topSplitter_ = new QSplitter(Qt::Horizontal, this);
-    topSplitter_->addWidget(tree_);
+    topSplitter_->addWidget(treePanel);
     topSplitter_->addWidget(bookmarksPanel);
     topSplitter_->setStretchFactor(0, 7);
     topSplitter_->setStretchFactor(1, 3);
     topSplitter_->setCollapsible(0, false);
     topSplitter_->setCollapsible(1, false);
 
+    // Preview used to be forced square (height pinned to match leftPanel_'s width on
+    // every resize - see git history). A real QSplitter handle lets the user pick
+    // whatever height they actually want instead - e.g. wide-but-short for a
+    // panorama, or tall for a portrait shot - and leftSplitterState below persists
+    // that choice the same way mainSplitterState/topSplitterState already do.
+    leftSplitter_ = new QSplitter(Qt::Vertical, this);
+    leftSplitter_->addWidget(topSplitter_);
+    leftSplitter_->addWidget(preview_);
+    leftSplitter_->setStretchFactor(0, 1);
+    leftSplitter_->setStretchFactor(1, 0);
+    leftSplitter_->setCollapsible(0, false);
+    leftSplitter_->setCollapsible(1, false);
+
     leftPanel_ = new QWidget(this);
     auto *leftLayout = new QVBoxLayout(leftPanel_);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->addWidget(topSplitter_, /*stretch=*/1);
-    leftLayout->addWidget(preview_, /*stretch=*/0);
-    // preview_'s height is forced to match leftPanel_'s width (see
-    // updateLeftSquarePreview()), not left to the layout - that's what keeps it square
-    // as the window or the main splitter get resized. No QSplitter handle between the
-    // two, deliberately: the split isn't something the user drags, it's derived.
-    leftPanel_->installEventFilter(this);
+    leftLayout->addWidget(leftSplitter_);
 
     // --- center: thumbnail grid ---
     gridModel_ = new ThumbGridModel(*db_, this);
@@ -201,7 +224,19 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
             topSplitter_->setSizes({static_cast<int>(leftW * 0.7), static_cast<int>(leftW * 0.3)});
         }
 
-        updateLeftSquarePreview();
+        bool leftSplitterRestored = false;
+        if (!resetLayout_) {
+            QByteArray state = settings.value(QStringLiteral("leftSplitterState")).toByteArray();
+            if (!state.isEmpty()) leftSplitterRestored = leftSplitter_->restoreState(state);
+        }
+        if (!leftSplitterRestored) {
+            // Roughly matches the old forced-square look at a typical left-panel
+            // width, without actually forcing anything - just a reasonable first
+            // impression the user can immediately resize away from.
+            int leftW = leftPanel_->width() > 0 ? leftPanel_->width() : static_cast<int>(width() * 0.4);
+            int h = leftSplitter_->height() > 0 ? leftSplitter_->height() : height();
+            leftSplitter_->setSizes({qMax(0, h - leftW), leftW});
+        }
     });
 
     // --- background workers (no parent - see the member declarations in the header) ---
@@ -622,6 +657,7 @@ void MainWindow::onCopyGridDebugInfo() {
     lines << QStringLiteral("Splitters:");
     lines << QStringLiteral("  mainSplitter sizes: [%1]").arg(sizesStr(splitter_->sizes()));
     lines << QStringLiteral("  topSplitter sizes: [%1]").arg(sizesStr(topSplitter_->sizes()));
+    lines << QStringLiteral("  leftSplitter sizes: [%1]").arg(sizesStr(leftSplitter_->sizes()));
     lines << QStringLiteral("  leftPanel visible: %1").arg(leftPanel_->isVisible() ? "true" : "false");
     lines << QStringLiteral("  leftPanel size: %1").arg(sizeStr(leftPanel_->size()));
     lines << QStringLiteral("");
@@ -778,11 +814,11 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     settings.setValue(QStringLiteral("windowGeometry"), saveGeometry());
     settings.setValue(QStringLiteral("mainSplitterState"), splitter_->saveState());
     settings.setValue(QStringLiteral("topSplitterState"), topSplitter_->saveState());
+    settings.setValue(QStringLiteral("leftSplitterState"), leftSplitter_->saveState());
     QMainWindow::closeEvent(event);
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
-    if (watched == leftPanel_ && event->type() == QEvent::Resize) updateLeftSquarePreview();
     if (watched == pathBar_ && event->type() == QEvent::FocusIn) {
         // A plain selectAll() here gets immediately undone by the mouse-press event
         // that triggered this focus-in (it repositions the cursor to the click point,
@@ -791,16 +827,6 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
         QTimer::singleShot(0, pathBar_, &QLineEdit::selectAll);
     }
     return QMainWindow::eventFilter(watched, event);
-}
-
-void MainWindow::updateLeftSquarePreview() {
-    if (!leftPanel_ || !preview_) return;
-    int width = leftPanel_->width();
-    // Floor for the tree/bookmarks area so an extreme window aspect ratio (very tall,
-    // narrow) can't squeeze it away to nothing in favor of an oversized square.
-    constexpr int kMinTopHeight = 80;
-    int maxPreviewHeight = qMax(0, leftPanel_->height() - kMinTopHeight);
-    preview_->setFixedHeight(qMin(width, maxPreviewHeight));
 }
 
 bool MainWindow::isWindowOnScreen() const {
