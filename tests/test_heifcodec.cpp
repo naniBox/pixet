@@ -7,6 +7,7 @@
 // (their phone shoots JPEG, not HEIC), and there's no real HEIC sample on the dev
 // machine to live-verify against either.
 #include "TestHarness.h"
+#include "TestPaths.h"
 
 #include "db/Schema.h"
 #include "decode/HeifCodec.h"
@@ -36,6 +37,6 @@ PIXET_TEST(ThumbGeneratorHeicIsNoLongerUnsupported) {
     // Missing file, not garbage bytes - if Heic were still gated as Unsupported, this
     // would come back Unsupported instead of Failed. Confirms Format::Heic actually
     // reaches the HEIF decode path now - the last format in the P4 priority list.
-    ThumbResult result = generateThumb("Z:\\does\\not\\exist.heic", Format::Heic);
+    ThumbResult result = generateThumb(nonexistentPath("heic"), Format::Heic);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

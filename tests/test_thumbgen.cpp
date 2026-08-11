@@ -35,12 +35,12 @@ PIXET_TEST(ThumbGeneratorUnsupportedFormatSkipsDecode) {
     // Format::Unknown, not a specific format: every real format now has a decoder
     // (see test_{png,raw,video,tiff,webp,avif,heif}codec.cpp) - Unknown is the only
     // value that's permanently, correctly Unsupported by definition.
-    ThumbResult result = generateThumb("Z:\\does\\not\\exist.xyz", Format::Unknown);
+    ThumbResult result = generateThumb(nonexistentPath("xyz"), Format::Unknown);
     PIXET_CHECK(result.tier == ThumbTier::Unsupported);
 }
 
 PIXET_TEST(ThumbGeneratorFailsOnMissingFile) {
-    ThumbResult result = generateThumb("Z:\\does\\not\\exist.jpg", Format::Jpeg);
+    ThumbResult result = generateThumb(nonexistentPath("jpg"), Format::Jpeg);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }
 

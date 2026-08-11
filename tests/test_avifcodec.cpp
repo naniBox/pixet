@@ -9,6 +9,7 @@
 // don't have an encode path either) wasn't pursued either - there's no real AVIF
 // sample available on the dev machine to verify against.
 #include "TestHarness.h"
+#include "TestPaths.h"
 
 #include "db/Schema.h"
 #include "decode/AvifCodec.h"
@@ -32,6 +33,6 @@ PIXET_TEST(ThumbGeneratorAvifIsNoLongerUnsupported) {
     // Missing file, not garbage bytes - if Avif were still gated as Unsupported (like
     // Heic still is), this would come back Unsupported instead of Failed. Confirms
     // Format::Avif actually reaches the AVIF decode path now.
-    ThumbResult result = generateThumb("Z:\\does\\not\\exist.avif", Format::Avif);
+    ThumbResult result = generateThumb(nonexistentPath("avif"), Format::Avif);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }
