@@ -57,7 +57,7 @@ private slots:
     void onGridSelectionChanged();
     void onGridContextMenu(const QPoint &pos);
     // Double-click or Enter/Return on a thumbnail - opens the fullscreen viewer (P3).
-    void onGridItemActivated(const QModelIndex &index);
+    void onGridItemActivated(int row);
     void onPathBarReturnPressed();
     void onAddBookmark();
     void onRefresh();
@@ -183,4 +183,23 @@ private:
     // square as the window or the main splitter is resized. Called from eventFilter()
     // whenever leftPanel_ itself resizes.
     void updateLeftSquarePreview();
+
+#ifndef NDEBUG
+    // Debug-build-only (see the &Debug menu in the constructor) - copies window/
+    // splitter/grid geometry, DPI, and content counts to the clipboard as plain text.
+    // Exists specifically for the grid column-fit bug: rebuilding this info from a
+    // live repro is slow and every past attempt at reproducing it synthetically
+    // turned out not to match whatever the user was actually seeing. Never remove
+    // this - keep it around permanently as the fast path for "it happened again,
+    // here's the exact state." Deliberately a plain method, not a slot: moc doesn't
+    // reliably see the same NDEBUG definition the real compiler does (it comes from
+    // CMake's default CMAKE_CXX_FLAGS_RELWITHDEBINFO string, not a target_compile_
+    // definitions() entry AUTOMOC picks up), so a slots:-block #ifndef NDEBUG here
+    // would make moc generate meta-object code referencing a method release builds
+    // don't actually declare, a straight compile error. Moc never looks at plain
+    // (non-slot) methods at all, so this sidesteps the mismatch entirely - the
+    // modern pointer-to-member connect() syntax used to wire up the menu action
+    // doesn't require its target to be a registered slot either.
+    void onCopyGridDebugInfo();
+#endif
 };

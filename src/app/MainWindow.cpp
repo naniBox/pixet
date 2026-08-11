@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include <QAction>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -122,48 +123,22 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     gridModel_ = new ThumbGridModel(*db_, this);
     grid_ = new ThumbGridView(this);
     grid_->setModel(gridModel_);
-    grid_->setViewMode(QListView::IconMode);
-    // Fixed, not the more obvious-looking Adjust: Adjust makes QListView relayout
-    // items automatically on *every* resizeEvent, using whatever gridSize() happens to
-    // be set at that instant - which, mid-drag, is the previous (stale) column count,
-    // since ThumbGridView::updateGridSize() deliberately debounces and only recomputes
-    // once resizing settles (see its class comment). That gave Qt's own automatic
-    // relayout and our explicit one two independent, uncoordinated opinions about
-    // layout during a drag, racing on every intermediate frame. Fixed leaves item
-    // positions untouched until something explicitly asks for a relayout -
-    // ThumbGridView::updateGridSize() already does that itself (doItemsLayout()), so
-    // this doesn't lose any actual behavior, just the redundant/conflicting one.
-    grid_->setResizeMode(QListView::Fixed);
-    grid_->setMovement(QListView::Static);
     grid_->setIconSize(QSize(prefs::thumbnailIconSize(), prefs::thumbnailIconSize()));
-    // Cell size (grid size) is self-managed by ThumbGridView, recomputed on resize so
-    // columns stretch to fill the viewport width evenly - see
-    // ThumbGridView::updateGridSize().
-    // Deliberately NOT setUniformItemSizes(true): thumbnails arrive asynchronously,
-    // so the first layout pass sees empty decorations for most cells. That flag tells
-    // Qt to cache whatever size it computes then, from a mostly-decoration-less item,
-    // and never revisit it - every thumbnail that streams in afterward gets clipped to
-    // that stale (too-small) cached size until something (e.g. a hover) forces a
-    // relayout. This was very likely the actual cause of the "only shows a tiny sliver
-    // until I hover" bug. setGridSize() already gives fixed, explicit cell dimensions,
-    // so the performance case for this flag doesn't really apply here anyway.
-    grid_->setSelectionMode(QAbstractItemView::SingleSelection);
-    connect(grid_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onGridSelectionChanged);
+    connect(grid_, &ThumbGridView::currentRowChanged, this, &MainWindow::onGridSelectionChanged);
     grid_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(grid_, &QWidget::customContextMenuRequested, this, &MainWindow::onGridContextMenu);
     connect(grid_, &ThumbGridView::navigateFolderRequested, this, &MainWindow::onNavigateFolderRequested);
-    // QAbstractItemView::activated fires on both double-click and Enter/Return by
-    // default - exactly the two ways to "open" an item.
-    connect(grid_, &QAbstractItemView::activated, this, &MainWindow::onGridItemActivated);
+    // Fires on both double-click and Enter/Return - exactly the two ways to "open"
+    // an item.
+    connect(grid_, &ThumbGridView::activated, this, &MainWindow::onGridItemActivated);
 
     fullscreenViewer_ = new FullscreenViewer(this);
     // Keep the grid's selection following along while browsing fullscreen, so
     // closing it (Escape/double-click) leaves the grid on whatever image was last
     // shown there instead of wherever it was when fullscreen opened.
     connect(fullscreenViewer_, &FullscreenViewer::rowChanged, this, [this](int row) {
-        QModelIndex idx = gridModel_->index(row);
-        grid_->setCurrentIndex(idx);
-        grid_->scrollTo(idx);
+        grid_->setCurrentRow(row);
+        grid_->scrollToRow(row);
     });
 
     // --- path bar: shows/edits currentPath_; Enter navigates (see navigateToInput) ---
@@ -230,14 +205,14 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     thumbLoader_ = std::make_unique<ThumbLoader>();
     connect(gridModel_, &ThumbGridModel::thumbNeeded, thumbLoader_.get(), &ThumbLoader::request);
     connect(thumbLoader_.get(), &ThumbLoader::thumbReady, gridModel_, &ThumbGridModel::setThumbnail);
-    // Belt-and-suspenders: QListView's IconMode + setUniformItemSizes has shown
-    // unreliable partial repaints under many small dataChanged emissions arriving
-    // over time (some cells stay stuck showing a placeholder until an unrelated
-    // interaction like a hover forces Qt to relayout). An explicit viewport update
-    // is cheap - Qt coalesces repeated calls within one event loop iteration - and
-    // removes any doubt about whether the model's dataChanged alone was enough.
-    connect(thumbLoader_.get(), &ThumbLoader::thumbReady, this,
-            [this](qint64, const QPixmap &) { grid_->viewport()->update(); });
+    // ThumbGridModel::setThumbnail() already emits dataChanged(), and
+    // ThumbGridView::setModel() already connects that straight to a viewport
+    // repaint - no separate "make sure it actually repainted" connection needed
+    // here anymore. (A previous QListView-based grid needed exactly that as a
+    // belt-and-suspenders fix for IconMode's own unreliable partial repaints; the
+    // custom-painted replacement doesn't have that failure mode, since there's no
+    // second layout/paint engine left that could disagree with what dataChanged
+    // says needs redrawing.)
 
     previewDecoder_ = std::make_unique<PreviewDecoder>();
     connect(previewDecoder_.get(), &PreviewDecoder::previewReady, this, &MainWindow::onPreviewReady);
@@ -277,6 +252,12 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
 
     auto *toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
     toolsMenu->addAction(QStringLiteral("Preferences..."), this, &MainWindow::onPreferences);
+
+#ifndef NDEBUG
+    // Debug-build-only, permanent fixture - see onCopyGridDebugInfo()'s doc comment.
+    auto *debugMenu = menuBar()->addMenu(QStringLiteral("&Debug"));
+    debugMenu->addAction(QStringLiteral("Copy Grid Debug Info"), this, &MainWindow::onCopyGridDebugInfo);
+#endif
 
     // Fixed pixel widths, sized generously for typical content (not a hard guarantee
     // against every possible value, e.g. an absurdly large dimension could clip) -
@@ -484,8 +465,9 @@ void MainWindow::onGridContextMenu(const QPoint &pos) {
     menu.exec(grid_->mapToGlobal(pos));
 }
 
-void MainWindow::onGridItemActivated(const QModelIndex &index) {
-    if (!index.isValid()) return;
+void MainWindow::onGridItemActivated(int row) {
+    if (row < 0) return;
+    QModelIndex index = gridModel_->index(row);
 
     // Video has no playback engine in the fullscreen viewer (poster frame only, see
     // FullscreenViewer's class comment) - activating one launches an actual player
@@ -503,7 +485,7 @@ void MainWindow::onGridItemActivated(const QModelIndex &index) {
         return;
     }
 
-    fullscreenViewer_->openAt(gridModel_, currentPath_, index.row());
+    fullscreenViewer_->openAt(gridModel_, currentPath_, row);
 }
 
 void MainWindow::onPathBarReturnPressed() { navigateToInput(pathBar_->text()); }
@@ -518,7 +500,7 @@ void MainWindow::onGridSelectionChanged() {
     // as elsewhere in this file.
     grid_->viewport()->update();
 
-    QModelIndex idx = grid_->currentIndex();
+    QModelIndex idx = gridModel_->index(grid_->currentRow());
     if (!idx.isValid()) {
         pendingPreviewPath_.clear();
         preview_->clear();
@@ -567,8 +549,7 @@ void MainWindow::onPreferences() {
     connect(&dlg, &PreferencesDialog::reindexRequested, this, [this]() { emit requestFullReindex(); });
     connect(&dlg, &PreferencesDialog::thumbnailSizeChanged, this, [this]() {
         int size = prefs::thumbnailIconSize();
-        grid_->setIconSize(QSize(size, size));
-        grid_->applyIconSizeChange();
+        grid_->setIconSize(QSize(size, size)); // recomputes the grid layout itself now
         // Already-decoded pixmaps in the model are sized for the *old* icon size -
         // reloading re-requests every visible thumbnail fresh from ThumbLoader, which
         // now decodes to the new size (see ThumbLoader::processOne()).
@@ -585,6 +566,67 @@ void MainWindow::onToggleSidePanel() {
     // showing leftPanel_ is the entire feature; no extra relayout call needed here.
     leftPanel_->setVisible(!leftPanel_->isVisible());
 }
+
+#ifndef NDEBUG
+void MainWindow::onCopyGridDebugInfo() {
+    QScreen *scr = screen();
+    auto rectStr = [](const QRect &r) { return QStringLiteral("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height()); };
+    auto sizeStr = [](const QSize &s) { return QStringLiteral("%1x%2").arg(s.width()).arg(s.height()); };
+    auto sizesStr = [](const QList<int> &sizes) {
+        QStringList parts;
+        for (int s : sizes) parts << QString::number(s);
+        return parts.join(QStringLiteral(", "));
+    };
+
+    QStringList lines;
+    lines << QStringLiteral("=== pixet grid debug info ===");
+    lines << QStringLiteral("");
+    lines << QStringLiteral("Window:");
+    lines << QStringLiteral("  isMaximized: %1").arg(isMaximized() ? "true" : "false");
+    lines << QStringLiteral("  isFullScreen: %1").arg(isFullScreen() ? "true" : "false");
+    lines << QStringLiteral("  windowState: 0x%1").arg((int)windowState(), 0, 16);
+    lines << QStringLiteral("  geometry: %1").arg(rectStr(geometry()));
+    lines << QStringLiteral("  frameGeometry: %1").arg(rectStr(frameGeometry()));
+    lines << QStringLiteral("  devicePixelRatio: %1").arg(devicePixelRatioF());
+    if (scr) {
+        lines << QStringLiteral("  screen: %1").arg(scr->name());
+        lines << QStringLiteral("  screen geometry: %1").arg(rectStr(scr->geometry()));
+        lines << QStringLiteral("  screen devicePixelRatio: %1").arg(scr->devicePixelRatio());
+        lines << QStringLiteral("  screen logicalDotsPerInchX: %1").arg(scr->logicalDotsPerInchX());
+    }
+    lines << QStringLiteral("");
+    lines << QStringLiteral("Splitters:");
+    lines << QStringLiteral("  mainSplitter sizes: [%1]").arg(sizesStr(splitter_->sizes()));
+    lines << QStringLiteral("  topSplitter sizes: [%1]").arg(sizesStr(topSplitter_->sizes()));
+    lines << QStringLiteral("  leftPanel visible: %1").arg(leftPanel_->isVisible() ? "true" : "false");
+    lines << QStringLiteral("  leftPanel size: %1").arg(sizeStr(leftPanel_->size()));
+    lines << QStringLiteral("");
+    lines << QStringLiteral("Grid:");
+    lines << QStringLiteral("  grid_ size: %1").arg(sizeStr(grid_->size()));
+    lines << QStringLiteral("  grid_ viewport size: %1").arg(sizeStr(grid_->viewport()->size()));
+    lines << QStringLiteral("  grid_ frameWidth: %1").arg(grid_->frameWidth());
+    lines << QStringLiteral("  verticalScrollBar visible: %1, width: %2")
+                 .arg(grid_->verticalScrollBar()->isVisible() ? "true" : "false")
+                 .arg(grid_->verticalScrollBar()->width());
+    lines << QStringLiteral("  cell size: %1").arg(sizeStr(grid_->debugCellSize()));
+    lines << QStringLiteral("  iconSize(): %1").arg(sizeStr(grid_->iconSize()));
+    lines << QStringLiteral("  computed columns: %1").arg(grid_->debugComputedColumns());
+    lines << QStringLiteral("  actually rendered columns: %1 (always == computed now - custom-painted, not QListView IconMode)")
+                 .arg(grid_->debugRenderedColumnCount());
+    lines << QStringLiteral("  model row count: %1").arg(gridModel_->rowCount());
+    lines << QStringLiteral("");
+    lines << QStringLiteral("Preferences:");
+    lines << QStringLiteral("  thumbnailIconSize: %1").arg(prefs::thumbnailIconSize());
+    lines << QStringLiteral("  thumbnailTargetLongEdge: %1").arg(prefs::thumbnailTargetLongEdge());
+    lines << QStringLiteral("");
+    lines << QStringLiteral("Folder:");
+    lines << QStringLiteral("  currentPath: %1").arg(currentPath_);
+
+    QString text = lines.join(QStringLiteral("\n"));
+    QGuiApplication::clipboard()->setText(text);
+    statusBar()->showMessage(QStringLiteral("Grid debug info copied to clipboard (%1 lines)").arg(lines.size()), 5000);
+}
+#endif
 
 void MainWindow::onIndexerStarted(QString path) {
     if (path == currentPath_) statusBar()->showMessage(QStringLiteral("Indexing %1...").arg(path));
@@ -778,9 +820,8 @@ void MainWindow::trySelectPendingFile() {
     if (pendingSelectFileName_.isEmpty()) return;
     int row = gridModel_->rowForName(pendingSelectFileName_);
     if (row < 0) return; // folder's rows may not be loaded yet - retried on the next reload
-    QModelIndex idx = gridModel_->index(row);
-    grid_->setCurrentIndex(idx);
-    grid_->scrollTo(idx, QAbstractItemView::PositionAtCenter);
+    grid_->setCurrentRow(row);
+    grid_->scrollToRow(row, /*center=*/true);
     pendingSelectFileName_.clear();
 }
 
@@ -808,7 +849,7 @@ void MainWindow::updateSelectionStatus() {
                                   ? QStringLiteral("%1 RAW: %2 rendered, %3 preview").arg(rawKnown).arg(rawRendered).arg(rawPreview)
                                   : QString());
 
-    QModelIndex idx = grid_->currentIndex();
+    QModelIndex idx = gridModel_->index(grid_->currentRow());
     if (!idx.isValid()) {
         fileNameLabel_->clear();
         fileNameLabel_->setToolTip(QString());
