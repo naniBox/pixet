@@ -97,6 +97,11 @@ else()
         "See the *_win.cpp / *_mac.cpp pairs for what each needs to do.")
 endif()
 
+# The version string lives in exactly one place - project(VERSION) in the top-level
+# CMakeLists - and reaches version.cpp through here, so the library and the .app bundle's
+# CFBundleShortVersionString can't drift apart.
+target_compile_definitions(pixet_core PRIVATE PIXET_VERSION="${PROJECT_VERSION}")
+
 target_include_directories(pixet_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(pixet_core PUBLIC ${FFMPEG_LIBRARY_DIRS})
 

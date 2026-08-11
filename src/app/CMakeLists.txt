@@ -90,6 +90,39 @@ add_executable(pixet ${PIXET_APP_TYPE}
     StatusBarRow.cpp
 )
 
+if(APPLE)
+    # The .icns has to be a source file with MACOSX_PACKAGE_LOCATION, not just named in the
+    # plist - that property is what actually copies it into Contents/Resources. Naming it in
+    # CFBundleIconFile alone yields a bundle that references an icon it doesn't contain, and
+    # macOS silently falls back to the generic executable icon.
+    set(PIXET_ICON "${CMAKE_CURRENT_SOURCE_DIR}/pixet.icns")
+    target_sources(pixet PRIVATE ${PIXET_ICON})
+    set_source_files_properties(${PIXET_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+
+    set_target_properties(pixet PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
+        MACOSX_BUNDLE_EXECUTABLE_NAME "pixet"
+        # Stable and reverse-DNS. This is the key macOS hangs per-app state off - window
+        # restore, and the TCC grants for reading ~/Pictures - so it must not change between
+        # builds or the app forgets its permissions every time.
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.nanibox.pixet"
+        MACOSX_BUNDLE_BUNDLE_NAME "pixet"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_ICON_FILE "pixet.icns"
+        MACOSX_BUNDLE_COPYRIGHT "© naniBox"
+    )
+endif()
+
+# Defaults ON deliberately, including for release builds: MainWindow.h's comment on
+# onCopyGridDebugInfo() asks for the &Debug menu to stay available on the daily-driver build
+# permanently, since it's the fast path for capturing state when the grid column-fit bug
+# recurs. scripts/deploy-mac.sh turns it OFF so it doesn't ship to anyone else.
+option(PIXET_DEBUG_MENU "Include the &Debug menu (grid state capture)" ON)
+if(PIXET_DEBUG_MENU)
+    target_compile_definitions(pixet PRIVATE PIXET_DEBUG_MENU)
+endif()
+
 target_link_libraries(pixet PRIVATE
     pixet_core
     Qt6::Widgets

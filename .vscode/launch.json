@@ -46,6 +46,34 @@
       "cwd": "${workspaceFolder}/build/release/src/index",
       "console": "externalTerminal",
       "preLaunchTask": "CMake: build release"
+    },
+    {
+      // macOS. "cppvsdbg" is Windows-only, so these use CodeLLDB (vadimcn.vscode-lldb).
+      // Note the executable lives *inside* the .app bundle - that's what MACOSX_BUNDLE
+      // produces, and debugging the bundle rather than a bare binary is what gives the app
+      // its Info.plist identity (and therefore its file-access permissions).
+      //
+      // There is deliberately no PATH override like the Windows configs have: macOS resolves
+      // the Qt frameworks through an @rpath baked into the binary at link time. If that ever
+      // fails, the equivalent knob is DYLD_FRAMEWORK_PATH, not PATH.
+      "name": "pixet (mac-debug)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/mac-debug/src/app/pixet.app/Contents/MacOS/pixet",
+      "args": [],
+      "cwd": "${workspaceFolder}/build/mac-debug/src/app",
+      "preLaunchTask": "CMake: build mac-debug"
+    },
+    {
+      "name": "pixet-index (mac-debug)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/mac-debug/src/index/pixet-index",
+      // pixet-index is a plain CLI binary, not bundled - pass a folder to index here.
+      "args": ["${env:HOME}/Pictures"],
+      "cwd": "${workspaceFolder}/build/mac-debug/src/index",
+      "terminal": "integrated",
+      "preLaunchTask": "CMake: build mac-debug"
     }
   ]
 }

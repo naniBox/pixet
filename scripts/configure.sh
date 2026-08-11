@@ -9,7 +9,8 @@
 # only the ordering: vcpkg's dependency install happens during *this* step (configure),
 # not during build, so the binary cache has to be set up before `cmake --preset` runs.
 #
-# Usage: ./scripts/configure.sh [mac-debug|mac-release]
+# Usage: ./scripts/configure.sh [mac-debug|mac-release] [extra cmake args...]
+#   e.g. ./scripts/configure.sh mac-release -DPIXET_DEBUG_MENU=OFF
 #
 # A cold run builds every vcpkg dependency from source (sqlite3, libjpeg-turbo, libpng,
 # tiff, webp, avif, libraw, libheif+libde265, ffmpeg) - budget ~30 minutes and ~10-15GB
@@ -18,6 +19,7 @@
 set -euo pipefail
 
 PRESET="${1:-mac-debug}"
+shift || true
 
 case "$PRESET" in
     mac-debug|mac-release) ;;
@@ -59,4 +61,4 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/vcpkg-cache-env.sh"
 
 cd "$REPO_ROOT"
-exec cmake --preset "$PRESET"
+exec cmake --preset "$PRESET" "$@"

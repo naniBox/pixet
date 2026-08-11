@@ -1,3 +1,6 @@
 {
-  "recommendations": ["ms-vscode.cmake-tools", "ms-vscode.cpptools"]
+  // vscode-lldb is macOS-only in practice here: the "cppvsdbg" debugger the Windows launch
+  // configs use ships with cpptools, but it doesn't exist off Windows, so the mac configs in
+  // launch.json need CodeLLDB. Harmless to have recommended on Windows.
+  "recommendations": ["ms-vscode.cmake-tools", "ms-vscode.cpptools", "vadimcn.vscode-lldb"]
 }

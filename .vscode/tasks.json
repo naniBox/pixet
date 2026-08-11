@@ -8,7 +8,7 @@
       "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build.ps1", "-Preset", "debug"],
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": ["$msCompile"],
-      "detail": "Build all targets using the debug preset. Explicitly enters the VS dev shell itself (scripts/build.ps1) rather than relying on CMake Tools' environment auto-injection, which turned out to only reliably apply to a build directory CMake Tools configured itself."
+      "detail": "Windows. Build all targets using the debug preset. Explicitly enters the VS dev shell itself (scripts/build.ps1) rather than relying on CMake Tools' environment auto-injection, which turned out to only reliably apply to a build directory CMake Tools configured itself."
     },
     {
       "type": "shell",
@@ -17,7 +17,25 @@
       "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build.ps1", "-Preset", "release"],
       "group": "build",
       "problemMatcher": ["$msCompile"],
-      "detail": "Build all targets using the release preset. Explicitly enters the VS dev shell itself (scripts/build.ps1) rather than relying on CMake Tools' environment auto-injection, which turned out to only reliably apply to a build directory CMake Tools configured itself."
+      "detail": "Windows. Build all targets using the release preset. Explicitly enters the VS dev shell itself (scripts/build.ps1) rather than relying on CMake Tools' environment auto-injection, which turned out to only reliably apply to a build directory CMake Tools configured itself."
+    },
+    {
+      "type": "shell",
+      "label": "CMake: build mac-debug",
+      "command": "${workspaceFolder}/scripts/build.sh",
+      "args": ["mac-debug"],
+      "group": "build",
+      "problemMatcher": ["$gcc"],
+      "detail": "macOS. No dev-shell equivalent is needed - clang from the Command Line Tools is already on PATH with the right sysroot. $gcc is the correct problem matcher here: clang's diagnostic format parses with it."
+    },
+    {
+      "type": "shell",
+      "label": "CMake: build mac-release",
+      "command": "${workspaceFolder}/scripts/build.sh",
+      "args": ["mac-release"],
+      "group": "build",
+      "problemMatcher": ["$gcc"],
+      "detail": "macOS. Release (RelWithDebInfo) build. For something distributable use scripts/deploy-mac.sh instead - it also compiles out the Debug menu, embeds Qt and produces a signed DMG."
     }
   ]
 }

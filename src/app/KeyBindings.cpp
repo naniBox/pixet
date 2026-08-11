@@ -15,7 +15,18 @@ QList<ActionInfo> buildActionList() {
     return {
         {Action::ToggleSidePanel, QStringLiteral("toggleSidePanel"), QStringLiteral("Toggle side panel"),
          QKeySequence(Qt::Key_T)},
-        {Action::Refresh, QStringLiteral("refresh"), QStringLiteral("Refresh"), QKeySequence(QStringLiteral("F5"))},
+        // F5 is the right default on Windows and a poor one on a Mac keyboard, where the
+        // function row defaults to hardware controls and F5 needs Fn (or is dictation).
+        // Cmd+R is the platform convention for "refresh" - and note "Ctrl+R" is how that is
+        // spelled portably: Qt maps Qt::ControlModifier to Command on macOS, so this
+        // *renders and behaves* as Cmd+R there. Only the default differs; stored overrides
+        // are portable text either way, so no migration is involved.
+        {Action::Refresh, QStringLiteral("refresh"), QStringLiteral("Refresh"),
+#ifdef Q_OS_MACOS
+         QKeySequence(QStringLiteral("Ctrl+R"))},
+#else
+         QKeySequence(QStringLiteral("F5"))},
+#endif
         {Action::AddBookmark, QStringLiteral("addBookmark"), QStringLiteral("Add current folder to bookmarks"),
          QKeySequence(QStringLiteral("Ctrl+D"))},
         {Action::ActivateFullscreen, QStringLiteral("activateFullscreen"),

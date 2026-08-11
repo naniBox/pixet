@@ -187,7 +187,12 @@ void ThumbGridView::paintCell(QPainter &painter, int row, const QRect &cellRect)
     if (deco.canConvert<QPixmap>()) {
         QPixmap pix = deco.value<QPixmap>();
         if (!pix.isNull()) {
-            QRect pixRect(QPoint(0, 0), pix.size());
+            // deviceIndependentSize(), not size(): ThumbLoader decodes at iconSize *
+            // devicePixelRatio and stamps the ratio on the pixmap, so size() is in device
+            // pixels and on a Retina screen would be twice the box being centred in - which
+            // would offset every thumbnail up and left by half its own size. drawPixmap()
+            // itself honours the ratio, so only the positioning needs converting.
+            QRect pixRect(QPoint(0, 0), pix.deviceIndependentSize().toSize());
             pixRect.moveCenter(imageArea.center());
             painter.drawPixmap(pixRect.topLeft(), pix);
         }

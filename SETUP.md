@@ -1,7 +1,11 @@
 # pixet dev environment setup
 
-Toolchain bootstrap for a fresh Windows machine. Run top to bottom. Everything except
-step 3 (VS Build Tools) is per-user and needs no admin rights.
+Toolchain bootstrap for a fresh machine.
+
+- **Windows** — steps 0-7 below. Run top to bottom. Everything except step 3 (VS Build
+  Tools) is per-user and needs no admin rights.
+- **macOS (Apple Silicon)** — jump to [macOS](#macos-apple-silicon) near the end. Much
+  shorter: no admin, no dev-shell, and the compiler comes from the Command Line Tools.
 
 See `devlog.md` for why these specific choices (Qt version, vcpkg pinning, etc.).
 
@@ -186,6 +190,120 @@ same reason step 6's manual dance exists, plus it wires up the shared vcpkg cach
 If `pixet.exe` fails to *launch* (not build) with a missing-DLL error, check
 `launch.json`'s `PATH` override still points at your actual Qt install (see the
 `CMakeUserPresets.json` note above if yours differs from `C:\Qt\6.8.3\msvc2022_64`).
+
+## macOS (Apple Silicon)
+
+Substantially shorter than the Windows path: clang ships with the Command Line Tools, so
+there's no dev-shell dance and nothing needs admin rights.
+
+### 1. Prerequisites
+
+```bash
+xcode-select --install          # Command Line Tools - full Xcode is NOT required
+brew install cmake ninja nasm
+brew install autoconf automake libtool   # insurance: some vcpkg ports use autotools
+```
+
+`nasm` is genuinely required, not precautionary: vcpkg's `vcpkg_find_acquire_program(NASM)`
+only auto-downloads on Windows hosts, so the ffmpeg port fails without a system nasm.
+
+### 2. vcpkg
+
+```bash
+git submodule update --init
+./vcpkg/bootstrap-vcpkg.sh -disableMetrics    # the .sh, not the .bat from step 4 above
+```
+
+### 3. Qt 6.8.3
+
+Same version and same `aqtinstall` route as Windows, to keep the two machines comparable:
+
+```bash
+pip3 install --user aqtinstall
+aqt list-qt mac desktop                       # confirm 6.8.3 resolves before installing
+aqt install-qt mac desktop 6.8.3 clang_64 --outputdir ~/Qt
+```
+
+That lands at `~/Qt/6.8.3/macos`, which is exactly what `CMakePresets.json`'s `mac-base`
+expects — no `CMakeUserPresets.json` needed. (The directory is named `macos` even though
+the architecture argument is `clang_64`.) The official build is a universal
+x86_64+arm64 binary with a macOS 12 floor, which is what makes a distributable app
+possible at all — see step 6.
+
+If you land on a different version, don't edit the committed preset; add a gitignored
+`CMakeUserPresets.json` overriding `CMAKE_PREFIX_PATH`, exactly as the Windows note above
+describes.
+
+### 4. Build and verify
+
+```bash
+./scripts/configure.sh mac-debug     # first run also builds every vcpkg dependency
+./scripts/build.sh mac-debug
+ctest --test-dir build/mac-debug
+open build/mac-debug/src/app/pixet.app
+```
+
+Budget **~30 minutes and 10-15GB** for that first configure — it builds sqlite3,
+libjpeg-turbo, libpng, tiff, webp, avif, libraw, libheif+libde265 and ffmpeg from source.
+`vcpkg/buildtrees` is not cleaned up automatically and is safe to delete afterwards.
+
+Unlike the Windows scripts, `configure.sh`/`build.sh` do **not** use the `\\kioku` shared
+binary cache. A cache entry's ABI hash includes the compiler and triplet, so nothing an
+MSVC/x64-windows build ever pushed there is a hit for an Apple-clang/arm64-osx build. Set
+`PIXET_VCPKG_CACHE_DIR` to a mounted share if you ever have a second Mac.
+
+### 5. VS Code
+
+Pick the `mac-debug` preset when CMake Tools prompts. `launch.json` has macOS entries using
+LLDB — install `vadimcn.vscode-lldb` alongside the C++ extensions. Note the debug target is
+inside the bundle: `build/mac-debug/src/app/pixet.app/Contents/MacOS/pixet`.
+
+### 6. Building something you can give to someone else
+
+```bash
+./scripts/deploy-mac.sh
+```
+
+Produces `build/pixet-<version>-arm64.dmg`: a release build with the `&Debug` menu compiled
+out, Qt frameworks embedded by `macdeployqt`, ad-hoc signed, drag-to-Applications DMG. The
+codec libraries are statically linked (see `triplets/arm64-osx-pixet.cmake`), so Qt is the
+only thing that needs embedding.
+
+**What the recipient experiences, and why.** An ad-hoc-signed app is fine to run locally but
+a downloaded DMG picks up the `com.apple.quarantine` attribute, and Gatekeeper refuses
+anything that isn't Developer-ID-signed *and* notarized. So they must:
+
+1. open it once and let it be refused, then
+2. **System Settings → Privacy & Security → "Open Anyway"**.
+
+The old Control-click → Open shortcut stopped working as a bypass in macOS 15. The terminal
+equivalent is `xattr -dr com.apple.quarantine /Applications/pixet.app`.
+
+To remove that friction entirely you need an Apple Developer Program membership ($99/year),
+after which it's environment variables only — no script edits:
+
+```bash
+PIXET_CODESIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \
+PIXET_NOTARY_PROFILE=my-profile ./scripts/deploy-mac.sh
+```
+
+The build targets **macOS 12+** and **arm64 only**. Both are deliberate and both are set in
+one place each: `CMAKE_OSX_DEPLOYMENT_TARGET` in the top-level `CMakeLists.txt` and
+`VCPKG_OSX_DEPLOYMENT_TARGET` in `triplets/arm64-osx-pixet.cmake` — they must agree. Adding
+Intel means `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"` plus an `x64-osx` dependency build.
+
+### 7. First-launch permissions
+
+macOS will ask for access to `~/Pictures`, `~/Documents` and `~/Downloads` the first time
+pixet reads them. Two things worth knowing so neither reads as a bug:
+
+- **The prompts come back after a rebuild.** TCC keys the grant to the code signature, and
+  an ad-hoc signature is different on every build. A Developer ID signature is stable and
+  fixes this as a side effect.
+- **Folders you never grant are skipped, not fatal.** `pixet-index` reports them in its
+  summary as `unreadable`, and a whole-`$HOME` index will legitimately have a nonzero count
+  there. If you want to index broadly without answering prompts one at a time, grant Full
+  Disk Access to the app in System Settings → Privacy & Security.
 
 ## Troubleshooting
 
