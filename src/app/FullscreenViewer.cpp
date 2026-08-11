@@ -14,6 +14,7 @@
 
 #include "FullscreenDecoder.h"
 #include "KeyBindings.h"
+#include "PathQ.h"
 #include "ThumbGridModel.h"
 #include "db/Schema.h"
 
@@ -112,7 +113,7 @@ QString FullscreenViewer::pathForRow(int row) const {
     if (!model_) return QString();
     QString name = model_->data(model_->index(row), Qt::DisplayRole).toString();
     if (name.isEmpty()) return QString();
-    return directoryPath_ + QStringLiteral("\\") + name;
+    return joinPathQ(directoryPath_, name);
 }
 
 int FullscreenViewer::formatForRow(int row) const {
@@ -144,8 +145,13 @@ void FullscreenViewer::requestFit(int row) {
 
     qint64 reqId = ++requestCounter_;
     fitRequestRow_[reqId] = row;
-    // Display resolution, not full native size - see JpegCodec's scaled-DCT path.
-    int targetLongEdge = qMax(width(), height());
+    // Display resolution, not full native size - see JpegCodec's scaled-DCT path. In *device*
+    // pixels: width()/height() are logical points, so on a Retina screen decoding to them
+    // yields half the pixels the display can actually show and the compositor upscales the
+    // difference. The paint path below needs no matching change - it derives everything from
+    // nativeSize and draws into logical rects, so handing it a higher-resolution source just
+    // means more pixels to sample from at the same on-screen size.
+    int targetLongEdge = qRound(qMax(width(), height()) * devicePixelRatioF());
     decoder_->request(reqId, pathForRow(row), formatForRow(row), targetLongEdge);
 }
 
@@ -211,6 +217,16 @@ QRect FullscreenViewer::fitTargetRect(const QPixmap &pixmap) const {
     QSize scaled = pixmap.size().scaled(size(), Qt::KeepAspectRatio);
     QPoint topLeft((width() - scaled.width()) / 2, (height() - scaled.height()) / 2);
     return QRect(topLeft, scaled);
+}
+
+qreal FullscreenViewer::oneToOneScale() const {
+    // scale_ is measured in logical points per native image pixel, so a literal 1.0 means one
+    // image pixel per *point* - which on a Retina display is two device pixels, i.e. the
+    // "1:1" view was actually showing everything at 2x. Dividing by the ratio makes it one
+    // image pixel per device pixel, which is what pixel-for-pixel is supposed to mean and
+    // what you get in Preview.app.
+    const qreal dpr = devicePixelRatioF();
+    return dpr > 0.0 ? 1.0 / dpr : 1.0;
 }
 
 qreal FullscreenViewer::effectiveScale(const QSize &nativeSize) const {
@@ -389,7 +405,7 @@ void FullscreenViewer::mouseReleaseEvent(QMouseEvent *event) {
     QPointF fraction((event->pos().x() - target.left()) / qreal(target.width()),
                       (event->pos().y() - target.top()) / qreal(target.height()));
     centerImagePoint_ = QPointF(fraction.x() * nativeSize.width(), fraction.y() * nativeSize.height());
-    scale_ = 1.0;
+    scale_ = oneToOneScale();
     fitMode_ = false;
     updateCursor();
     requestZoom(currentRow_);
@@ -408,7 +424,7 @@ void FullscreenViewer::toggleZoomKeyboard() {
     if (nativeSize.width() <= 0 || nativeSize.height() <= 0) return; // no known size - can't compute a zoom target
 
     centerImagePoint_ = QPointF(nativeSize.width() / 2.0, nativeSize.height() / 2.0);
-    scale_ = 1.0;
+    scale_ = oneToOneScale();
     fitMode_ = false;
     updateCursor();
     requestZoom(currentRow_);

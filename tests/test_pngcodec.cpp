@@ -121,6 +121,6 @@ PIXET_TEST(ThumbGeneratorDoesNotUpscaleSmallPng) {
 }
 
 PIXET_TEST(ThumbGeneratorFailsOnMissingPngFile) {
-    ThumbResult result = generateThumb("Z:\\does\\not\\exist.png", Format::Png);
+    ThumbResult result = generateThumb(nonexistentPath("png"), Format::Png);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

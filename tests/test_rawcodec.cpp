@@ -39,7 +39,7 @@ PIXET_TEST(ThumbGeneratorRawIsNoLongerUnsupported) {
     // Missing file, not garbage bytes - if Raw were still gated as Unsupported (like
     // Heic still is), this would come back Unsupported instead of Failed. Confirms
     // Format::Raw actually reaches the RAW decode path now.
-    ThumbResult result = generateThumb("Z:\\does\\not\\exist.dng", Format::Raw);
+    ThumbResult result = generateThumb(nonexistentPath("dng"), Format::Raw);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }
 
@@ -48,6 +48,6 @@ PIXET_TEST(ThumbGeneratorForceFullRenderStillFailsGracefullyOnMissingFile) {
     // (needs a real decodable RAW file - see the live-verified two-pass flow noted
     // above) - just that the parameter is threaded through generateThumb() without
     // upsetting the ordinary failure path.
-    ThumbResult result = generateThumb("Z:\\does\\not\\exist.dng", Format::Raw, 320, 85, /*forceFullRender=*/true);
+    ThumbResult result = generateThumb(nonexistentPath("dng"), Format::Raw, 320, 85, /*forceFullRender=*/true);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

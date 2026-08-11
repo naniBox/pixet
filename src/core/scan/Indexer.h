@@ -16,6 +16,13 @@ struct IndexStats {
     int64_t dirsVisited = 0;
     int64_t dirsSkippedClaimed = 0; // held by another owner with a fresh heartbeat
     int64_t dirsSkippedFresh = 0;   // mtime unchanged since last scan, trusted cache
+    // Couldn't be stat'd or listed at all - permission denied, or it vanished mid-walk.
+    // Counted rather than silently swallowed because on macOS this is *routine*, not
+    // exceptional: TCC gates ~/Documents, ~/Downloads and ~/Desktop behind a per-app
+    // grant, and a run over a whole home directory will legitimately skip folders. A
+    // number the user can see is the difference between "working as designed" and
+    // "why is half my library missing".
+    int64_t dirsSkippedUnreadable = 0;
     int64_t filesNew = 0;
     int64_t filesRemoved = 0;
     int64_t thumbsEmbedded = 0;   // ThumbTier::EmbeddedPreview

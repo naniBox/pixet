@@ -4,6 +4,7 @@ add_executable(pixet_tests
     main.cpp
     test_schema.cpp
     test_claims.cpp
+    test_pathutil.cpp
     test_exif.cpp
     test_thumbgen.cpp
     test_pngcodec.cpp

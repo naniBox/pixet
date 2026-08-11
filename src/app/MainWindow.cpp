@@ -4,10 +4,13 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QDateTime>
+#include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemModel>
+#include <QMessageBox>
 #include <QGuiApplication>
 #include <QHeaderView>
 #include <QLabel>
@@ -32,6 +35,7 @@
 #include "FolderTreeView.h"
 #include "FullscreenViewer.h"
 #include "KeyBindings.h"
+#include "PathQ.h"
 #include "Preferences.h"
 #include "PreferencesDialog.h"
 #include "PreviewDecoder.h"
@@ -49,8 +53,11 @@
 #include "version.h"
 
 namespace {
-// dirs.path / files.name are UTF-8 in the DB; QFileSystemModel paths need the same
-// backslash-normalized form pixet_core writes, or path-string lookups silently miss.
+// dirs.path / files.name are UTF-8 in the DB; a path from QFileSystemModel has to be put
+// into the exact same form pixet_core writes before it's used as a lookup key, or the
+// query silently misses rows that are really there. That means the platform's separator
+// style (QFileSystemModel uses forward slashes even on Windows) and, on macOS, the Unicode
+// normalization form too - normalizePath() handles both.
 QString normalizeForDb(const QString &path) {
     return QString::fromStdString(pixet::normalizePath(path.toStdString()));
 }
@@ -104,11 +111,24 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
 
     fsModel_ = new QFileSystemModel(this);
     fsModel_->setRootPath(QString());
+    // QDir::Drives is what surfaces the drive-letter list on Windows and is simply inert
+    // elsewhere. Kept unconditionally: it costs nothing on macOS and removing it would only
+    // make the Windows behaviour depend on a platform check.
     fsModel_->setFilter(QDir::AllDirs | QDir::NoDotAndDotDot | QDir::Drives);
 
     tree_ = new FolderTreeView(this);
     tree_->setModel(fsModel_);
+    // On Windows an empty root index means "show the drives", which is a short, useful list.
+    // On macOS it means a single "/" node, so every launch starts with the user four levels
+    // of clicking away from their own photos, past /System and /Library. Rooting the tree at
+    // $HOME is the sane default there; external volumes are still reachable because
+    // navigateTo() can go anywhere (Choose Folder..., the path bar, or a bookmark), and
+    // /Volumes gets seeded as a bookmark on first run - see loadBookmarks().
+#ifdef Q_OS_MACOS
+    tree_->setRootIndex(fsModel_->index(QDir::homePath()));
+#else
     tree_->setRootIndex(fsModel_->index(QString()));
+#endif
     tree_->setHeaderHidden(true);
     for (int col = 1; col < fsModel_->columnCount(); ++col) tree_->hideColumn(col);
     // QTreeView defaults to stretchLastSection(true), which forces the (only visible)
@@ -258,6 +278,10 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
 
     // --- background workers (no parent - see the member declarations in the header) ---
     thumbLoader_ = std::make_unique<ThumbLoader>();
+    // The worker can't safely ask a widget or QScreen for this itself, so it's pushed in from
+    // here - see ThumbLoader::setDevicePixelRatio(). Without it grid thumbnails decode to the
+    // logical icon size and get upscaled on a Retina display.
+    thumbLoader_->setDevicePixelRatio(devicePixelRatioF());
     connect(gridModel_, &ThumbGridModel::thumbNeeded, thumbLoader_.get(), &ThumbLoader::request);
     connect(thumbLoader_.get(), &ThumbLoader::thumbReady, gridModel_, &ThumbGridModel::setThumbnail);
     // ThumbGridModel::setThumbnail() already emits dataChanged(), and
@@ -301,6 +325,9 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // QAction pointers are kept as members so onPreferences() can re-apply their
     // shortcuts after the editor closes, since QAction doesn't watch settings
     // itself.
+    auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
+    fileMenu->addAction(QStringLiteral("Choose Folder..."), this, &MainWindow::onChooseFolder);
+
     auto *bookmarksMenu = menuBar()->addMenu(QStringLiteral("&Bookmarks"));
     addBookmarkAction_ = bookmarksMenu->addAction(QStringLiteral("Add Current Folder"), this, &MainWindow::onAddBookmark);
 
@@ -309,13 +336,50 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     toggleSidePanelAction_ = viewMenu->addAction(QStringLiteral("Toggle Side Panel"), this, &MainWindow::onToggleSidePanel);
     applyKeyBindingShortcuts();
 
+    // Qt's Cocoa menu bar relocates Preferences and About into the macOS *application* menu
+    // (as Cmd-, and "About pixet"). So on Apple they're added to File, which still has
+    // Choose Folder left in it after the move - putting Preferences alone in a Tools menu,
+    // the way the Windows build does, would leave a visible "Tools" title with nothing at
+    // all under it.
+    QAction *prefsAction = nullptr;
+    QAction *aboutAction = nullptr;
+#ifdef Q_OS_MACOS
+    prefsAction = fileMenu->addAction(QStringLiteral("Preferences..."), this, &MainWindow::onPreferences);
+    aboutAction = fileMenu->addAction(QStringLiteral("About pixet"), this, &MainWindow::onAbout);
+#else
     auto *toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
-    toolsMenu->addAction(QStringLiteral("Preferences..."), this, &MainWindow::onPreferences);
+    prefsAction = toolsMenu->addAction(QStringLiteral("Preferences..."), this, &MainWindow::onPreferences);
+    auto *helpMenu = menuBar()->addMenu(QStringLiteral("&Help"));
+    aboutAction = helpMenu->addAction(QStringLiteral("About pixet"), this, &MainWindow::onAbout);
+    fileMenu->addSeparator();
+    fileMenu->addAction(QStringLiteral("E&xit"), this, &MainWindow::close);
+#endif
+    // Set explicitly rather than leaning on Qt's text heuristic. The heuristic does work,
+    // but it keys off the strings still containing "preferences"/"about", so renaming a menu
+    // item would quietly move it back out of the application menu. There is deliberately no
+    // QuitRole action: macOS supplies its own Quit in the application menu, and adding one
+    // here would duplicate it.
+    prefsAction->setMenuRole(QAction::PreferencesRole);
+    aboutAction->setMenuRole(QAction::AboutRole);
 
-    // TODO: was debug-build-only; in release too for now (2026-08-11) - see
-    // onCopyGridDebugInfo()'s doc comment (MainWindow.h). Permanent fixture either way.
+    // Behind a build option rather than plain NDEBUG, because MainWindow.h's comment on
+    // onCopyGridDebugInfo() is explicit that this should stay available on the daily-driver
+    // *release* build - so it defaults ON everywhere and nothing changes for local use.
+    // scripts/deploy-mac.sh configures with -DPIXET_DEBUG_MENU=OFF, so it doesn't ship in a
+    // DMG handed to someone else. That's the "reconsider before any wider distribution" case
+    // the same comment names, without removing the fast path it asks to keep permanently.
+#ifdef PIXET_DEBUG_MENU
     auto *debugMenu = menuBar()->addMenu(QStringLiteral("&Debug"));
     debugMenu->addAction(QStringLiteral("Copy Grid Debug Info"), this, &MainWindow::onCopyGridDebugInfo);
+#endif
+
+    // Insurance for window/layout persistence. Everything used to be saved only from
+    // closeEvent(), which is not guaranteed to run: on macOS, Cmd+Q and "Quit pixet" go
+    // through the application menu and terminate without necessarily delivering a close
+    // event to the window - so geometry, splitter sizes and the last directory would just
+    // silently stop being remembered for the most common way of quitting. Saving twice is
+    // harmless (same values, same keys).
+    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, &MainWindow::saveWindowState);
 
     // Nominal pixel widths, sized generously for typical content - shrink together
     // proportionally (see StatusBarRow.h) if the window is too narrow for all of
@@ -524,14 +588,32 @@ void MainWindow::onGridItemActivated(int row) {
     // FullscreenViewer's class comment) - activating one launches an actual player
     // instead, per the user's own preference, rather than opening the viewer at all.
     if ((pixet::Format)index.data(ThumbGridModel::FormatRole).toInt() == pixet::Format::Video) {
-        QString filePath = currentPath_ + QStringLiteral("\\") + index.data(Qt::DisplayRole).toString();
+        QString filePath = joinPathQ(currentPath_, index.data(Qt::DisplayRole).toString());
         if (prefs::useSystemVideoPlayer() || prefs::customVideoPlayerPath().isEmpty()) {
             // Also the fallback when "Custom" is selected but no path was ever set -
             // silently doing nothing on activation would look like the double-click
             // just didn't register.
             QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
         } else {
-            QProcess::startDetached(prefs::customVideoPlayerPath(), {filePath});
+            const QString player = prefs::customVideoPlayerPath();
+            bool started = false;
+            if (player.endsWith(QStringLiteral(".app"), Qt::CaseInsensitive) || QFileInfo(player).isDir()) {
+                // A macOS "application" the user picks in a file dialog is an .app bundle,
+                // i.e. a *directory* - startDetached() can't exec it, and the native open
+                // panel hands one back happily since it treats bundles as selectable files.
+                // `open -a` is the supported way to hand a document to a bundled app.
+                started = QProcess::startDetached(QStringLiteral("/usr/bin/open"),
+                                                   {QStringLiteral("-a"), player, filePath});
+            } else {
+                started = QProcess::startDetached(player, {filePath});
+            }
+            // startDetached's return value used to be discarded, so a misconfigured player
+            // path made a double-click do nothing at all with no indication why - the same
+            // failure mode the empty-path fallback above was already written to avoid.
+            if (!started) {
+                statusBar()->showMessage(
+                    QStringLiteral("Could not launch video player: %1  (check Preferences)").arg(player), 8000);
+            }
         }
         return;
     }
@@ -561,7 +643,7 @@ void MainWindow::onGridSelectionChanged() {
 
     QString name = idx.data(Qt::DisplayRole).toString();
     pendingPreviewFmt_ = idx.data(ThumbGridModel::FormatRole).toInt();
-    pendingPreviewPath_ = currentPath_ + QStringLiteral("\\") + name;
+    pendingPreviewPath_ = joinPathQ(currentPath_, name);
     pathBar_->setText(pendingPreviewPath_);
 
     previewDebounce_->start();
@@ -612,6 +694,36 @@ void MainWindow::onPreferences() {
     // actually changed anything (Cancel discards its own edits before this point) -
     // no need for a dedicated changed-detection signal just for this.
     applyKeyBindingShortcuts();
+}
+
+void MainWindow::onChooseFolder() {
+    QString start = currentPath_.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::PicturesLocation)
+                                            : currentPath_;
+    QString chosen = QFileDialog::getExistingDirectory(this, QStringLiteral("Choose Folder"), start);
+    if (!chosen.isEmpty()) navigateTo(normalizeForDb(chosen));
+}
+
+void MainWindow::onAbout() {
+    // QMessageBox::about renders as a proper About panel in the application menu on macOS.
+    // Qt's runtime version is worth showing: the AGL link workaround in src/app/CMakeLists.txt
+    // is specific to 6.8, so knowing which Qt a given build was made against is the first
+    // thing anyone would want when it eventually stops being needed.
+    QMessageBox::about(this, QStringLiteral("About pixet"),
+                        QStringLiteral("<b>pixet %1</b><br><br>Photo and video viewer.<br><br>"
+                                        "Qt %2<br>Cache: %3")
+                            .arg(QString::fromLatin1(pixet::version()), QString::fromLatin1(qVersion()),
+                                  QString::fromStdString(pixet::appDataDir())));
+}
+
+void MainWindow::openSystemPath(const QString &path) {
+    if (path.isEmpty()) return;
+    // The request came from outside the app (Finder, the Dock, `open -a`), so the window is
+    // very likely behind something or freshly launched - bring it forward, or the file
+    // silently opens into a window the user can't see.
+    show();
+    raise();
+    activateWindow();
+    navigateToInput(path);
 }
 
 void MainWindow::applyKeyBindingShortcuts() {
@@ -818,12 +930,16 @@ void MainWindow::nukeDatabase() {
     if (!currentPath_.isEmpty()) navigateTo(currentPath_, /*forceReindex=*/true);
 }
 
-void MainWindow::closeEvent(QCloseEvent *event) {
+void MainWindow::saveWindowState() {
     QSettings settings = prefs::settingsStore();
     settings.setValue(QStringLiteral("windowGeometry"), saveGeometry());
     settings.setValue(QStringLiteral("mainSplitterState"), splitter_->saveState());
     settings.setValue(QStringLiteral("topSplitterState"), topSplitter_->saveState());
     settings.setValue(QStringLiteral("leftSplitterState"), leftSplitter_->saveState());
+}
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+    saveWindowState();
     QMainWindow::closeEvent(event);
 }
 

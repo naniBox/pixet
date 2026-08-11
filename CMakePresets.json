@@ -34,7 +34,9 @@
       "toolchainFile": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
       "cacheVariables": {
-        "CMAKE_PREFIX_PATH": "$env{HOME}/Qt/6.8.3/macos"
+        "CMAKE_PREFIX_PATH": "$env{HOME}/Qt/6.8.3/macos",
+        "VCPKG_TARGET_TRIPLET": "arm64-osx-pixet",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets"
       }
     },
     {

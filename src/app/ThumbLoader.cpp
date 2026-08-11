@@ -18,6 +18,10 @@ ThumbLoader::~ThumbLoader() {
     thread_.wait();
 }
 
+void ThumbLoader::setDevicePixelRatio(qreal ratio) {
+    devicePixelRatio_.store(ratio > 0.0 ? ratio : 1.0, std::memory_order_relaxed);
+}
+
 void ThumbLoader::request(qint64 fileId, qint64 thumbId) {
     if (thumbId == 0 || pending_.contains(fileId)) return;
     pending_.insert(fileId);
@@ -44,18 +48,27 @@ void ThumbLoader::processOne() {
     if (sel.step()) {
         std::vector<uint8_t> bytes = sel.columnBlob(0);
         pixet::RgbImage img;
-        int iconSize = prefs::thumbnailIconSize();
+        const qreal dpr = devicePixelRatio_.load(std::memory_order_relaxed);
+        // Device pixels, not logical points. prefs::thumbnailIconSize() is the on-screen
+        // (logical) cell size, so on a Retina display the grid can show twice that many real
+        // pixels - and prefs::thumbnailTargetLongEdge() already stores blobs at 2x the icon
+        // size precisely so this headroom exists to be used.
+        const int deviceSize = qMax(1, qRound(prefs::thumbnailIconSize() * dpr));
         // Stored thumbs are generated at prefs::thumbnailTargetLongEdge() (always >=
         // this); decode straight to display size (cheap scaled-DCT path) rather than
         // decoding full-size and scaling after.
-        if (pixet::decodeJpeg(bytes.data(), bytes.size(), iconSize, img)) {
+        if (pixet::decodeJpeg(bytes.data(), bytes.size(), deviceSize, img)) {
             pixmap = QPixmap::fromImage(rgbImageToQImage(img));
             // decodeJpeg only lands *close* to the target via coarse DCT scale steps -
             // the grid needs an exact fit or oversized decorations bleed into
             // neighboring cells.
-            if (pixmap.width() > iconSize || pixmap.height() > iconSize) {
-                pixmap = pixmap.scaled(iconSize, iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            if (pixmap.width() > deviceSize || pixmap.height() > deviceSize) {
+                pixmap = pixmap.scaled(deviceSize, deviceSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             }
+            // Stamping the ratio is what keeps the grid's geometry in logical units: the
+            // pixmap is now physically 2x on Retina, and ThumbGridView centres it using
+            // deviceIndependentSize() so the cell layout is unchanged.
+            pixmap.setDevicePixelRatio(dpr);
         }
     }
 

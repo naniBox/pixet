@@ -89,7 +89,10 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
         auto *resetOneButton = new QToolButton(keyContent);
         resetOneButton->setText(QStringLiteral("×"));
         resetOneButton->setAutoRaise(true);
-        resetOneButton->setToolTip(QStringLiteral("Reset to default (%1)").arg(a.defaultSequence.toString()));
+        // NativeText, not the default PortableText: on macOS the latter spells this "Ctrl+D"
+        // while the QKeySequenceEdit two pixels away renders the same binding as "⌘D".
+        resetOneButton->setToolTip(
+            QStringLiteral("Reset to default (%1)").arg(a.defaultSequence.toString(QKeySequence::NativeText)));
         QKeySequence defaultSeq = a.defaultSequence;
         connect(resetOneButton, &QToolButton::clicked, this, [edit, defaultSeq]() { edit->setKeySequence(defaultSeq); });
 
@@ -211,7 +214,8 @@ bool PreferencesDialog::validateKeyBindings() {
             QMessageBox::warning(this, QStringLiteral("Keybinding conflict"),
                                   QStringLiteral("\"%1\" is already used for navigation and can't be reassigned to "
                                                  "\"%2\".")
-                                      .arg(seq.toString(), keybindings::info(it.key()).displayName));
+                                      .arg(seq.toString(QKeySequence::NativeText),
+                                            keybindings::info(it.key()).displayName));
             return false;
         }
 
@@ -221,7 +225,7 @@ bool PreferencesDialog::validateKeyBindings() {
                     this, QStringLiteral("Keybinding conflict"),
                     QStringLiteral("\"%1\" is assigned to both \"%2\" and \"%3\" - pick a different key for one of "
                                     "them.")
-                        .arg(seq.toString(), keybindings::info(it.key()).displayName,
+                        .arg(seq.toString(QKeySequence::NativeText), keybindings::info(it.key()).displayName,
                              keybindings::info(other.key()).displayName));
                 return false;
             }

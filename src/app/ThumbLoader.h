@@ -6,6 +6,7 @@
 #include <QThread>
 #include <QVector>
 
+#include <atomic>
 #include <memory>
 
 namespace pixet {
@@ -24,6 +25,17 @@ class ThumbLoader : public QObject {
 public:
     explicit ThumbLoader(QObject *parent = nullptr);
     ~ThumbLoader() override;
+
+    // Screen pixel ratio to decode for. Must be set from the UI thread (the worker can't ask
+    // a widget or QScreen anything safely), and is read atomically by the decode thread.
+    //
+    // Without it thumbnails decode to the icon size in *logical* points and the compositor
+    // doubles them on a Retina display, which is the difference between a crisp grid and a
+    // soft one. Known limitation: a mid-session move to a display with a different ratio
+    // isn't tracked - already-decoded pixmaps keep the old ratio until something reloads the
+    // folder. Not worth watching screenChanged for, given the grid re-requests on any
+    // icon-size change anyway.
+    void setDevicePixelRatio(qreal ratio);
 
 public slots:
     void request(qint64 fileId, qint64 thumbId);
@@ -45,4 +57,5 @@ private:
     QVector<Req> stack_;
     QSet<qint64> pending_;
     bool processing_ = false;
+    std::atomic<qreal> devicePixelRatio_{1.0}; // see setDevicePixelRatio()
 };

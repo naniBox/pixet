@@ -39,6 +39,13 @@ public:
     explicit MainWindow(bool resetLayout = false, QWidget *parent = nullptr);
     ~MainWindow() override;
 
+    // Entry point for a path handed to us by the OS rather than typed by the user - on macOS
+    // a QEvent::FileOpen from Finder's "Open With", a file dropped on the Dock icon, or
+    // `open -a pixet <path>` (see main.cpp's FileOpenForwarder). Accepts a directory or a
+    // file; resolution is navigateToInput()'s, so this is a thin public door onto logic the
+    // path bar already had.
+    void openSystemPath(const QString &path);
+
 signals:
     // Connected (queued, cross-thread) to FolderIndexer::indexFolder.
     void requestIndex(QString path, bool force, bool forceRethumbnail);
@@ -65,6 +72,14 @@ private slots:
     void onRefresh();
     void onForceRethumbnail();
     void onPreferences();
+    // File > Choose Folder... - until now there was no folder picker anywhere in the app;
+    // roots came only from the tree, the path bar, bookmarks and the startup fallback. That
+    // works on Windows, where the tree opens on a short list of drive letters, but on macOS
+    // an unrooted QFileSystemModel shows a single "/" and every launch starts four levels
+    // from anywhere useful.
+    void onChooseFolder();
+    // Help > About (relocated into the application menu on macOS).
+    void onAbout();
     // T key (View menu) - hides/shows leftPanel_ (tree, bookmarks, preview) so the
     // grid can take the full window width while hunting for a specific photo.
     void onToggleSidePanel();
@@ -198,6 +213,11 @@ private:
     // Window position/size and splitter layout persistence (QSettings) - see
     // restoreWindowState()'s doc comment in the .cpp for the off-screen/reset behavior.
     void restoreWindowState();
+    // The write half, factored out of closeEvent() because closeEvent is not guaranteed to
+    // run: on macOS, Cmd+Q / "Quit pixet" terminates via the application menu without
+    // necessarily delivering a close event to the window, which would silently stop
+    // persisting geometry and the last directory. Also called from aboutToQuit.
+    void saveWindowState();
     bool isWindowOnScreen() const;
 
     // TODO: was debug-build-only; kept in release too for now (2026-08-11) so it's

@@ -104,6 +104,6 @@ PIXET_TEST(ThumbGeneratorDoesNotUpscaleSmallWebp) {
 }
 
 PIXET_TEST(ThumbGeneratorFailsOnMissingWebpFile) {
-    ThumbResult result = generateThumb("Z:\\does\\not\\exist.webp", Format::Webp);
+    ThumbResult result = generateThumb(nonexistentPath("webp"), Format::Webp);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

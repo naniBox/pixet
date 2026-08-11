@@ -12,12 +12,12 @@ add_library(pixet_core STATIC
     version.h
     version.cpp
 
-    util/StringUtil.h
     util/AppPaths.h
     util/Time.h
     util/Time.cpp
     util/FileIO.h
     util/PathUtil.h
+    util/PathUtil.cpp
     util/ProcessId.h
     util/ProcessId.cpp
 
@@ -60,26 +60,47 @@ add_library(pixet_core STATIC
     thumb/ThumbGenerator.cpp
 )
 
-# util/{StringUtil,FileIO,PathUtil,AppPaths}.h and scan/DirWalker.h declare a portable
-# (UTF-8 std::string) interface; only their *_win.cpp implementations exist so far -
-# see devlog's P5 prep entry. A macOS build needs the *_mac.cpp counterparts (POSIX
-# APIs directly on the UTF-8 string - no wide-char conversion needed there at all,
-# unlike Windows) added to an equivalent elseif(APPLE) branch below.
+# util/{FileIO,PathUtil,AppPaths}.h and scan/DirWalker.h declare a portable (UTF-8
+# std::string) interface with a per-platform implementation. Each platform also gets one
+# helper that only it needs, and which is deliberately absent on the other:
+# util/StringUtil (UTF-8 <-> UTF-16, for crossing into WinAPI) is Windows-only, and
+# util/Unicode (NFC normalization, because macOS hands back decomposed filenames) is
+# macOS-only. Both headers therefore live in their platform's branch rather than in the
+# unconditional list above - listing StringUtil.h unconditionally used to leave two
+# std::wstring declarations with no definition on any non-Windows build.
 if(WIN32)
     target_sources(pixet_core PRIVATE
+        util/StringUtil.h
         util/StringUtil_win.cpp
         util/FileIO_win.cpp
         util/PathUtil_win.cpp
         util/AppPaths_win.cpp
         scan/DirWalker_win.cpp
     )
+elseif(APPLE)
+    target_sources(pixet_core PRIVATE
+        util/Unicode.h
+        util/Unicode_mac.cpp
+        util/FileIO_mac.cpp
+        util/PathUtil_mac.cpp
+        util/AppPaths_mac.cpp
+        scan/DirWalker_mac.cpp
+    )
+    # CoreFoundation is needed by util/Unicode_mac.cpp alone (CFStringNormalize), in
+    # preference to taking on an ICU dependency for the one Unicode operation this
+    # codebase performs.
+    target_link_libraries(pixet_core PUBLIC "-framework CoreFoundation")
 else()
     message(FATAL_ERROR
-        "pixet_core has no non-Windows implementation yet for: "
-        "util/StringUtil (Windows-only helper, likely just unneeded elsewhere), "
+        "pixet_core has no implementation for this platform yet: "
         "util/FileIO, util/PathUtil, util/AppPaths, scan/DirWalker. "
-        "See devlog's P5 prep entry for what each needs to do.")
+        "See the *_win.cpp / *_mac.cpp pairs for what each needs to do.")
 endif()
+
+# The version string lives in exactly one place - project(VERSION) in the top-level
+# CMakeLists - and reaches version.cpp through here, so the library and the .app bundle's
+# CFBundleShortVersionString can't drift apart.
+target_compile_definitions(pixet_core PRIVATE PIXET_VERSION="${PROJECT_VERSION}")
 
 target_include_directories(pixet_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(pixet_core PUBLIC ${FFMPEG_LIBRARY_DIRS})

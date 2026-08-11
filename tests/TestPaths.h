@@ -20,6 +20,15 @@ inline std::string testTempPath(const std::string &name) {
     return path.string();
 }
 
+// A path guaranteed not to exist, for the "does this fail cleanly on a missing file?"
+// tests every codec has. These used to be spelled "Z:\\does\\not\\exist.<ext>", which
+// does also not-exist on macOS (so the assertions always held) but read as Windows-only
+// scaffolding in a codebase that no longer is. Deliberately absolute and implausible on
+// both platforms rather than clever.
+inline std::string nonexistentPath(const std::string &extension) {
+    return "/pixet-no-such-directory/nope." + extension;
+}
+
 // Writes `data` to `path`, overwriting anything already there - shared by every codec
 // test that needs a scratch fixture file. Test paths are always ASCII (see above), so
 // a plain narrow-string std::ofstream is safe here even on Windows (unlike production

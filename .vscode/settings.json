@@ -1,6 +1,10 @@
 {
   "cmake.useCMakePresets": "always",
-  "cmake.configurePreset": "debug",
-  "cmake.buildPreset": "debug",
+  // cmake.configurePreset/buildPreset are deliberately NOT pinned here. This file is
+  // committed and shared, and the presets are platform-gated: "debug" is condition-gated to
+  // Windows and "mac-debug" to Darwin (see CMakePresets.json), so any value hardcoded here is
+  // wrong on one of the two machines - CMake Tools then fails to select a preset at all
+  // rather than falling back. Left unset, CMake Tools prompts once per machine and remembers
+  // the choice in its own workspace state, which is where a per-machine setting belongs.
   "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools"
 }

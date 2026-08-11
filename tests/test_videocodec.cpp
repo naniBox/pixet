@@ -9,6 +9,7 @@
 // here, since a test depending on a specific absolute path on one machine isn't
 // portable/reproducible.
 #include "TestHarness.h"
+#include "TestPaths.h"
 
 #include "db/Schema.h"
 #include "decode/VideoCodec.h"
@@ -21,13 +22,13 @@ PIXET_TEST(VideoCodecFailsOnGarbageData) {
     // exercise the "not a real video file" failure path via a path to a file that
     // isn't a video at all.
     RgbImage img;
-    PIXET_CHECK(!decodeVideoPosterFrame("Z:\\does\\not\\exist.mp4", img));
+    PIXET_CHECK(!decodeVideoPosterFrame(nonexistentPath("mp4"), img));
 }
 
 PIXET_TEST(ThumbGeneratorVideoIsNoLongerUnsupported) {
     // Missing file, not a real-but-corrupt one - if Video were still gated as
     // Unsupported (like Heic still is), this would come back Unsupported instead of
     // Failed. Confirms Format::Video actually reaches the video decode path now.
-    ThumbResult result = generateThumb("Z:\\does\\not\\exist.mp4", Format::Video);
+    ThumbResult result = generateThumb(nonexistentPath("mp4"), Format::Video);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

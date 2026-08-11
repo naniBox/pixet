@@ -160,4 +160,8 @@ private:
     // native-resolution point centered in the viewport - fitMode_-aware.
     qreal effectiveScale(const QSize &nativeSize) const;
     QPointF effectiveCenter(const QSize &nativeSize) const;
+    // The scale_ value that means "one image pixel per screen *device* pixel", i.e. what a
+    // user means by 1:1. Not simply 1.0, because scale_ is in logical points - see the
+    // implementation.
+    qreal oneToOneScale() const;
 };
