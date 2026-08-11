@@ -253,11 +253,10 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     auto *toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
     toolsMenu->addAction(QStringLiteral("Preferences..."), this, &MainWindow::onPreferences);
 
-#ifndef NDEBUG
-    // Debug-build-only, permanent fixture - see onCopyGridDebugInfo()'s doc comment.
+    // TODO: was debug-build-only; in release too for now (2026-08-11) - see
+    // onCopyGridDebugInfo()'s doc comment (MainWindow.h). Permanent fixture either way.
     auto *debugMenu = menuBar()->addMenu(QStringLiteral("&Debug"));
     debugMenu->addAction(QStringLiteral("Copy Grid Debug Info"), this, &MainWindow::onCopyGridDebugInfo);
-#endif
 
     // Fixed pixel widths, sized generously for typical content (not a hard guarantee
     // against every possible value, e.g. an absurdly large dimension could clip) -
@@ -567,7 +566,6 @@ void MainWindow::onToggleSidePanel() {
     leftPanel_->setVisible(!leftPanel_->isVisible());
 }
 
-#ifndef NDEBUG
 void MainWindow::onCopyGridDebugInfo() {
     QScreen *scr = screen();
     auto rectStr = [](const QRect &r) { return QStringLiteral("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height()); };
@@ -626,7 +624,6 @@ void MainWindow::onCopyGridDebugInfo() {
     QGuiApplication::clipboard()->setText(text);
     statusBar()->showMessage(QStringLiteral("Grid debug info copied to clipboard (%1 lines)").arg(lines.size()), 5000);
 }
-#endif
 
 void MainWindow::onIndexerStarted(QString path) {
     if (path == currentPath_) statusBar()->showMessage(QStringLiteral("Indexing %1...").arg(path));

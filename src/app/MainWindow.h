@@ -184,22 +184,23 @@ private:
     // whenever leftPanel_ itself resizes.
     void updateLeftSquarePreview();
 
-#ifndef NDEBUG
-    // Debug-build-only (see the &Debug menu in the constructor) - copies window/
-    // splitter/grid geometry, DPI, and content counts to the clipboard as plain text.
-    // Exists specifically for the grid column-fit bug: rebuilding this info from a
-    // live repro is slow and every past attempt at reproducing it synthetically
-    // turned out not to match whatever the user was actually seeing. Never remove
-    // this - keep it around permanently as the fast path for "it happened again,
-    // here's the exact state." Deliberately a plain method, not a slot: moc doesn't
-    // reliably see the same NDEBUG definition the real compiler does (it comes from
-    // CMake's default CMAKE_CXX_FLAGS_RELWITHDEBINFO string, not a target_compile_
-    // definitions() entry AUTOMOC picks up), so a slots:-block #ifndef NDEBUG here
-    // would make moc generate meta-object code referencing a method release builds
-    // don't actually declare, a straight compile error. Moc never looks at plain
-    // (non-slot) methods at all, so this sidesteps the mismatch entirely - the
-    // modern pointer-to-member connect() syntax used to wire up the menu action
-    // doesn't require its target to be a registered slot either.
+    // TODO: was debug-build-only; kept in release too for now (2026-08-11) so it's
+    // available on the daily-driver build without a separate debug build/relaunch.
+    // Reconsider before any wider distribution - copies window/splitter/grid
+    // geometry, DPI, and content counts to the clipboard as plain text, which is
+    // harmless but not something an end user needs to see. See the &Debug menu in
+    // the constructor. Exists specifically for the grid column-fit bug: rebuilding
+    // this info from a live repro is slow and every past attempt at reproducing it
+    // synthetically turned out not to match whatever the user was actually seeing.
+    // Never remove this - keep it around permanently as the fast path for "it
+    // happened again, here's the exact state." Deliberately a plain method, not a
+    // slot: moc doesn't reliably see the same NDEBUG definition the real compiler
+    // does (it comes from CMake's default CMAKE_CXX_FLAGS_RELWITHDEBINFO string, not
+    // a target_compile_definitions() entry AUTOMOC picks up), so an
+    // NDEBUG-conditional slots: declaration risks moc/compiler disagreeing on
+    // whether the method exists. Moc never looks at plain (non-slot) methods at all,
+    // so this sidesteps that entirely - the modern pointer-to-member connect()
+    // syntax used to wire up the menu action doesn't require its target to be a
+    // registered slot either.
     void onCopyGridDebugInfo();
-#endif
 };

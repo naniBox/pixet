@@ -54,15 +54,14 @@ public:
     // path bar) instead centers it directly, no nudging.
     void scrollToRow(int row, bool center = false);
 
-#ifndef NDEBUG
-    // Debug-build-only (see MainWindow::onCopyGridDebugInfo()) - always equal now,
-    // by construction (see the class comment). Kept as two separate calls anyway so
-    // the debug dump states that plainly rather than silently dropping the
-    // "actually rendered" field that used to be the whole point of this dump.
+    // TODO: was debug-build-only; in release too for now (2026-08-11), see
+    // MainWindow::onCopyGridDebugInfo(). Always equal now, by construction (see the
+    // class comment). Kept as two separate calls anyway so the debug dump states
+    // that plainly rather than silently dropping the "actually rendered" field that
+    // used to be the whole point of this dump.
     int debugComputedColumns() const { return columns_; }
     int debugRenderedColumnCount() const { return columns_; }
     QSize debugCellSize() const { return QSize(cellWidth_, cellHeight_); }
-#endif
 
 signals:
     void currentRowChanged(int row);
