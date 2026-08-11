@@ -5,6 +5,26 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-11 — desktop — verified the macOS port still builds and runs on Windows
+
+Pulled `feature/osx-port`'s four Mac commits onto this box and checked nothing regressed
+here. Debug build was clean on the first try; release build too (121/121, `pixet.exe`
+links). Tests were 60/61 - the one failure, `NormalizePathDoesNotResolveSymlinks`, wasn't
+a real bug: it hardcoded a literal round trip through a POSIX-style `/tmp/...` path, which
+only holds on macOS/Linux. `GetFullPathNameW` drive-qualifies a leading `/` instead of
+leaving it untouched (see `PathUtil_win.cpp`), so the exact-string assertion could never
+pass here. Split the check so Windows verifies the property that actually matters
+(idempotent, lexical, name preserved) instead of a literal comparison. 61/61 now.
+
+Live-launched the release build and browsed a real folder - tree, bookmarks, thumbnail
+grid and status bar all render correctly. One snag along the way worth remembering: the
+release `pixet.exe` isn't windeployqt-bundled, so launching it outside a shell that already
+has Qt's `bin` on `PATH` fails to find `Qt6Core.dll` and silently produces a process with
+zero windows (no crash dialog, no console output) rather than an obvious error - looked
+like a hang at first. Not a regression, just a rough edge in the dev-launch path.
+
+---
+
 ## 2026-08-11 — mac — P5 delivered: pixet builds, indexes and runs on Apple Silicon
 
 First entry from the Mac (tagged `mac`; the Windows box is `desktop`). P5 prep's punch list
