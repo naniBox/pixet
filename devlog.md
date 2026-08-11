@@ -5,6 +5,41 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-11 — desktop — Per-keybinding reset, resizable preview pane, heading contrast
+
+**Per-row keybinding reset.** "Reset All to Defaults" already existed in the
+Keybindings tab but reset every binding at once - added a small "×" `QToolButton`
+next to each individual `QKeySequenceEdit` so a single accidental rebind can be
+undone without touching the rest.
+
+**Preview pane is no longer forced square.** It used to have its height pinned to
+match the left panel's width on every resize (`updateLeftSquarePreview()`, removed
+entirely) - useful sometimes, but not when you want the width without the height or
+vice versa (a wide panorama, or a tall portrait shot). It's now the second child of
+a real vertical `QSplitter` (`leftSplitter_`, sibling to `mainSplitter_`/
+`topSplitter_`), draggable the same way the others are, with its chosen size
+persisted the same way too (`leftSplitterState` in `pixet.ini`). `PreviewPane`
+already scaled its image with `Qt::KeepAspectRatio` regardless of the box it was
+given, so the only change there was an explicit `setMinimumHeight(60)`, since the
+old forced-square logic no longer supplies an implicit floor. Live-verified:
+dragged the new handle to shrink the preview independently of the tree/bookmarks
+area above it, confirmed the ratio wasn't reset on an unrelated resize (widening the
+main splitter didn't touch it), and confirmed the chosen size survives a full
+close/relaunch cycle.
+
+**Fixed unreadable section headings.** The "Bookmarks" title used
+`palette(mid)` for its color, which turned out to render as nearly black on this
+app's dark theme - close enough to the background to be functionally invisible.
+Switched to `palette(placeholder-text)`, Qt's actual semantic role for muted-but-
+legible text. Also added the same heading treatment to the folder tree ("Folders"),
+previously unlabeled on the assumption a tree view is self-explanatory - next to a
+titled bookmarks list, the asymmetry read as a missing label rather than an
+intentional omission.
+
+Build + full test suite (47/47) clean on both debug and release presets.
+
+---
+
 ## 2026-08-11 — desktop — Status bar overlap fix (a real QHBoxLayout gotcha), Preferences tabs
 
 **Status bar cells overlapped/corrupted when the window got narrow.** The 8 status
