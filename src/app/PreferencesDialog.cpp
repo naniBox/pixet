@@ -3,6 +3,7 @@
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QKeySequenceEdit>
@@ -11,7 +12,9 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QScrollArea>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 #include <iterator>
@@ -23,9 +26,16 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     setWindowTitle(QStringLiteral("Preferences"));
 
     auto *layout = new QVBoxLayout(this);
+    // Tabbed rather than one long stacked column - it was getting tall enough
+    // (especially with Keybindings' 7 rows) to run off a normal-height screen.
+    auto *tabs = new QTabWidget(this);
+    layout->addWidget(tabs, /*stretch=*/1);
 
-    // --- Video player ---
-    auto *playerGroup = new QGroupBox(QStringLiteral("Video Player"), this);
+    // --- General tab: video player + thumbnails ---
+    auto *generalTab = new QWidget(tabs);
+    auto *generalLayout = new QVBoxLayout(generalTab);
+
+    auto *playerGroup = new QGroupBox(QStringLiteral("Video Player"), generalTab);
     auto *playerLayout = new QVBoxLayout(playerGroup);
     systemPlayerRadio_ = new QRadioButton(QStringLiteral("System default"), playerGroup);
     customPlayerRadio_ = new QRadioButton(QStringLiteral("Custom player:"), playerGroup);
@@ -37,7 +47,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     playerLayout->addWidget(systemPlayerRadio_);
     playerLayout->addWidget(customPlayerRadio_);
     playerLayout->addLayout(customPathRow);
-    layout->addWidget(playerGroup);
+    generalLayout->addWidget(playerGroup);
 
     bool useSystem = prefs::useSystemVideoPlayer();
     systemPlayerRadio_->setChecked(useSystem);
@@ -48,8 +58,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     connect(systemPlayerRadio_, &QRadioButton::toggled, this, &PreferencesDialog::updateCustomPlayerEnabled);
     connect(browseButton_, &QPushButton::clicked, this, &PreferencesDialog::onBrowseCustomPlayer);
 
-    // --- Thumbnails ---
-    auto *thumbGroup = new QGroupBox(QStringLiteral("Thumbnails"), this);
+    auto *thumbGroup = new QGroupBox(QStringLiteral("Thumbnails"), generalTab);
     auto *thumbLayout = new QFormLayout(thumbGroup);
     thumbnailSizeSpin_ = new QSpinBox(thumbGroup);
     thumbnailSizeSpin_->setRange(prefs::kMinThumbnailIconSize, prefs::kMaxThumbnailIconSize);
@@ -58,27 +67,37 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     originalThumbnailSize_ = prefs::thumbnailIconSize();
     thumbnailSizeSpin_->setValue(originalThumbnailSize_);
     thumbLayout->addRow(QStringLiteral("Grid thumbnail size:"), thumbnailSizeSpin_);
-    layout->addWidget(thumbGroup);
+    generalLayout->addWidget(thumbGroup);
+    generalLayout->addStretch(1);
+    tabs->addTab(generalTab, QStringLiteral("General"));
 
-    // --- Keybindings ---
-    // Deliberately only these action-trigger keys, not grid/fullscreen directional
-    // navigation (arrows, Home/End, PageUp/PageDown, Space, Ctrl+arrow folder nav)
-    // or Escape-to-close - see KeyBindings.h's class comment.
-    auto *keyGroup = new QGroupBox(QStringLiteral("Keybindings"), this);
-    auto *keyLayout = new QFormLayout(keyGroup);
+    // --- Keybindings tab, scrollable - see KeyBindings.h's class comment for why
+    // only these action-trigger keys are here (not grid/fullscreen directional
+    // navigation or Escape-to-close). No enclosing QGroupBox needed here the way the
+    // other tabs' sections have one - the tab label already says what this is.
+    auto *keyContent = new QWidget;
+    auto *keyLayout = new QFormLayout(keyContent);
     for (const keybindings::ActionInfo &a : keybindings::allActions()) {
-        auto *edit = new QKeySequenceEdit(keybindings::binding(a.action), keyGroup);
+        auto *edit = new QKeySequenceEdit(keybindings::binding(a.action), keyContent);
         edit->setMaximumSequenceLength(1); // a single key/chord, not a multi-step sequence
         keyBindingEdits_[a.action] = edit;
         keyLayout->addRow(a.displayName + QStringLiteral(":"), edit);
     }
-    auto *resetKeysButton = new QPushButton(QStringLiteral("Reset All to Defaults"), keyGroup);
+    auto *resetKeysButton = new QPushButton(QStringLiteral("Reset All to Defaults"), keyContent);
     keyLayout->addRow(resetKeysButton);
-    layout->addWidget(keyGroup);
     connect(resetKeysButton, &QPushButton::clicked, this, &PreferencesDialog::onResetKeyBindings);
 
-    // --- Index ---
-    auto *indexGroup = new QGroupBox(QStringLiteral("Index"), this);
+    auto *keyScroll = new QScrollArea(tabs);
+    keyScroll->setWidget(keyContent);
+    keyScroll->setWidgetResizable(true);
+    keyScroll->setFrameShape(QFrame::NoFrame);
+    tabs->addTab(keyScroll, QStringLiteral("Keybindings"));
+
+    // --- Maintenance tab: index + danger zone ---
+    auto *maintenanceTab = new QWidget(tabs);
+    auto *maintenanceLayout = new QVBoxLayout(maintenanceTab);
+
+    auto *indexGroup = new QGroupBox(QStringLiteral("Index"), maintenanceTab);
     auto *indexLayout = new QVBoxLayout(indexGroup);
     auto *reindexButton = new QPushButton(QStringLiteral("Re-index Known Folders"), indexGroup);
     auto *reindexHint = new QLabel(
@@ -91,11 +110,10 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     indexLayout->addWidget(reindexButton);
     indexLayout->addWidget(reindexHint);
     indexLayout->addWidget(reindexStatusLabel_);
-    layout->addWidget(indexGroup);
+    maintenanceLayout->addWidget(indexGroup);
     connect(reindexButton, &QPushButton::clicked, this, &PreferencesDialog::onReindexClicked);
 
-    // --- Danger zone ---
-    auto *dangerGroup = new QGroupBox(QStringLiteral("Danger Zone"), this);
+    auto *dangerGroup = new QGroupBox(QStringLiteral("Danger Zone"), maintenanceTab);
     auto *dangerLayout = new QVBoxLayout(dangerGroup);
     auto *nukeButton = new QPushButton(QStringLiteral("Reset Index..."), dangerGroup);
     nukeButton->setStyleSheet(QStringLiteral("QPushButton { color: #c0392b; font-weight: bold; }"));
@@ -109,16 +127,20 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     dangerLayout->addWidget(nukeButton);
     dangerLayout->addWidget(nukeHint);
     dangerLayout->addWidget(nukeStatusLabel_);
-    layout->addWidget(dangerGroup);
+    maintenanceLayout->addWidget(dangerGroup);
     connect(nukeButton, &QPushButton::clicked, this, &PreferencesDialog::onNukeClicked);
 
-    // --- OK/Cancel ---
+    maintenanceLayout->addStretch(1);
+    tabs->addTab(maintenanceTab, QStringLiteral("Maintenance"));
+
+    // --- OK/Cancel (shared across all tabs) ---
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &PreferencesDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &PreferencesDialog::reject);
     layout->addWidget(buttons);
 
-    setMinimumWidth(420);
+    setMinimumWidth(440);
+    resize(480, 480);
 }
 
 void PreferencesDialog::updateCustomPlayerEnabled() {
