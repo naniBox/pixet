@@ -13,7 +13,8 @@ class QTimer;
 class ThumbGridModel;
 class FullscreenDecoder;
 
-// Fullscreen image viewer (P3). Opened via double-click/Enter on a thumbnail. Shows
+// Fullscreen image viewer (P3). Opened via double-click/Enter on a thumbnail, and
+// closed by Enter too - a toggle, not just an open action. Shows
 // the current image scaled to fit the screen by default. Click zooms to 1:1 native
 // pixels, centered on the clicked point; Z does the same fit<->1:1 toggle from the
 // keyboard, centered on the image's middle instead (see toggleZoomKeyboard()); Ctrl+
@@ -23,7 +24,7 @@ class FullscreenDecoder;
 // window's grid selection in sync (rowChanged) so closing lands back on whatever was
 // last shown here. F toggles between borderless fullscreen and a maximized window
 // with a title bar (showing the current image's full path); I toggles an info
-// overlay; Escape or double-click closes.
+// overlay; Escape, Enter/Return, or double-click closes.
 //
 // A small ring buffer keeps the current image's +/-2 neighbors' fit-scaled decodes
 // prefetched, so next/prev is normally instant. Separately, the *current* row's full

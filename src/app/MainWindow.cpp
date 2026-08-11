@@ -64,6 +64,17 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(bookmarks_, &QListWidget::itemClicked, this, &MainWindow::onBookmarkClicked);
     connect(bookmarks_, &QListWidget::customContextMenuRequested, this, &MainWindow::onBookmarksContextMenu);
 
+    // Wrapped with its own title, unlike tree_ (a folder tree is self-explanatory;
+    // an otherwise-unlabeled list of paths next to it is not, at a glance).
+    auto *bookmarksPanel = new QWidget(this);
+    auto *bookmarksLayout = new QVBoxLayout(bookmarksPanel);
+    bookmarksLayout->setContentsMargins(0, 0, 0, 0);
+    bookmarksLayout->setSpacing(2);
+    auto *bookmarksTitle = new QLabel(QStringLiteral("Bookmarks"), bookmarksPanel);
+    bookmarksTitle->setStyleSheet(QStringLiteral("color: palette(mid); font-weight: bold;"));
+    bookmarksLayout->addWidget(bookmarksTitle);
+    bookmarksLayout->addWidget(bookmarks_, /*stretch=*/1);
+
     fsModel_ = new QFileSystemModel(this);
     fsModel_->setRootPath(QString());
     fsModel_->setFilter(QDir::AllDirs | QDir::NoDotAndDotDot | QDir::Drives);
@@ -90,7 +101,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
 
     topSplitter_ = new QSplitter(Qt::Horizontal, this);
     topSplitter_->addWidget(tree_);
-    topSplitter_->addWidget(bookmarks_);
+    topSplitter_->addWidget(bookmarksPanel);
     topSplitter_->setStretchFactor(0, 7);
     topSplitter_->setStretchFactor(1, 3);
     topSplitter_->setCollapsible(0, false);
@@ -190,7 +201,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // tried first and just reproduced the same "everything squashed into 40px" bug this
     // paragraph exists to warn about.
     QTimer::singleShot(0, this, [this]() {
-        QSettings settings(QStringLiteral("pixet"), QStringLiteral("pixet"));
+        QSettings settings = prefs::settingsStore();
 
         bool splitterRestored = false;
         if (!resetLayout_) {
@@ -261,6 +272,8 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
 
     auto *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
     viewMenu->addAction(QStringLiteral("Refresh"), this, &MainWindow::onRefresh, QKeySequence(QStringLiteral("F5")));
+    viewMenu->addAction(QStringLiteral("Toggle Side Panel"), this, &MainWindow::onToggleSidePanel,
+                         QKeySequence(Qt::Key_T));
 
     auto *toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
     toolsMenu->addAction(QStringLiteral("Preferences..."), this, &MainWindow::onPreferences);
@@ -565,6 +578,14 @@ void MainWindow::onPreferences() {
     dlg.exec();
 }
 
+void MainWindow::onToggleSidePanel() {
+    // QSplitter automatically gives a hidden child's space to the remaining visible
+    // one(s) - grid_ expands to fill the whole width - and ThumbGridView already
+    // recomputes its column count on any resize (see updateGridSize()), so hiding/
+    // showing leftPanel_ is the entire feature; no extra relayout call needed here.
+    leftPanel_->setVisible(!leftPanel_->isVisible());
+}
+
 void MainWindow::onIndexerStarted(QString path) {
     if (path == currentPath_) statusBar()->showMessage(QStringLiteral("Indexing %1...").arg(path));
 }
@@ -645,7 +666,7 @@ void MainWindow::removeBookmark(qint64 id) {
 }
 
 void MainWindow::restoreLastDirectory() {
-    QSettings settings(QStringLiteral("pixet"), QStringLiteral("pixet"));
+    QSettings settings = prefs::settingsStore();
     QString last = settings.value(QStringLiteral("lastDirectory")).toString();
 
     if (!last.isEmpty() && QDir(last).exists()) {
@@ -658,7 +679,7 @@ void MainWindow::restoreLastDirectory() {
 }
 
 void MainWindow::saveLastDirectory(const QString &path) {
-    QSettings settings(QStringLiteral("pixet"), QStringLiteral("pixet"));
+    QSettings settings = prefs::settingsStore();
     settings.setValue(QStringLiteral("lastDirectory"), path);
 }
 
@@ -688,7 +709,7 @@ void MainWindow::nukeDatabase() {
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
-    QSettings settings(QStringLiteral("pixet"), QStringLiteral("pixet"));
+    QSettings settings = prefs::settingsStore();
     settings.setValue(QStringLiteral("windowGeometry"), saveGeometry());
     settings.setValue(QStringLiteral("mainSplitterState"), splitter_->saveState());
     settings.setValue(QStringLiteral("topSplitterState"), topSplitter_->saveState());
@@ -845,7 +866,7 @@ void MainWindow::restoreWindowState() {
     // close then saves fresh default values right back, so a window parked in a
     // strange or off-screen state self-heals with a single relaunch flag rather than
     // needing to hand-edit or delete QSettings.
-    QSettings settings(QStringLiteral("pixet"), QStringLiteral("pixet"));
+    QSettings settings = prefs::settingsStore();
 
     bool geometryRestored = false;
     if (!resetLayout_) {

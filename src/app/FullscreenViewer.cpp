@@ -469,6 +469,11 @@ void FullscreenViewer::wheelEvent(QWheelEvent *event) {
 void FullscreenViewer::keyPressEvent(QKeyEvent *event) {
     switch (event->key()) {
         case Qt::Key_Escape:
+        // Enter/Return is what opened this (grid's activated() fires on it too, see
+        // MainWindow::onGridItemActivated) - closing on it too makes it a toggle
+        // rather than an open-only action.
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
             close();
             return;
         case Qt::Key_Left:

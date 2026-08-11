@@ -1,12 +1,22 @@
 #pragma once
 
+#include <QSettings>
 #include <QString>
 
-// User-configurable settings, backed by the same QSettings("pixet", "pixet") store
-// MainWindow already uses for window/layout state - a single place for the actual
-// *keys* and defaults, rather than every reader/writer duplicating both. See
-// PreferencesDialog for the UI that edits these.
+// User-configurable settings, backed by the same on-disk store MainWindow also uses
+// for window/layout state - a single place for the actual *keys* and defaults,
+// rather than every reader/writer duplicating both. See PreferencesDialog for the UI
+// that edits these.
 namespace prefs {
+
+// The QSettings store every persisted setting is backed by - this file's
+// preferences, plus MainWindow's window/splitter geometry, last directory, and
+// bookmarks-adjacent local state. One shared definition so every call site agrees on
+// where it lives and what format it's in: an .ini file (QSettings::IniFormat) in the
+// same per-user app data directory index.db/thumbs.db already live in (see
+// AppPaths.h) - human-readable/hand-editable, and consistent across platforms rather
+// than switching backends (registry on Windows, plist on macOS) per platform.
+QSettings settingsStore();
 
 // Grid thumbnail on-screen size (long edge, pixels) - both what ThumbGridView lays
 // cells out at and what ThumbLoader decodes stored blobs down to for display.
@@ -29,9 +39,8 @@ constexpr int kMaxThumbnailIconSize = 400;
 int thumbnailTargetLongEdge();
 
 // true = open videos with whatever the OS has associated with the file type;
-// false = launch customVideoPlayerPath() instead. Not yet consumed anywhere (video
-// double-click still just opens the fullscreen viewer) - stored now so the player
-// preference exists ahead of that follow-up.
+// false = launch customVideoPlayerPath() instead - see
+// MainWindow::onGridItemActivated().
 bool useSystemVideoPlayer();
 void setUseSystemVideoPlayer(bool useSystem);
 

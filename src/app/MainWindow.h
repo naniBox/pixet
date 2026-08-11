@@ -63,6 +63,9 @@ private slots:
     void onRefresh();
     void onForceRethumbnail();
     void onPreferences();
+    // T key (View menu) - hides/shows leftPanel_ (tree, bookmarks, preview) so the
+    // grid can take the full window width while hunting for a specific photo.
+    void onToggleSidePanel();
     void onIndexerStarted(QString path);
     void onFilesListed(QString path);
     void onThumbsProgress(QString path);
