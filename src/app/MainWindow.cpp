@@ -54,6 +54,23 @@ namespace {
 QString normalizeForDb(const QString &path) {
     return QString::fromStdString(pixet::normalizePath(path.toStdString()));
 }
+
+// Next sibling of `idx` - or, if it's the last one, walks up until an ancestor
+// actually has a next sibling ("aunt": your parent's next sibling; a grandparent's
+// if the parent is *also* last, and so on) - rather than just stopping at the last
+// child in a folder. Returns an invalid index only once this walks all the way up
+// without finding one (nothing left in the tree). Shared by Ctrl+Down (always) and
+// Ctrl+Right (only once it's out of children to descend into - see
+// MainWindow::onNavigateFolderRequested()).
+QModelIndex nextSiblingOrAunt(QFileSystemModel *model, const QModelIndex &idx) {
+    QModelIndex current = idx;
+    while (current.isValid()) {
+        QModelIndex candidate = model->index(current.row() + 1, 0, current.parent());
+        if (candidate.isValid()) return candidate;
+        current = current.parent();
+    }
+    return QModelIndex();
+}
 } // namespace
 
 MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent), resetLayout_(resetLayout) {
@@ -443,23 +460,9 @@ void MainWindow::onNavigateFolderRequested(Qt::Key direction) {
             if (idx.row() > 0) target = fsModel_->index(idx.row() - 1, 0, parent);
             break;
         }
-        case Qt::Key_Down: {
-            // Next sibling - or, if this is the last one, walk up until an ancestor
-            // actually has a next sibling ("aunt": your parent's next sibling; a
-            // grandparent's if the parent is *also* last, and so on), rather than
-            // just stopping at the last child in a folder. No-ops only once this
-            // walks all the way up without finding one (nothing left in the tree).
-            QModelIndex current = idx;
-            while (current.isValid()) {
-                QModelIndex candidate = fsModel_->index(current.row() + 1, 0, current.parent());
-                if (candidate.isValid()) {
-                    target = candidate;
-                    break;
-                }
-                current = current.parent();
-            }
+        case Qt::Key_Down:
+            target = nextSiblingOrAunt(fsModel_, idx);
             break;
-        }
         case Qt::Key_Left:
             target = idx.parent();
             break;
@@ -469,7 +472,13 @@ void MainWindow::onNavigateFolderRequested(Qt::Key direction) {
             // time its thumbnails are on screen (navigateTo() does that), so its
             // children are normally already populated - a folder Ctrl+Right lands on
             // that was never expanded first just no-ops rather than fetching async.
-            if (fsModel_->rowCount(idx) > 0) target = fsModel_->index(0, 0, idx);
+            if (fsModel_->rowCount(idx) > 0) {
+                target = fsModel_->index(0, 0, idx);
+            } else {
+                // Nothing to descend into - continue in tree order instead of just
+                // stopping at a leaf, same as Ctrl+Down would from here.
+                target = nextSiblingOrAunt(fsModel_, idx);
+            }
             break;
         }
         default:
