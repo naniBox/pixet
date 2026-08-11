@@ -93,8 +93,17 @@ PIXET_TEST(NormalizePathDoesNotResolveSymlinks) {
     // the user navigated in by - and on macOS /tmp itself is a symlink to /private/tmp,
     // which is exactly why this assertion is written against /tmp.
     std::string normalized = normalizePath("/tmp/pixet_symlink_probe");
+#ifdef _WIN32
+    // There's no POSIX-style /tmp to alias via a symlink here - GetFullPathNameW just
+    // drive-qualifies the leading '/' (e.g. "C:\tmp\..."), so a literal round trip isn't the
+    // right check. What still matters is that it stays lexical: idempotent, and it doesn't
+    // silently rewrite the path to something else the way symlink resolution would.
+    PIXET_CHECK(normalizePath(normalized) == normalized);
+    PIXET_CHECK(normalized.find("pixet_symlink_probe") != std::string::npos);
+#else
     PIXET_CHECK(normalized == "/tmp/pixet_symlink_probe");
     PIXET_CHECK(normalized.find("/private/") == std::string::npos);
+#endif
 }
 
 // ------------------------------------------------------------ readWholeFile
