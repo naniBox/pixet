@@ -15,6 +15,7 @@
 #include <QScrollArea>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <iterator>
@@ -81,7 +82,21 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
         auto *edit = new QKeySequenceEdit(keybindings::binding(a.action), keyContent);
         edit->setMaximumSequenceLength(1); // a single key/chord, not a multi-step sequence
         keyBindingEdits_[a.action] = edit;
-        keyLayout->addRow(a.displayName + QStringLiteral(":"), edit);
+
+        // Per-row reset, next to "Reset All to Defaults" below for resetting
+        // everything at once - a small "x" rather than a labeled button since
+        // there's one of these per row and the row already says what it's for.
+        auto *resetOneButton = new QToolButton(keyContent);
+        resetOneButton->setText(QStringLiteral("×"));
+        resetOneButton->setAutoRaise(true);
+        resetOneButton->setToolTip(QStringLiteral("Reset to default (%1)").arg(a.defaultSequence.toString()));
+        QKeySequence defaultSeq = a.defaultSequence;
+        connect(resetOneButton, &QToolButton::clicked, this, [edit, defaultSeq]() { edit->setKeySequence(defaultSeq); });
+
+        auto *row = new QHBoxLayout();
+        row->addWidget(edit, /*stretch=*/1);
+        row->addWidget(resetOneButton);
+        keyLayout->addRow(a.displayName + QStringLiteral(":"), row);
     }
     auto *resetKeysButton = new QPushButton(QStringLiteral("Reset All to Defaults"), keyContent);
     keyLayout->addRow(resetKeysButton);
