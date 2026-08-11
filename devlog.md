@@ -5,6 +5,48 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-11 — desktop — Small QOL batch + settings moved out of the registry
+
+**Fullscreen: Enter now closes too** (`Qt::Key_Return`/`Qt::Key_Enter` alongside
+`Key_Escape` in `FullscreenViewer::keyPressEvent()`) - it's what opens a thumbnail
+(the grid's `activated()` fires on it), so closing on it too makes it a real toggle
+instead of an open-only key.
+
+**Side panel toggle** - `T` (also View menu, "Toggle Side Panel") hides/shows
+`leftPanel_` (tree, bookmarks, preview) so the grid can take the full window width
+while hunting for a specific photo. `QSplitter` already gives a hidden child's space
+to whatever's left visible, and `ThumbGridView` already recomputes its column count
+on any resize - hiding/showing the one widget is the entire feature, no new layout
+logic needed.
+
+**Bookmarks pane got a title** - was just an unlabeled list next to the folder tree,
+not obvious what it was on first look. Wrapped in a small container with a
+"Bookmarks" label above it.
+
+**Settings moved out of the registry to an .ini file.** New `prefs::settingsStore()`
+(`Preferences.h/.cpp`) is now the one place that constructs `QSettings` - backed by
+`QSettings::IniFormat` at `appDataDir() + "/pixet.ini"`, the same per-user app data
+directory `index.db`/`thumbs.db` already live in, rather than
+`QSettings::NativeFormat` (registry on Windows, plist on macOS). Chosen partly with
+P5 in mind: one format behaves identically on both platforms rather than switching
+backends per-OS, and it'll resolve to `~/Library/Application Support/pixet/pixet.ini`
+on macOS once `AppPaths_mac.cpp` exists - not `~/.config` (that's the Linux/XDG
+convention, not macOS's). All 6 `QSettings` construction sites (5 in `MainWindow.cpp`,
+1 in `Preferences.cpp`) now go through it. Live-verified: `pixet.ini` lands at
+`%LOCALAPPDATA%\pixet\pixet.ini` on launch. Not migrated from the old registry
+values - existing window layout/last-directory/thumbnail-size settings reset to
+defaults once this landed, which is expected and was flagged, not a bug.
+
+Also chased down a build-blocking file lock during this session that turned out to be
+`vsdbg.exe` (VS Code's C++ debugger backend) still holding `pixet.exe` open from a
+debug session that never cleanly stopped, well after the debugged process itself had
+already died (unresponsive, not just exited) - not a code issue, just worth
+remembering if a link ever fails with `LNK1168` again after debugging in VS Code.
+
+Build + full test suite (47/47) clean.
+
+---
+
 ## 2026-08-10 — desktop — Preferences pane: video player, thumbnail size, re-index, and a database reset
 
 New `Tools > Preferences...` dialog (`src/app/Preferences.h/.cpp` for storage,
