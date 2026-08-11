@@ -5,6 +5,60 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-11 — desktop — Status bar overlap fix (a real QHBoxLayout gotcha), Preferences tabs
+
+**Status bar cells overlapped/corrupted when the window got narrow.** The 8 status
+bar labels (`folderStatsLabel_`, `fileNameLabel_`, etc.) used `setFixedWidth()`,
+which seemed like the obvious way to keep them stable - but tracking this down live
+(a real screen capture, not a `PrintWindow` artifact - confirmed via `CopyFromScreen`
+- and eventually a temporary debug dump of every label's actual `x()`/`width()`)
+showed two different failure modes, neither of them what "fixed width" sounds like
+it should mean:
+
+- With `Qt::Fixed`-policy cells (`setFixedWidth()`), `QHBoxLayout` genuinely cannot
+  shrink them - that's the definition of Fixed. Once the window got narrower than
+  the cells' combined width, the layout had nowhere to put the excess, so instead of
+  clipping at the edge it positioned the *next* cell at an X offset that assumed a
+  smaller size than the previous one was actually rendered at. The debug dump caught
+  this directly: a label correctly reporting `width=300`, with the next one's `x`
+  starting 81px later - genuine overlapping geometry, not merely long text painting
+  past its own box (eliding the text first, as a fix attempt, changed nothing -
+  correct, since the bug wasn't in the text).
+- The obvious-seeming fix - swap `setFixedWidth()` for a shrinkable
+  `setMaximumWidth()` - made it *worse*: under the same space pressure,
+  `QHBoxLayout` crushed every cell down to the same ~6px floor regardless of their
+  wildly different nominal widths (300 vs. 45), rather than shrinking them
+  proportionally. Text didn't overlap anymore - it just vanished.
+
+Fix: stopped delegating to `QHBoxLayout` for this row entirely. New
+`StatusBarRow` (`StatusBarRow.h/.cpp`) positions and sizes its cells directly in
+its own `resizeEvent()` - full nominal width each when there's room, otherwise every
+cell shrinks by the *same proportion* together, so they stay in relative order and
+position instead of any one collapsing disproportionately. New `StatusLabel`
+(`StatusLabel.h/.cpp`) re-elides its own text to whatever width it's actually given,
+both when the text changes and when the widget resizes, so overflow truncates
+within its own cell instead of painting over a neighbor. Divider lines are explicit
+`QFrame::VLine` widgets now (previously implicit `QStatusBar`-per-widget styling,
+which would've been lost anyway once all 8 cells moved into one custom container).
+Live-verified via genuine screen capture (not `PrintWindow`, which turned out to
+still render a window's own content even when something else is actually on top of
+it - a separate false-alarm worth remembering) at both a narrow (600px) and a
+comfortable (1300px) window width.
+
+**Preferences dialog reorganized into tabs.** It was getting tall enough -
+especially with the keybindings editor's 7 rows, added last session - to run off a
+normal-height screen. Split into General (video player, thumbnails), Keybindings,
+and Maintenance (re-index, danger zone); the Keybindings tab's content is wrapped in
+a `QScrollArea` so it stays usable at any dialog size rather than forcing the window
+to grow to fit every row. Live-verified: all three tabs render correctly, the
+keybindings editor's scrollbar appears once the dialog is shrunk below its content's
+natural height, and the settings round-trip (edit -> OK -> persisted in
+`pixet.ini`) still works correctly through the new structure.
+
+Build + full test suite (47/47) clean on both debug and release presets.
+
+---
+
 ## 2026-08-11 — desktop — Fix side-panel-toggle scroll loss, add configurable keybindings
 
 **`T` (toggle side panel) was losing the current selection off-screen.** Hiding/
