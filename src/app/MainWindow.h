@@ -73,6 +73,11 @@ private slots:
     void onTreeSelectionChanged(const QModelIndex &current);
     void onBookmarkClicked(QListWidgetItem *item);
     void onBookmarksContextMenu(const QPoint &pos);
+    // Right-click on the folder tree - bookmarks whatever folder is under the cursor, which
+    // isn't necessarily the one currently being browsed. QTreeView doesn't change the
+    // selection on a right-click, so this deliberately acts on indexAt(pos) rather than on
+    // currentIndex().
+    void onTreeContextMenu(const QPoint &pos);
     void onGridSelectionChanged();
     // Ctrl-hover over the grid (see ThumbGridView::ctrlHoverRowChanged) - previews
     // whatever's under the cursor without touching the actual selection, so a
@@ -438,6 +443,9 @@ private:
     void repositionTreeToTop(const QModelIndex &idx);
     void loadBookmarks();
     void addBookmark(const QString &path);
+    // The bookmarks table has no UNIQUE on path, so nothing at the storage level stops the
+    // same folder being added twice - this is what the UI checks against instead.
+    bool isBookmarked(const QString &path) const;
     void removeBookmark(qint64 id);
     void restoreLastDirectory();
     void saveLastDirectory(const QString &path);

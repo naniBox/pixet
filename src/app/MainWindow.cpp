@@ -156,6 +156,8 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     tree_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     tree_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     tree_->setTextElideMode(Qt::ElideNone);
+    tree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tree_, &QWidget::customContextMenuRequested, this, &MainWindow::onTreeContextMenu);
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onTreeSelectionChanged);
     connect(fsModel_, &QFileSystemModel::directoryLoaded, this, &MainWindow::onTreeDirectoryLoaded);
 
@@ -1194,6 +1196,48 @@ void MainWindow::onPreviewReady(qint64 requestId, QImage image) {
 
 void MainWindow::onAddBookmark() {
     if (!currentPath_.isEmpty()) addBookmark(currentPath_);
+}
+
+bool MainWindow::isBookmarked(const QString &path) const {
+    if (!db_ || path.isEmpty()) return false;
+    auto sel = db_->prepare("SELECT 1 FROM bookmarks WHERE path=? LIMIT 1");
+    sel.bind(1, path.toStdString());
+    return sel.step();
+}
+
+void MainWindow::onTreeContextMenu(const QPoint &pos) {
+    // customContextMenuRequested reports `pos` in the *view's* coordinates (the policy is set
+    // on tree_, so tree_ is what receives the event), but indexAt() measures from the
+    // viewport - which is inset by the frame border. Converting rather than passing `pos`
+    // straight through is what keeps a click near a row boundary from resolving to the row
+    // above it.
+    const QPoint viewportPos = tree_->viewport()->mapFrom(tree_, pos);
+    QModelIndex idx = tree_->indexAt(viewportPos);
+    if (!idx.isValid()) return; // right-click on empty space below the tree
+
+    // Normalized the same way every other path that reaches the DB is, so the
+    // already-bookmarked check compares like with like - QFileSystemModel hands back
+    // forward slashes on every platform, and on macOS a different Unicode normalization
+    // form than the DB stores.
+    const QString path = normalizeForDb(fsModel_->filePath(idx));
+    if (path.isEmpty()) return;
+
+    QMenu menu(this);
+    // Leading disabled entry naming the target, matching the grid's own context menu - the
+    // right-clicked folder isn't necessarily the selected one, so saying which folder this
+    // is about is worth a line.
+    QAction *header = menu.addAction(QFileInfo(path).fileName().isEmpty() ? path : QFileInfo(path).fileName());
+    header->setEnabled(false);
+    menu.addSeparator();
+
+    if (isBookmarked(path)) {
+        QAction *already = menu.addAction(QStringLiteral("Already in Bookmarks"));
+        already->setEnabled(false);
+    } else {
+        menu.addAction(QStringLiteral("Add to Bookmarks"), this, [this, path]() { addBookmark(path); });
+    }
+
+    menu.exec(tree_->mapToGlobal(pos)); // `pos` is view-relative, so map from the view
 }
 
 void MainWindow::onFocusAddressBar() {
