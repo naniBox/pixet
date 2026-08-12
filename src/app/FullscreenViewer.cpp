@@ -381,6 +381,17 @@ void FullscreenViewer::paintEvent(QPaintEvent *) {
     drawInfoOverlay(painter);
 }
 
+void FullscreenViewer::contextMenuEvent(QContextMenuEvent *event) {
+    if (!model_ || currentRow_ < 0) return;
+    // Cancel any drag-in-progress state first: the right-click arrives while a left button
+    // may still be logically held (a press that never got its release because the menu
+    // grabbed the mouse), and leaving dragging_ set would make the next move pan the image.
+    dragging_ = false;
+    updateCursor();
+    emit contextMenuRequested(currentRow_, event->globalPos());
+    event->accept();
+}
+
 void FullscreenViewer::mousePressEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton) return;
     dragStartMouse_ = event->pos();

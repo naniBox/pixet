@@ -226,6 +226,8 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // Keep the grid's selection following along while browsing fullscreen, so
     // closing it (Escape/double-click) leaves the grid on whatever image was last
     // shown there instead of wherever it was when fullscreen opened.
+    connect(fullscreenViewer_, &FullscreenViewer::contextMenuRequested, this,
+            &MainWindow::onFullscreenContextMenu);
     connect(fullscreenViewer_, &FullscreenViewer::rowChanged, this, [this](int row) {
         grid_->setCurrentRow(row);
         grid_->scrollToRow(row);
@@ -785,7 +787,7 @@ void MainWindow::onBookmarksContextMenu(const QPoint &pos) {
     }
 }
 
-void MainWindow::onGridContextMenu(const QPoint &pos) {
+void MainWindow::buildItemContextMenu(QMenu &menu, int row, bool fromFullscreen) {
     // Refresh and Force Re-thumbnail moved out to real menus (View and Tools
     // respectively) - this menu is for per-item actions on whatever's under the
     // cursor/selected, not folder-wide ones. Reuses the Edit menu's own
@@ -793,20 +795,23 @@ void MainWindow::onGridContextMenu(const QPoint &pos) {
     // meant to be shared across multiple menus/toolbars - same shortcut text,
     // enabled state, and slot everywhere they appear, no duplicate wiring needed)
     // rather than building parallel entries here.
-    updateEditActionsEnabled();
+    addFileInfoToContextMenu(menu, row);
 
-    QMenu menu(this);
-    addFileInfoToContextMenu(menu, grid_->currentRow());
-    QAction *fullscreenAction = menu.addAction(QStringLiteral("View Fullscreen"), this, [this]() {
-        if (grid_->currentRow() >= 0) onGridItemActivated(grid_->currentRow());
-    });
-    fullscreenAction->setEnabled(grid_->currentRow() >= 0);
-    menu.addSeparator();
+    if (!fromFullscreen) {
+        QAction *fullscreenAction = menu.addAction(QStringLiteral("View Fullscreen"), this, [this]() {
+            if (grid_->currentRow() >= 0) onGridItemActivated(grid_->currentRow());
+        });
+        fullscreenAction->setEnabled(grid_->currentRow() >= 0);
+        menu.addSeparator();
+    }
+
+    // Safe to offer from the fullscreen viewer too: it keeps the grid's current row in step
+    // with whatever it's showing (see the rowChanged connection in the constructor), so
+    // these act on the image on screen.
     menu.addAction(cutAction_);
     menu.addAction(copyAction_);
     menu.addAction(pasteAction_);
 
-    int row = grid_->currentRow();
     if (row >= 0) {
         menu.addSeparator();
         QString name = gridModel_->index(row).data(Qt::DisplayRole).toString();
@@ -816,8 +821,23 @@ void MainWindow::onGridContextMenu(const QPoint &pos) {
         menu.addAction(QStringLiteral("Copy Path"), this,
                         [fullPath]() { QGuiApplication::clipboard()->setText(fullPath); });
     }
+}
 
+void MainWindow::onGridContextMenu(const QPoint &pos) {
+    updateEditActionsEnabled();
+    QMenu menu(this);
+    buildItemContextMenu(menu, grid_->currentRow(), /*fromFullscreen=*/false);
     menu.exec(grid_->mapToGlobal(pos));
+}
+
+void MainWindow::onFullscreenContextMenu(int row, QPoint globalPos) {
+    updateEditActionsEnabled();
+    // Parented to the viewer, not to `this`: the viewer is a separate top-level window
+    // sitting above the main one, and a menu parented to the window underneath can end up
+    // rendered behind it.
+    QMenu menu(fullscreenViewer_);
+    buildItemContextMenu(menu, row, /*fromFullscreen=*/true);
+    menu.exec(globalPos);
 }
 
 void MainWindow::addFileInfoToContextMenu(QMenu &menu, int row) {

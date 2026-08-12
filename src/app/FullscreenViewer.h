@@ -64,9 +64,15 @@ signals:
     // lets MainWindow keep the grid's selection in sync so closing the viewer lands
     // back on the same image there.
     void rowChanged(int row);
+    // Right-click. Carries the row and a global position so MainWindow can build and show
+    // the same per-item menu the grid uses - the viewer deliberately doesn't build one
+    // itself, since everything in it (cached info, the on-demand EXIF read, the Edit
+    // actions) lives on that side.
+    void contextMenuRequested(int row, QPoint globalPos);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;

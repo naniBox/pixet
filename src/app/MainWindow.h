@@ -108,6 +108,10 @@ private slots:
     // puts a Google-Maps-pasteable "lat,lon" string on the clipboard. No-op if
     // `row` is -1 (nothing under the cursor/selected).
     void addFileInfoToContextMenu(QMenu &menu, int row);
+    // Right-click inside the fullscreen viewer. Built here rather than in FullscreenViewer
+    // because everything it shows - cached info, the on-demand EXIF read, the Edit actions -
+    // already lives on this side; the viewer only reports which row was clicked.
+    void onFullscreenContextMenu(int row, QPoint globalPos);
     void onAddBookmark();
     void onRefresh();
     // Ctrl+D by default (see KeyBindings.cpp), configurable like the other
@@ -397,6 +401,11 @@ private:
     // about the change a targeted insertOrUpdateFileByName()/removeFileById() call
     // could describe more precisely (see ThumbGridModel).
     void reloadGridPreservingSelection();
+
+    // The per-item context menu, shared by the grid and the fullscreen viewer so "the usual
+    // data" is literally the same menu in both rather than two lists that drift apart.
+    // `fromFullscreen` drops the one entry that would be nonsense there ("View Fullscreen").
+    void buildItemContextMenu(QMenu &menu, int row, bool fromFullscreen);
 
     // --- thumbnail size + freshness (status bar, far right) ---
 
