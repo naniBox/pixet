@@ -110,6 +110,23 @@ endif()
 # CFBundleShortVersionString can't drift apart.
 target_compile_definitions(pixet_core PRIVATE PIXET_VERSION="${PROJECT_VERSION}")
 
+# The commit the binary was built from, captured at *build* time. A custom target rather
+# than a configure-time execute_process: configure doesn't re-run when you commit, so a
+# hash captured there would keep reporting whatever was checked out the last time CMake
+# happened to run. The script rewrites its header only when the value actually changes, so
+# this doesn't rebuild the world on every build. See cmake/GitVersion.cmake.
+set(PIXET_GITVERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/pixet_gitversion.h")
+add_custom_target(pixet_gitversion
+    BYPRODUCTS "${PIXET_GITVERSION_HEADER}"
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC_DIR=${CMAKE_SOURCE_DIR}
+            -DOUTPUT_FILE=${PIXET_GITVERSION_HEADER}
+            -P ${CMAKE_SOURCE_DIR}/cmake/GitVersion.cmake
+    COMMENT "Capturing git commit for the version string"
+    VERBATIM)
+add_dependencies(pixet_core pixet_gitversion)
+target_include_directories(pixet_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+
 target_include_directories(pixet_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(pixet_core PUBLIC ${FFMPEG_LIBRARY_DIRS})
 

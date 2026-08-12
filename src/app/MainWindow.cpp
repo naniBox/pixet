@@ -1401,10 +1401,19 @@ void MainWindow::onAbout() {
     // Qt's runtime version is worth showing: the AGL link workaround in src/app/CMakeLists.txt
     // is specific to 6.8, so knowing which Qt a given build was made against is the first
     // thing anyone would want when it eventually stops being needed.
+    // The build's exact provenance, so a bug report from a given binary identifies the source
+    // it came from. "modified" matters as much as the hash: a dirty build is *not* that
+    // commit, and silently showing the hash alone would claim otherwise.
+    QString build = QString::fromLatin1(pixet::gitCommit());
+    if (pixet::gitDirty()) {
+        build += QStringLiteral(" <span style='color:#f0883e'>(modified)</span>");
+    }
+
     QMessageBox::about(this, QStringLiteral("About pixet"),
                         QStringLiteral("<b>pixet %1</b><br><br>Photo and video viewer.<br><br>"
-                                        "Qt %2<br>Cache: %3")
-                            .arg(QString::fromLatin1(pixet::version()), QString::fromLatin1(qVersion()),
+                                        "Build: %2<br>Qt %3<br>Cache: %4")
+                            .arg(QString::fromLatin1(pixet::version()), build,
+                                  QString::fromLatin1(qVersion()),
                                   QString::fromStdString(pixet::appDataDir())));
 }
 
