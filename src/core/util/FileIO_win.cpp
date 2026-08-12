@@ -38,4 +38,35 @@ bool readWholeFile(const std::string &path, std::vector<uint8_t> &out) {
     return ok;
 }
 
+bool readFilePrefix(const std::string &path, size_t maxBytes, std::vector<uint8_t> &out) {
+    std::wstring widePath = toUtf16(path);
+    HANDLE h = CreateFileW(widePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+
+    LARGE_INTEGER size;
+    if (!GetFileSizeEx(h, &size) || size.QuadPart < 0) {
+        CloseHandle(h);
+        return false;
+    }
+
+    size_t toReadTotal = std::min<size_t>((size_t)size.QuadPart, maxBytes);
+    out.resize(toReadTotal);
+    size_t totalRead = 0;
+    bool ok = true;
+    while (totalRead < toReadTotal) {
+        DWORD toRead = (DWORD)std::min<size_t>(toReadTotal - totalRead, 1u << 20); // 1MB chunks
+        DWORD bytesRead = 0;
+        if (!ReadFile(h, out.data() + totalRead, toRead, &bytesRead, nullptr) || bytesRead == 0) {
+            ok = false;
+            break;
+        }
+        totalRead += bytesRead;
+    }
+
+    CloseHandle(h);
+    if (!ok) out.clear();
+    return ok;
+}
+
 } // namespace pixet

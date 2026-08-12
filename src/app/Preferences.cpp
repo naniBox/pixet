@@ -72,4 +72,8 @@ void addToPathHistory(const QString &dirPath) {
 
 void clearPathHistory() { settingsStore().remove(QStringLiteral("pathHistory")); }
 
+bool hoverInfoEnabled() { return settingsStore().value(QStringLiteral("hoverInfoEnabled"), true).toBool(); }
+
+void setHoverInfoEnabled(bool enabled) { settingsStore().setValue(QStringLiteral("hoverInfoEnabled"), enabled); }
+
 } // namespace prefs

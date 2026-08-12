@@ -2,22 +2,32 @@
 
 #include <QAbstractItemModel>
 #include <QApplication>
+#include <QCursor>
+#include <QDateTime>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QFontMetrics>
 #include <QKeyEvent>
+#include <QLocale>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QResizeEvent>
 #include <QScrollBar>
+#include <QTimer>
+#include <QToolTip>
 #include <QUrl>
 #include <QWheelEvent>
 
+#include "HoverInfoWorker.h"
 #include "KeyBindings.h"
+#include "PathQ.h"
+#include "Preferences.h"
+#include "ThumbGridModel.h"
+#include "db/Schema.h"
 
 ThumbGridView::ThumbGridView(QWidget *parent) : QAbstractScrollArea(parent) {
     // Always reserve the vertical scrollbar's width, even when nothing needs
@@ -41,6 +51,26 @@ ThumbGridView::ThumbGridView(QWidget *parent) : QAbstractScrollArea(parent) {
     // changes (unlike QAbstractItemView, which this no longer is) - painting reads
     // verticalScrollBar()->value() directly, so a scroll is a repaint.
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() { viewport()->update(); });
+
+    // mouseMoveEvent only fires without a button held if mouse tracking is on - see
+    // handleHoverMove(), the no-button branch of mouseMoveEvent().
+    viewport()->setMouseTracking(true);
+
+    hoverDelayTimer_ = new QTimer(this);
+    hoverDelayTimer_->setSingleShot(true);
+    hoverDelayTimer_->setInterval(600); // "after a short delay" - deliberately not QApplication::toolTipWait()
+    connect(hoverDelayTimer_, &QTimer::timeout, this, &ThumbGridView::onHoverDelayElapsed);
+
+    hoverInfoWorker_ = std::make_unique<HoverInfoWorker>();
+    connect(hoverInfoWorker_.get(), &HoverInfoWorker::ready, this, &ThumbGridView::onHoverInfoReady);
+}
+
+ThumbGridView::~ThumbGridView() = default;
+
+void ThumbGridView::setCurrentFolderPath(const QString &path) {
+    hoverFolderPath_ = path;
+    hoverRow_ = -1; // stale row index from whatever folder was showing before
+    hoverDelayTimer_->stop();
 }
 
 void ThumbGridView::setModel(QAbstractItemModel *model) {
@@ -634,8 +664,16 @@ void ThumbGridView::mousePressEvent(QMouseEvent *event) {
 
 void ThumbGridView::mouseMoveEvent(QMouseEvent *event) {
     if (!(event->buttons() & Qt::LeftButton) || pressRow_ < 0) {
+        handleHoverMove(event->pos());
         QAbstractScrollArea::mouseMoveEvent(event);
         return;
+    }
+    // A real drag is in progress - the hover tooltip has no business showing up
+    // mid-drag (over whatever cell the drag happens to pass over).
+    hoverDelayTimer_->stop();
+    if (hoverRow_ >= 0) {
+        hoverRow_ = -1;
+        QToolTip::hideText();
     }
     if ((event->pos() - pressPos_).manhattanLength() < QApplication::startDragDistance()) return;
 
@@ -668,6 +706,94 @@ void ThumbGridView::mouseDoubleClickEvent(QMouseEvent *event) {
         applySelectionResult(oldCurrent);
         emit activated(row);
     }
+}
+
+void ThumbGridView::leaveEvent(QEvent *event) {
+    hoverDelayTimer_->stop();
+    if (hoverRow_ >= 0) {
+        hoverRow_ = -1;
+        QToolTip::hideText();
+    }
+    QAbstractScrollArea::leaveEvent(event);
+}
+
+void ThumbGridView::handleHoverMove(const QPoint &viewportPos) {
+    if (!prefs::hoverInfoEnabled()) return;
+
+    int row = rowAt(viewportPos);
+    if (row == hoverRow_) return; // still the same cell (or still off-grid) - nothing to do
+
+    hoverRow_ = row;
+    hoverDelayTimer_->stop();
+    QToolTip::hideText(); // the old cell's tooltip (if any) doesn't apply to the new one
+
+    if (row >= 0) {
+        hoverPos_ = viewportPos;
+        hoverDelayTimer_->start();
+    }
+}
+
+void ThumbGridView::hideHoverTooltip() {
+    hoverDelayTimer_->stop();
+    hoverRow_ = -1;
+    QToolTip::hideText();
+}
+
+void ThumbGridView::onHoverDelayElapsed() {
+    if (hoverRow_ < 0 || !model_) return;
+
+    QToolTip::showText(viewport()->mapToGlobal(hoverPos_), cachedInfoText(hoverRow_), this);
+
+    QModelIndex idx = model_->index(hoverRow_, 0);
+    QString name = idx.data(Qt::DisplayRole).toString();
+    if (hoverFolderPath_.isEmpty() || name.isEmpty()) return;
+
+    int fmt = idx.data(ThumbGridModel::FormatRole).toInt();
+    quint64 id = ++hoverInfoCounter_;
+    hoverInfoRequestId_ = id;
+    QMetaObject::invokeMethod(hoverInfoWorker_.get(), "request", Qt::QueuedConnection, Q_ARG(quint64, id),
+                               Q_ARG(QString, joinPathQ(hoverFolderPath_, name)), Q_ARG(int, fmt));
+}
+
+void ThumbGridView::onHoverInfoReady(quint64 id, QString detailsText) {
+    if (id != hoverInfoRequestId_ || detailsText.isEmpty()) return;
+    // The reply arrived after the mouse already moved on to a different cell (or off
+    // the grid entirely) - nothing to update.
+    if (hoverRow_ < 0 || rowAt(viewport()->mapFromGlobal(QCursor::pos())) != hoverRow_) return;
+
+    QString text = cachedInfoText(hoverRow_) + QStringLiteral("\n\n") + detailsText;
+    QToolTip::showText(QCursor::pos(), text, this);
+}
+
+QString ThumbGridView::cachedInfoText(int row) const {
+    QModelIndex idx = model_->index(row, 0);
+    QString name = idx.data(Qt::DisplayRole).toString();
+    int fmt = idx.data(ThumbGridModel::FormatRole).toInt();
+    int w = idx.data(ThumbGridModel::WidthRole).toInt();
+    int h = idx.data(ThumbGridModel::HeightRole).toInt();
+    qint64 size = idx.data(ThumbGridModel::SizeRole).toLongLong();
+    qint64 takenAt = idx.data(ThumbGridModel::TakenAtRole).toLongLong();
+    qint64 durationMs = idx.data(ThumbGridModel::DurationMsRole).toLongLong();
+
+    QStringList lines;
+    lines << name;
+
+    QStringList meta;
+    meta << QString::fromUtf8(pixet::formatName((pixet::Format)fmt));
+    if (w > 0 && h > 0) meta << QStringLiteral("%1×%2").arg(w).arg(h);
+    if (size > 0) meta << QLocale().formattedDataSize(size);
+    lines << meta.join(QStringLiteral(" · "));
+
+    if (takenAt > 0) {
+        lines << QStringLiteral("Taken: %1").arg(
+            QDateTime::fromSecsSinceEpoch(takenAt).toString(QStringLiteral("yyyy-MM-dd hh:mm")));
+    }
+    if (durationMs > 0) {
+        qint64 totalSec = durationMs / 1000;
+        lines << QStringLiteral("Duration: %1:%2").arg(totalSec / 60).arg(totalSec % 60, 2, 10, QChar('0'));
+    }
+
+    return lines.join(QStringLiteral("\n"));
 }
 
 namespace {

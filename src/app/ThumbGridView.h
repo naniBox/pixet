@@ -5,12 +5,15 @@
 #include <QList>
 #include <QPoint>
 
+#include <memory>
+
 class QAbstractItemModel;
 class QDragEnterEvent;
 class QDragLeaveEvent;
 class QDragMoveEvent;
 class QDropEvent;
 class QTimer;
+class HoverInfoWorker;
 
 // Fully custom-painted, virtualized thumbnail grid - replaces an earlier QListView-
 // based implementation whose IconMode flow-layout (Qt's own internal algorithm for
@@ -31,11 +34,16 @@ class QTimer;
 // rendered" are the same number by construction, not something to separately verify
 // (see debugComputedColumns()/debugRenderedColumnCount(), kept identical on purpose).
 //
-// Model access is still through a plain QAbstractItemModel (ThumbGridModel, a flat
-// QAbstractListModel) - only DisplayRole/DecorationRole are read here, so the view
-// stays model-agnostic even though ThumbGridModel now supports mid-lifetime row
-// insert/remove (see rowsInserted/rowsRemoved handling below) in addition to the
-// original modelReset/dataChanged paths.
+// Model access is through a plain QAbstractItemModel (ThumbGridModel, a flat
+// QAbstractListModel) for the paint/selection/layout path - only DisplayRole/
+// DecorationRole are read there, so that path stays model-agnostic even though
+// ThumbGridModel now supports mid-lifetime row insert/remove (see rowsInserted/
+// rowsRemoved handling below) in addition to the original modelReset/dataChanged
+// paths. The hover-info tooltip is the one deliberate exception - it reads
+// ThumbGridModel's own custom roles (format/size/dimensions/taken-at/duration)
+// directly, the same way MainWindow already does, rather than inventing a parallel
+// delegation mechanism to preserve agnosticism for a model this view is in practice
+// never used with any other implementation of.
 //
 // Selection is multi-row (see currentRow()/selectedRows() below), not the single-row
 // design this class started with - but there is still exactly one "lead" row at any
@@ -45,9 +53,30 @@ class ThumbGridView : public QAbstractScrollArea {
 
 public:
     explicit ThumbGridView(QWidget *parent = nullptr);
+    ~ThumbGridView() override; // out-of-line: hoverInfoWorker_ is a unique_ptr to a type only forward-declared here
 
     void setModel(QAbstractItemModel *model);
     QAbstractItemModel *model() const { return model_; }
+
+    // Needed to turn a hovered row's filename (all the model itself knows) into a
+    // full path for the hover tooltip's on-demand EXIF read - see
+    // HoverInfoWorker. Call whenever the displayed folder changes (MainWindow does,
+    // right alongside setDirectory()); purely metadata plumbing, doesn't touch what's
+    // displayed.
+    void setCurrentFolderPath(const QString &path);
+
+    // Filename/format/dimensions/size/taken-date/duration for `row` - everything
+    // already in the model, no I/O needed. Same text the hover tooltip shows;
+    // MainWindow's right-click context menu reuses this so the two "show me info
+    // about this file" surfaces can't drift apart.
+    QString cachedInfoText(int row) const;
+
+    // Immediately hides any hover tooltip currently showing and cancels a pending
+    // one - called by MainWindow right after the user unchecks "Show Hover Info" in
+    // the View menu, since prefs::hoverInfoEnabled() is only checked lazily on the
+    // next mouse move otherwise (a tooltip already on screen when the setting
+    // changes would otherwise linger until the mouse next moves off the cell).
+    void hideHoverTooltip();
 
     // Square icons only - matches prefs::thumbnailIconSize(), the only way this is
     // ever actually driven. Recomputes the grid layout immediately (unlike the old
@@ -137,6 +166,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dragLeaveEvent(QDragLeaveEvent *event) override;
@@ -180,6 +210,26 @@ private:
     // drawDropFeedback()'s border color, the same way the cursor's own OS-drawn
     // copy/move badge already reflects it natively.
     bool dragCopyMode_ = false;
+
+    // Hover-info tooltip: deliberately a self-managed timer rather than Qt's own
+    // QEvent::ToolTip/QToolTip auto-trigger - this class extends QAbstractScrollArea
+    // directly, not QAbstractItemView, so it doesn't get QAbstractItemView's
+    // automatic Qt::ToolTipRole handling, and relying on the OS/QPA-level "has the
+    // mouse gone idle" heuristic that drives QEvent::ToolTip for a fully
+    // custom-painted widget like this one is much less certain to fire reliably
+    // than just tracking it explicitly. Also gives direct control over the delay
+    // ("after a short delay" was the actual ask) rather than inheriting whatever
+    // QApplication::toolTipWait() defaults to.
+    QTimer *hoverDelayTimer_ = nullptr;
+    QPoint hoverPos_;   // viewport-relative, where to anchor the tooltip once the timer fires
+    int hoverRow_ = -1; // -1 = not currently hovering (or about to show a tooltip for) any cell
+    QString hoverFolderPath_; // see setCurrentFolderPath()
+    // Parentless like every other worker in this app - see MainWindow's own worker
+    // members for why (moveToThread() silently fails on an object that already has
+    // a parent).
+    std::unique_ptr<HoverInfoWorker> hoverInfoWorker_;
+    quint64 hoverInfoCounter_ = 0;
+    quint64 hoverInfoRequestId_ = 0; // the *latest* request - an older reply arriving late is just discarded
 
     // Recomputed by relayout() (viewport resize, icon size change, or model reset -
     // row count affects the scrollbar range even though not the column count) - nothing
@@ -243,4 +293,19 @@ private:
     // "everything's different now, clear it all."
     void onRowsInserted(int first, int last);
     void onRowsRemoved(int first, int last);
+
+    // Called on every mouse move where no button is held (see mouseMoveEvent) -
+    // (re)starts hoverDelayTimer_ when the hovered cell actually changes, and hides
+    // any tooltip already showing for a since-abandoned cell.
+    void handleHoverMove(const QPoint &viewportPos);
+    // hoverDelayTimer_'s timeout handler - shows the cached-info tooltip immediately
+    // and kicks off the async EXIF-detail fetch for hoverRow_.
+    void onHoverDelayElapsed();
+
+private slots:
+    // hoverInfoWorker_'s result for `id` - re-shows the tooltip with the EXIF text
+    // appended, but only if the mouse is still over the same row the request was
+    // for (a stale/superseded id, or the mouse having moved on since, means this is
+    // simply discarded).
+    void onHoverInfoReady(quint64 id, QString detailsText);
 };

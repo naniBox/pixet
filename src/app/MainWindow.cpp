@@ -16,6 +16,7 @@
 #include <QFileSystemWatcher>
 #include <QMessageBox>
 #include <QGuiApplication>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -32,7 +33,9 @@
 #include <QSplitter>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTimer>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -43,6 +46,7 @@
 #include "FolderIndexer.h"
 #include "FolderTreeView.h"
 #include "FullscreenViewer.h"
+#include "HoverInfoWorker.h"
 #include "KeyBindings.h"
 #include "PathQ.h"
 #include "Preferences.h"
@@ -246,7 +250,29 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // the QComboBox widget itself.
     pathBar_->lineEdit()->installEventFilter(this);
 
-    // --- top-level: path bar above, left column (40%) vs. thumbnail grid (60%) below ---
+    // --- back/forward: plain in-memory navigateTo() stack, see navHistory_'s doc
+    // comment. Fixed (non-configurable) shortcuts on the QAction itself, same
+    // reasoning as the Edit menu's standard shortcuts - the toolbar buttons below
+    // just display whichever QAction they're set as the default action for, so the
+    // shortcut/enabled-state/icon only ever need to be set in one place. ---
+    backAction_ = new QAction(style()->standardIcon(QStyle::SP_ArrowBack), QStringLiteral("Back"), this);
+    backAction_->setShortcut(QKeySequence(QStringLiteral("Alt+Left")));
+    backAction_->setEnabled(false);
+    connect(backAction_, &QAction::triggered, this, &MainWindow::onNavigateBack);
+
+    forwardAction_ = new QAction(style()->standardIcon(QStyle::SP_ArrowForward), QStringLiteral("Forward"), this);
+    forwardAction_->setShortcut(QKeySequence(QStringLiteral("Alt+Right")));
+    forwardAction_->setEnabled(false);
+    connect(forwardAction_, &QAction::triggered, this, &MainWindow::onNavigateForward);
+
+    auto *backButton = new QToolButton(this);
+    backButton->setDefaultAction(backAction_);
+    backButton->setAutoRaise(true); // flat, address-bar-adjacent look rather than a raised push button
+    auto *forwardButton = new QToolButton(this);
+    forwardButton->setDefaultAction(forwardAction_);
+    forwardButton->setAutoRaise(true);
+
+    // --- top-level: back/forward + path bar above, left column (40%) vs. thumbnail grid (60%) below ---
     splitter_ = new QSplitter(this);
     splitter_->addWidget(leftPanel_);
     splitter_->addWidget(grid_);
@@ -258,7 +284,12 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     auto *central = new QWidget(this);
     auto *centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(4, 4, 4, 4);
-    centralLayout->addWidget(pathBar_);
+    auto *navRowLayout = new QHBoxLayout();
+    navRowLayout->setContentsMargins(0, 0, 0, 0);
+    navRowLayout->addWidget(backButton);
+    navRowLayout->addWidget(forwardButton);
+    navRowLayout->addWidget(pathBar_, /*stretch=*/1);
+    centralLayout->addLayout(navRowLayout);
     centralLayout->addWidget(splitter_, /*stretch=*/1);
     setCentralWidget(central);
 
@@ -408,6 +439,10 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     auto *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
     refreshAction_ = viewMenu->addAction(QStringLiteral("Refresh"), this, &MainWindow::onRefresh);
     toggleSidePanelAction_ = viewMenu->addAction(QStringLiteral("Toggle Side Panel"), this, &MainWindow::onToggleSidePanel);
+    viewMenu->addSeparator();
+    hoverInfoAction_ = viewMenu->addAction(QStringLiteral("Show Hover Info"), this, &MainWindow::onToggleHoverInfo);
+    hoverInfoAction_->setCheckable(true);
+    hoverInfoAction_->setChecked(prefs::hoverInfoEnabled());
     applyKeyBindingShortcuts();
 
     // Tools always exists now (unconditionally, on both platforms) - Force
@@ -509,6 +544,11 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
     prefs::addToPathHistory(normalized);
     refreshPathBarHistory();
     pathBar_->setCurrentText(normalized);
+    // Skipped when a back/forward button is what's driving this call - the stack
+    // already has this entry (that's the whole point of Back/Forward), so
+    // re-recording it here would both be redundant and, worse, truncate the
+    // "forward" entries a Back just moved away from.
+    if (!navigatingViaHistory_) recordNavHistory(normalized);
 
     // Re-point the live watch (see folderWatcher_'s member comment) at the folder
     // now on screen. addPath() on a path already being watched, or removePaths()
@@ -518,6 +558,7 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
     if (!folderWatcher_->directories().isEmpty()) folderWatcher_->removePaths(folderWatcher_->directories());
     folderWatcher_->addPath(normalized);
     preview_->clear();
+    grid_->setCurrentFolderPath(normalized); // for the hover tooltip's on-demand EXIF read - see its doc comment
     // Show whatever's already cached instantly. For a folder that's new or stale,
     // this shows 0 rows - onFilesListed (fired once Pass A commits, see FolderIndexer)
     // reloads again with the real file list, well before thumbnails are ready.
@@ -648,6 +689,40 @@ void MainWindow::onNavigateFolderRequested(Qt::Key direction) {
     if (target.isValid()) navigateTo(fsModel_->filePath(target));
 }
 
+void MainWindow::recordNavHistory(const QString &path) {
+    if (navHistoryIndex_ >= 0 && navHistoryIndex_ < navHistory_.size() && navHistory_[navHistoryIndex_] == path) {
+        return; // re-navigating to the same spot (Refresh, re-clicking the current tree node, ...)
+    }
+
+    while (navHistory_.size() > navHistoryIndex_ + 1) navHistory_.removeLast();
+    navHistory_.append(path);
+    navHistoryIndex_ = navHistory_.size() - 1;
+    updateNavButtonsEnabled();
+}
+
+void MainWindow::updateNavButtonsEnabled() {
+    backAction_->setEnabled(navHistoryIndex_ > 0);
+    forwardAction_->setEnabled(navHistoryIndex_ >= 0 && navHistoryIndex_ < navHistory_.size() - 1);
+}
+
+void MainWindow::onNavigateBack() {
+    if (navHistoryIndex_ <= 0) return;
+    --navHistoryIndex_;
+    navigatingViaHistory_ = true;
+    navigateTo(navHistory_[navHistoryIndex_]);
+    navigatingViaHistory_ = false;
+    updateNavButtonsEnabled();
+}
+
+void MainWindow::onNavigateForward() {
+    if (navHistoryIndex_ < 0 || navHistoryIndex_ >= navHistory_.size() - 1) return;
+    ++navHistoryIndex_;
+    navigatingViaHistory_ = true;
+    navigateTo(navHistory_[navHistoryIndex_]);
+    navigatingViaHistory_ = false;
+    updateNavButtonsEnabled();
+}
+
 void MainWindow::onTreeSelectionChanged(const QModelIndex &current) {
     QString path = fsModel_->filePath(current);
     if (!path.isEmpty() && normalizeForDb(path) != currentPath_) navigateTo(path);
@@ -680,6 +755,7 @@ void MainWindow::onGridContextMenu(const QPoint &pos) {
     updateEditActionsEnabled();
 
     QMenu menu(this);
+    addFileInfoToContextMenu(menu, grid_->currentRow());
     QAction *fullscreenAction = menu.addAction(QStringLiteral("View Fullscreen"), this, [this]() {
         if (grid_->currentRow() >= 0) onGridItemActivated(grid_->currentRow());
     });
@@ -689,6 +765,41 @@ void MainWindow::onGridContextMenu(const QPoint &pos) {
     menu.addAction(copyAction_);
     menu.addAction(pasteAction_);
     menu.exec(grid_->mapToGlobal(pos));
+}
+
+void MainWindow::addFileInfoToContextMenu(QMenu &menu, int row) {
+    if (row < 0) return;
+
+    for (const QString &line : grid_->cachedInfoText(row).split(QLatin1Char('\n'))) {
+        QAction *a = menu.addAction(line);
+        a->setEnabled(false);
+    }
+
+    QModelIndex idx = gridModel_->index(row);
+    int fmt = idx.data(ThumbGridModel::FormatRole).toInt();
+    QString path = joinPathQ(currentPath_, idx.data(Qt::DisplayRole).toString());
+
+    // Synchronous, unlike the hover tooltip's worker-thread fetch - see
+    // hoverinfo::readExifDetailsSync's own doc comment on why that tradeoff is fine
+    // for a right-click's single, explicitly-requested file.
+    pixet::ExifDetails details = hoverinfo::readExifDetailsSync(path, fmt);
+    QString exifText = hoverinfo::formatExifDetails(details);
+    if (!exifText.isEmpty()) {
+        for (const QString &line : exifText.split(QLatin1Char('\n'))) {
+            QAction *a = menu.addAction(line);
+            a->setEnabled(false);
+        }
+    }
+
+    if (details.hasGps) {
+        // Plain "lat,lon" decimal degrees - the format Google Maps' own search box
+        // accepts pasted directly, no need for a maps.google.com URL.
+        QString coords = QStringLiteral("%1,%2").arg(details.gpsLatitude, 0, 'f', 6).arg(details.gpsLongitude, 0, 'f', 6);
+        menu.addAction(QStringLiteral("Copy GPS Coordinates (%1)").arg(coords), this,
+                        [coords]() { QGuiApplication::clipboard()->setText(coords); });
+    }
+
+    menu.addSeparator();
 }
 
 void MainWindow::onFilesDroppedOnGrid(QStringList localPaths, bool move) {
@@ -1151,6 +1262,11 @@ void MainWindow::onToggleSidePanel() {
     leftPanel_->setVisible(!leftPanel_->isVisible());
     int row = grid_->currentRow();
     if (row >= 0) QTimer::singleShot(0, grid_, [this, row]() { grid_->scrollToRow(row, /*center=*/true); });
+}
+
+void MainWindow::onToggleHoverInfo(bool enabled) {
+    prefs::setHoverInfoEnabled(enabled);
+    if (!enabled) grid_->hideHoverTooltip();
 }
 
 void MainWindow::onCopyGridDebugInfo() {

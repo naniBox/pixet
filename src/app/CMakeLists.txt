@@ -96,6 +96,9 @@ add_executable(pixet ${PIXET_APP_TYPE}
     ClipboardOps.h
     ClipboardOps.cpp
 
+    HoverInfoWorker.h
+    HoverInfoWorker.cpp
+
     icons.qrc
 )
 

@@ -62,4 +62,12 @@ void addToPathHistory(const QString &dirPath);
 void clearPathHistory();
 constexpr int kMaxPathHistory = 20;
 
+// Whether ThumbGridView's hover-delay tooltip (cached + EXIF details) shows at all -
+// see ThumbGridView::handleHoverMove(). Defaults on, matching the feature's existing
+// out-of-the-box behavior; the View menu's "Show Hover Info" checkbox is the only
+// writer. Read fresh each hover rather than cached (unlike thumbnailIconSize()) since
+// it's not on any hot per-frame path.
+bool hoverInfoEnabled();
+void setHoverInfoEnabled(bool enabled);
+
 } // namespace prefs

@@ -81,11 +81,25 @@ private slots:
     void onPathBarHistoryActivated();
     // Tools > Purge Path History.
     void onPurgePathHistory();
+    // Back/forward buttons (left of the path bar) and Alt+Left/Alt+Right - a plain
+    // linear back/forward stack over navigateTo() calls, in-memory only (see
+    // navHistory_'s doc comment) - deliberately separate from prefs::pathHistory()'s
+    // persisted MRU dropdown, which is "recently visited folders" rather than "the
+    // sequence of steps that got me here right now."
+    void onNavigateBack();
+    void onNavigateForward();
     void onEditSelectAll();
     void onEditCut();
     void onEditCopy();
     void onEditPaste();
     void updateEditActionsEnabled();
+    // Adds `row`'s cached info (ThumbGridView::cachedInfoText) plus, for a JPEG, a
+    // synchronous on-demand EXIF read (see hoverinfo::readExifDetailsSync) as
+    // disabled label entries at the top of the right-click context menu - and, if
+    // the file has GPS coordinates, an enabled "Copy GPS Coordinates" action that
+    // puts a Google-Maps-pasteable "lat,lon" string on the clipboard. No-op if
+    // `row` is -1 (nothing under the cursor/selected).
+    void addFileInfoToContextMenu(QMenu &menu, int row);
     void onAddBookmark();
     void onRefresh();
     void onForceRethumbnail();
@@ -101,6 +115,10 @@ private slots:
     // T key (View menu) - hides/shows leftPanel_ (tree, bookmarks, preview) so the
     // grid can take the full window width while hunting for a specific photo.
     void onToggleSidePanel();
+    // View menu checkbox - enables/disables ThumbGridView's hover-delay tooltip (see
+    // prefs::hoverInfoEnabled()). Hides any tooltip already on screen immediately
+    // when turned off, rather than waiting for the next mouse move to notice.
+    void onToggleHoverInfo(bool enabled);
     void onIndexerStarted(QString path);
     void onFilesListed(QString path);
     void onThumbsProgress(QString path);
@@ -172,11 +190,31 @@ private:
     // now doubles as recently-visited-folder history (prefs::pathHistory(), directories
     // only - see that function's doc comment) - see refreshPathBarHistory().
     QComboBox *pathBar_;
+    // Back/forward, shown as toolbar buttons to pathBar_'s left. Fixed shortcuts
+    // (Alt+Left/Alt+Right, not configurable - same reasoning as the Edit menu's
+    // standard shortcuts in KeyBindings.h) carried by the QAction itself, which is
+    // what the toolbar buttons display via QToolButton::setDefaultAction() - one
+    // definition of the shortcut/enabled-state/icon shared by both, rather than
+    // duplicating it between a button and a separate shortcut registration.
+    QAction *backAction_;
+    QAction *forwardAction_;
+    // Plain linear back/forward stack over navigateTo() calls - every entry is a
+    // normalized folder path, appended in recordNavHistory() (called from
+    // navigateTo() unless navigatingViaHistory_ says a back/forward button is what's
+    // driving this navigateTo() call, in which case the stack itself is already
+    // correct and shouldn't be re-recorded/truncated). Deliberately in-memory only,
+    // not persisted to prefs::settingsStore() - unlike the path bar's dropdown
+    // history, "how did I get to this exact spot in this session" isn't something
+    // worth remembering after pixet closes.
+    QStringList navHistory_;
+    int navHistoryIndex_ = -1; // navHistory_[navHistoryIndex_] == currentPath_, whenever the stack is non-empty
+    bool navigatingViaHistory_ = false;
     // Shortcuts are user-configurable (see KeyBindings.h) - kept as members so
     // applyKeyBindingShortcuts() can re-apply them after the Preferences dialog's
     // keybindings editor closes.
     QAction *refreshAction_;
     QAction *toggleSidePanelAction_;
+    QAction *hoverInfoAction_;
     QAction *addBookmarkAction_;
     // Edit menu: Select All/Cut/Copy/Paste are fixed (non-remappable)
     // QKeySequence::StandardKey actions, wired directly rather than through
@@ -280,6 +318,14 @@ private:
     // once at startup and after every history mutation (a new folder visited, or an
     // explicit purge).
     void refreshPathBarHistory();
+    // Appends `path` to navHistory_ at navHistoryIndex_+1, truncating any existing
+    // "forward" entries first (standard browser convention: a fresh navigation from
+    // a back'd-up position discards the redo stack) - unless `path` is already what
+    // navHistoryIndex_ points at (a Refresh, or clicking the tree node already
+    // selected), in which case this is a no-op rather than a duplicate consecutive
+    // entry. Called from navigateTo(), guarded by navigatingViaHistory_.
+    void recordNavHistory(const QString &path);
+    void updateNavButtonsEnabled();
     // setDirectory() on the *same* path, with selection and scroll position carried
     // across the reset: captures the selected rows' file ids (and the lead row's)
     // beforehand, reloads, then re-derives row indices via

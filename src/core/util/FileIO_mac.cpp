@@ -1,5 +1,6 @@
 #include "FileIO.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -57,6 +58,28 @@ bool readWholeFile(const std::string &path, std::vector<uint8_t> &out) {
     f.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(size));
     if (f.gcount() != static_cast<std::streamsize>(size)) {
         out.clear(); // same as Windows: no partial buffers escape on failure
+        return false;
+    }
+    return true;
+}
+
+bool readFilePrefix(const std::string &path, size_t maxBytes, std::vector<uint8_t> &out) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec) || ec) return false;
+
+    uintmax_t size = std::filesystem::file_size(path, ec);
+    if (ec) return false;
+
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+
+    size_t toRead = static_cast<size_t>(std::min<uintmax_t>(size, maxBytes));
+    out.resize(toRead);
+    if (toRead == 0) return true;
+
+    f.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(toRead));
+    if (static_cast<size_t>(f.gcount()) != toRead) {
+        out.clear();
         return false;
     }
     return true;
