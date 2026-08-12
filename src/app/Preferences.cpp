@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 
 #include "util/AppPaths.h"
 
@@ -34,6 +35,10 @@ void setThumbnailIconSize(int px) {
     px = std::clamp(px, kMinThumbnailIconSize, kMaxThumbnailIconSize);
     g_thumbnailIconSize.store(px, std::memory_order_relaxed);
     settingsStore().setValue(QStringLiteral("thumbnailIconSize"), px);
+}
+
+int thumbnailImageAreaHeightFor(int iconWidth) {
+    return std::max(1, (int)std::lround(iconWidth * kThumbnailTileAspect));
 }
 
 int thumbnailTargetLongEdge() {

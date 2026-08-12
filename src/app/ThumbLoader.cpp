@@ -53,17 +53,26 @@ void ThumbLoader::processOne() {
         // (logical) cell size, so on a Retina display the grid can show twice that many real
         // pixels - and prefs::thumbnailTargetLongEdge() already stores blobs at 2x the icon
         // size precisely so this headroom exists to be used.
-        const int deviceSize = qMax(1, qRound(prefs::thumbnailIconSize() * dpr));
+        const int iconSize = prefs::thumbnailIconSize();
+        // The cell's image area is landscape-shaped, not square (see
+        // prefs::kThumbnailTileAspect), so the thumbnail has to be fitted to a W x H box
+        // rather than to a single edge - otherwise a portrait shot decodes to the full
+        // width-sized square and overflows the shorter area it's drawn into.
+        const int deviceW = qMax(1, qRound(iconSize * dpr));
+        const int deviceH = qMax(1, qRound(prefs::thumbnailImageAreaHeightFor(iconSize) * dpr));
         // Stored thumbs are generated at prefs::thumbnailTargetLongEdge() (always >=
         // this); decode straight to display size (cheap scaled-DCT path) rather than
-        // decoding full-size and scaling after.
-        if (pixet::decodeJpeg(bytes.data(), bytes.size(), deviceSize, img)) {
+        // decoding full-size and scaling after. The decode target stays the *wider* of the
+        // two: decodeJpeg only takes a long-edge hint, and aiming at the larger dimension
+        // guarantees enough pixels for either orientation, leaving the exact fit to the
+        // scale below. Aiming at the shorter one would under-resolve landscape shots.
+        if (pixet::decodeJpeg(bytes.data(), bytes.size(), qMax(deviceW, deviceH), img)) {
             pixmap = QPixmap::fromImage(rgbImageToQImage(img));
             // decodeJpeg only lands *close* to the target via coarse DCT scale steps -
             // the grid needs an exact fit or oversized decorations bleed into
             // neighboring cells.
-            if (pixmap.width() > deviceSize || pixmap.height() > deviceSize) {
-                pixmap = pixmap.scaled(deviceSize, deviceSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            if (pixmap.width() > deviceW || pixmap.height() > deviceH) {
+                pixmap = pixmap.scaled(deviceW, deviceH, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             }
             // Stamping the ratio is what keeps the grid's geometry in logical units: the
             // pixmap is now physically 2x on Retina, and ThumbGridView centres it using

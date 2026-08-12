@@ -33,8 +33,9 @@ ThumbGridView::ThumbGridView(QWidget *parent) : QAbstractScrollArea(parent) {
     // Always reserve the vertical scrollbar's width, even when nothing needs
     // scrolling, rather than the default show/hide-as-needed - see the class
     // comment on why a fluctuating viewport width is exactly the thing that made
-    // the old implementation unpredictable. No horizontal scrolling at all: the
-    // grid always stretches cells to fill the viewport width evenly (see relayout()).
+    // the old implementation unpredictable. No horizontal scrolling at all: cells are a
+    // fixed width and the block of columns is centred, with any leftover width becoming an
+    // outer margin (see relayout()).
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setFrameShape(QFrame::NoFrame);
@@ -116,13 +117,23 @@ QSize ThumbGridView::iconSize() const { return QSize(iconSize_, iconSize_); }
 int ThumbGridView::rowCount() const { return model_ ? model_->rowCount() : 0; }
 
 void ThumbGridView::relayout() {
-    cellHeight_ = kCellPadding + iconSize_ + kTextTopGap + kTextRowHeight + kCellPadding;
+    imageAreaHeight_ = prefs::thumbnailImageAreaHeightFor(iconSize_);
+    cellHeight_ = kCellPadding + imageAreaHeight_ + kTextTopGap + kTextRowHeight + kCellPadding;
 
     int vw = viewport()->width();
     if (vw > 0) {
-        int baseCellWidth = iconSize_ + 2 * kCellPadding;
-        columns_ = qMax(1, vw / baseCellWidth);
-        cellWidth_ = vw / columns_; // stretched to fill the row evenly
+        // Cells keep their natural width; the leftover is centred as an outer margin rather
+        // than divided among the cells.
+        //
+        // This used to be `cellWidth_ = vw / columns_`, stretching every cell to fill the row
+        // evenly. That sounds harmless and isn't: the thumbnail inside is still only
+        // iconSize_ wide, so all of the leftover became empty space *around each photo*, and
+        // the amount jumped around as the window resized (at a 240px icon size: 2px per side
+        // at a 1300px viewport, 22px at 1500px). Concentrating it in one margin makes the
+        // spacing between photos constant, and independent of window width.
+        cellWidth_ = iconSize_ + 2 * kCellPadding;
+        columns_ = qMax(1, vw / cellWidth_);
+        gridOffsetX_ = qMax(0, (vw - columns_ * cellWidth_) / 2);
     }
 
     int rc = rowCount();
@@ -148,15 +159,18 @@ QRect ThumbGridView::contentRect(int row) const {
     if (columns_ <= 0) return QRect();
     int gridRow = row / columns_;
     int gridCol = row % columns_;
-    return QRect(gridCol * cellWidth_, gridRow * cellHeight_, cellWidth_, cellHeight_);
+    return QRect(gridOffsetX_ + gridCol * cellWidth_, gridRow * cellHeight_, cellWidth_, cellHeight_);
 }
 
 int ThumbGridView::rowAt(const QPoint &pos) const {
     if (columns_ <= 0 || cellWidth_ <= 0 || cellHeight_ <= 0) return -1;
     int contentY = pos.y() + verticalScrollBar()->value();
-    if (contentY < 0 || pos.x() < 0) return -1;
+    // gridOffsetX_ is the centring margin (see relayout()); a click to the left of the first
+    // column lands negative here and is correctly "no row", same as one past the last column.
+    int gridX = pos.x() - gridOffsetX_;
+    if (contentY < 0 || gridX < 0) return -1;
     int gridRow = contentY / cellHeight_;
-    int gridCol = pos.x() / cellWidth_;
+    int gridCol = gridX / cellWidth_;
     if (gridCol >= columns_) return -1; // clicked past the last column's cell (empty margin)
     int row = gridRow * columns_ + gridCol;
     if (row >= rowCount()) return -1;
@@ -442,7 +456,8 @@ void ThumbGridView::paintEvent(QPaintEvent *event) {
         for (int col = 0; col < columns_; ++col) {
             int row = gridRow * columns_ + col;
             if (row >= rc) break;
-            QRect rect(col * cellWidth_, gridRow * cellHeight_ - scrollValue, cellWidth_, cellHeight_);
+            QRect rect(gridOffsetX_ + col * cellWidth_, gridRow * cellHeight_ - scrollValue, cellWidth_,
+                        cellHeight_);
             paintCell(painter, row, rect);
         }
     }
@@ -488,11 +503,12 @@ void ThumbGridView::paintCell(QPainter &painter, int row, const QRect &cellRect)
         painter.fillRect(cellRect.adjusted(1, 1, -1, -1), tint);
     }
 
-    // Thumbnail centered within a fixed-size image area at the top of the cell -
-    // pixmaps are already scaled to fit within iconSize_ (aspect preserved, see
-    // ThumbLoader), so they're frequently smaller than the box in one dimension.
+    // Thumbnail centered within a fixed-size image area at the top of the cell. ThumbLoader
+    // already scaled the pixmap to fit iconSize_ x imageAreaHeight_ with aspect preserved, so
+    // it typically fills one dimension and falls short in the other: a landscape shot fills
+    // the width, a portrait one fills the height and is narrower than the cell.
     QRect imageArea(cellRect.left() + kCellPadding, cellRect.top() + kCellPadding,
-                     cellRect.width() - 2 * kCellPadding, iconSize_);
+                     cellRect.width() - 2 * kCellPadding, imageAreaHeight_);
     QVariant deco = model_->data(index, Qt::DecorationRole);
     if (deco.canConvert<QPixmap>()) {
         QPixmap pix = deco.value<QPixmap>();

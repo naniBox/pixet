@@ -31,6 +31,22 @@ constexpr int kDefaultThumbnailIconSize = 150;
 constexpr int kMinThumbnailIconSize = 80;
 constexpr int kMaxThumbnailIconSize = 400;
 
+// Grid cells reserve a landscape-shaped image area (height = this x thumbnailIconSize()),
+// not a square one.
+//
+// A square box wastes a lot of room, because almost nothing photographic is square: a 3:2
+// landscape shot drawn inside a square box leaves a third of the cell empty - a sixth above
+// and a sixth below - and the effect scales with the icon size, so at 240px it's 40px of
+// dead space top and bottom on every single tile. 3:4 fits 4:3 exactly and 3:2 nearly, which
+// covers essentially every camera and phone. The cost is that *portrait* shots become
+// narrower than the cell rather than filling it, which is the unavoidable trade in any grid
+// with uniformly-sized tiles.
+//
+// Shared so ThumbGridView (which lays cells out) and ThumbLoader (which decodes blobs to fit
+// them) can't disagree about the tile shape.
+constexpr double kThumbnailTileAspect = 0.75; // image-area height / width
+int thumbnailImageAreaHeightFor(int iconWidth);
+
 // The long-edge size new thumbnails get generated/stored at (IndexOptions::
 // targetLongEdge) - deliberately kept comfortably ahead of thumbnailIconSize() so
 // displaying at the chosen on-screen size is always a downscale (sharp), never an

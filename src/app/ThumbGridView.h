@@ -254,6 +254,14 @@ private:
     int columns_ = 1;
     int cellWidth_ = 0;
     int cellHeight_ = 0;
+    // Height of the image area inside a cell - deliberately less than iconSize_, so a
+    // landscape photo isn't letterboxed inside a square box. See prefs::kThumbnailTileAspect.
+    int imageAreaHeight_ = 0;
+    // Left margin, centring the block of columns in the viewport. Cells are a fixed width
+    // rather than stretched to fill the row, so whatever width doesn't divide evenly into
+    // whole columns collects here instead of being shared out as extra padding around every
+    // thumbnail - see relayout(). Painting and hit-testing both offset by it.
+    int gridOffsetX_ = 0;
 
     // High-resolution mice/trackpads deliver many small fractional wheel deltas
     // instead of one clean 120-unit notch per click - accumulate across events so a
