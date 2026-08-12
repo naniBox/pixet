@@ -5,6 +5,93 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-12 — mac — Geotag markers in the grid: GPS stored at scan time, plus the first schema migration that adds a column
+
+A dim map-pin before the filename for any photo carrying EXIF GPS, so geotagged shots are
+identifiable at a glance instead of one right-click at a time.
+
+**The scan didn't extract GPS at all, which is what shaped the design.** EXIF is parsed
+during scanning only for orientation and the embedded thumbnail's byte offset (`ExifInfo`);
+the full `ExifDetails` - camera, exposure, GPS - was read strictly on demand for the hover
+tooltip and context menu, and only for JPEG. Nothing GPS-related was stored. A grid marker
+needs the answer for every visible cell on every repaint, so it had to become persisted
+state rather than an on-demand read.
+
+`files` gains `gps_lat REAL, gps_lon REAL, gps_checked INTEGER`. NULL coordinates rather
+than 0,0 when absent - (0,0) is a real place in the Gulf of Guinea and the marker keys off
+the column being non-NULL. `gps_checked` is a genuine third state, not redundancy: "this
+photo has no coordinates" and "nothing has looked at this file yet" have to be
+distinguishable, or the backfill would re-read the same files forever and an unchecked photo
+would be indistinguishable from an untagged one.
+
+**First migration that adds a *column*, and the existing comment about that was wrong.**
+`Database.h` claimed "new columns/tables are handled by the schema SQL itself". True for
+tables and for a freshly-created file; false for an existing one, because `applySchema()`
+runs `CREATE TABLE IF NOT EXISTS`, which does nothing at all when the table is already there
+- so a column added to the schema SQL reaches new databases only. Migration 3 therefore does
+an explicit `ALTER TABLE ... ADD COLUMN`, guarded on the column actually being absent rather
+than on the version alone: a *fresh* database gets the columns from the CREATE and still
+arrives at `user_version 0`, where an unguarded ALTER fails with "duplicate column name".
+Comment corrected. Also worth noting for the next one: the new block has to go *after* the
+existing `if (version < 2)`, not before - the first attempt put it first, which on a
+version-0 database ran both and left `user_version` at 2, so migration 3 would have re-run
+on every launch.
+
+**Extraction is free where it matters and cheap where it doesn't.** `generateJpegThumb`
+already holds the whole file, so pulling GPS there is a second IFD walk over a buffer
+already in memory - `ThumbResult` carries it out to `Indexer`, which writes it alongside
+width/height/orientation.
+
+For files scanned before any of this existed, `Indexer::backfillGps()` fills them in. It
+reads a bounded 64KB prefix per file (EXIF is in the header) rather than the whole image,
+and each file is examined exactly once. Deliberately placed in `Indexer` rather than in the
+background reconciler, which was the first attempt: the sweep visits one directory every
+1.5s, so with 535 known folders a freshly-opened folder's markers wouldn't have appeared for
+up to ~13 minutes. Living in `Indexer` means every path that touches a folder backfills it -
+an on-demand navigation, the background sweep, and `pixet-index` alike - and it runs even
+when the directory-mtime freshness shortcut skips Pass A/B entirely, which is precisely the
+case that matters for already-scanned folders.
+
+JPEG only, matching what `parseJpegExifDetails` can read. HEIC and RAW are left at
+`gps_checked = 0` rather than recorded as "checked, none", so they'd be picked up for free
+if those formats gain GPS support. Files that fail to read *are* marked checked, or every
+future scan would retry them forever.
+
+Measured on a real folder: 53 of 59 files gained coordinates in **0.6s** total, and the
+values land at 34.3173N, 135.3041E - Wakayama, which is what the folder is called. A folder
+of phone photos elsewhere came back `gpsChecked=25, hasGps=0`, confirming the tri-state
+actually distinguishes stripped/absent GPS from unexamined.
+
+**The marker** is drawn as a `QPainterPath` silhouette (disc plus tapered tail) rather than
+an asset, sized from the font height so it scales with the UI instead of needing a bitmap per
+device pixel ratio - it renders at roughly 10px, where a fixed-size image would be wrong on
+half the machines this runs on. Painted in the `PlaceholderText` palette role, the same
+muted-but-legible role the section headings use. Pin and filename are centred *as a group*:
+parking the pin at the left edge would shift the name off-centre, and a grid where geotagged
+rows sit differently from the rest reads as misalignment rather than as information. The
+elide width shrinks by exactly what the pin occupies so long names still truncate cleanly.
+
+`ThumbGridModel` gained a `HasGpsRole` and the column had to be added to all three of its
+`SELECT`s - two feed `rowFromStatement()`, which reads positionally, so missing one would
+have been an out-of-range column read rather than a compile error. The incremental
+`refreshThumbStates()` path picks it up too, so markers appear as the backfill progresses
+rather than only after a full reload.
+
+Also added `Statement::bindDouble`/`columnDouble` - deliberately named methods rather than a
+`bind(int, double)` overload, since a bare integer literal at any existing call site would
+have become ambiguous against the `int64_t` one.
+
+**Verified:** migration applies to the real 4766-file database (user_version 2 -> 3, three
+columns) and is idempotent across re-runs; extraction produces correct coordinates on real
+files; backfill runs on a fresh-skipped directory; 92/92 tests; both presets build.
+
+**Not verified:** the marker's appearance at the actual rendered size hasn't been eyeballed
+yet, only reasoned about - it's ~10px of vector path and may want a size or weight tweak.
+Library-wide coverage is still filling in as the background sweep works through the folder
+list.
+
+---
+
 ## 2026-08-12 — mac — Fullscreen priority inversion, grid density, thumbnail-size control, and a thumbnail cap that made "re-thumbnail" a no-op
 
 Second mac session. Verified the desktop machine's feature work (multi-select, clipboard,
