@@ -136,10 +136,48 @@ cp -R "$APP" "$STAGE/"
 # something the recipient has to be told what to do with.
 ln -s /Applications "$STAGE/Applications"
 
+# Two separate icons, and they're set by completely different mechanisms:
+#
+#  1. The mounted *volume's* icon - what Finder shows in the sidebar and on the desktop when
+#     the DMG is opened. Comes from a .VolumeIcon.icns at the volume root plus the volume
+#     having its custom-icon flag set, which can only be done while it's mounted read-write.
+#     Hence build UDRW first, flag it, then convert to the compressed read-only UDZO that
+#     actually ships.
+#  2. The .dmg *file's* own icon in Finder, before anyone opens it. That one lives in the
+#     file's resource fork, so it needs the sips/DeRez/Rez dance below - setting
+#     .VolumeIcon.icns does nothing for it.
+#
+# Doing only (1) is the common half-measure: the disk image still looks like a generic white
+# drive until it's mounted, which is exactly when a recipient is deciding whether to trust it.
+ICON="$REPO_ROOT/src/app/pixet.icns"
+cp "$ICON" "$STAGE/.VolumeIcon.icns"
+
 DMG="$REPO_ROOT/build/pixet-$VERSION-arm64.dmg"
-rm -f "$DMG"
-hdiutil create -volname "pixet $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+RW_DMG="$REPO_ROOT/build/pixet-$VERSION-rw.dmg"
+rm -f "$DMG" "$RW_DMG"
+
+hdiutil create -volname "pixet $VERSION" -srcfolder "$STAGE" -ov -format UDRW "$RW_DMG" >/dev/null
+# -nobrowse/-noautoopen so building a release doesn't throw a Finder window in your face.
+MOUNT_POINT="$(hdiutil attach "$RW_DMG" -nobrowse -noautoopen | grep -Eo '/Volumes/.*$' | tail -1)"
+if [ -n "$MOUNT_POINT" ]; then
+    SetFile -a C "$MOUNT_POINT"          # kHasCustomIcon on the volume root
+    hdiutil detach "$MOUNT_POINT" >/dev/null
+fi
+hdiutil convert "$RW_DMG" -format UDZO -o "$DMG" >/dev/null
+rm -f "$RW_DMG"
 rm -rf "$STAGE"
+
+echo "==> Applying the app icon to the .dmg file itself"
+# sips -i builds an icon resource *inside* the .icns; DeRez extracts it as a resource
+# description; Rez appends that to the .dmg's resource fork; SetFile flags the file as having
+# a custom icon. All four steps are required - any one alone does nothing visible.
+ICON_TMP="$(mktemp -d)"
+cp "$ICON" "$ICON_TMP/icon.icns"
+sips -i "$ICON_TMP/icon.icns" >/dev/null 2>&1
+DeRez -only icns "$ICON_TMP/icon.icns" > "$ICON_TMP/icon.rsrc" 2>/dev/null
+Rez -append "$ICON_TMP/icon.rsrc" -o "$DMG" 2>/dev/null
+SetFile -a C "$DMG"
+rm -rf "$ICON_TMP"
 
 if [ -n "$NOTARY_PROFILE" ]; then
     echo "==> Notarizing (profile: $NOTARY_PROFILE)"
