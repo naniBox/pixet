@@ -22,6 +22,9 @@ public:
     Statement &operator=(Statement &&other) noexcept;
 
     void bind(int idx, int64_t v);
+    // Deliberately a named method rather than a bind(int, double) overload: a bare integer
+    // literal at any existing call site would become ambiguous between the two.
+    void bindDouble(int idx, double v);
     void bind(int idx, const std::string &v);
     void bind(int idx, const std::vector<uint8_t> &blob);
     void bindNull(int idx);
@@ -31,6 +34,7 @@ public:
     void reset();
 
     int64_t columnInt64(int col) const;
+    double columnDouble(int col) const;
     std::string columnText(int col) const;
     std::vector<uint8_t> columnBlob(int col) const;
     bool columnIsNull(int col) const;
@@ -63,11 +67,14 @@ public:
 
 private:
     void applySchema();
-    // One-time, idempotent data fixups keyed off PRAGMA user_version - for changes to
-    // what a stored value *means* that CREATE TABLE IF NOT EXISTS can't express (new
-    // columns/tables are handled by the schema SQL itself; this is for the case where
-    // existing rows' data needs correcting in place). See Database.cpp for the specific
-    // migrations.
+    // One-time, idempotent schema and data migrations keyed off PRAGMA user_version.
+    //
+    // Covers both changes to what a stored value *means* (correcting existing rows in
+    // place) and added columns. New *tables* are handled by the schema SQL itself, but new
+    // columns are not: applySchema() runs CREATE TABLE IF NOT EXISTS, which does nothing at
+    // all on a database that already has the table, so a column added to the schema SQL
+    // reaches only freshly-created files unless an ALTER is added here too. See
+    // Database.cpp for the specific migrations.
     void runMigrations();
 
     sqlite3 *db_ = nullptr;

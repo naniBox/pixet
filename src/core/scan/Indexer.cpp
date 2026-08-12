@@ -5,7 +5,9 @@
 #include <unordered_set>
 
 #include "../db/Database.h"
+#include "../meta/JpegExif.h"
 #include "../thumb/ThumbGenerator.h"
+#include "../util/FileIO.h"
 #include "../util/PathUtil.h"
 #include "../util/Time.h"
 #include "DirRows.h"
@@ -16,6 +18,10 @@ namespace pixet {
 namespace {
 
 constexpr size_t kBatchSize = 64;
+
+// EXIF sits in the file header, so a bounded prefix is all backfillGps() needs to parse it -
+// the same budget HoverInfoWorker uses for its own on-demand read.
+constexpr size_t kExifPrefixBytes = 64 * 1024;
 
 struct ExistingFile {
     int64_t id;
@@ -239,13 +245,27 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
                                               ? FileState::DoneNeedsRender
                                               : FileState::Done;
                     auto updFile = db_.prepare(
-                        "UPDATE files SET width=?, height=?, orientation=?, thumb_id=?, state=? WHERE id=?");
+                        "UPDATE files SET width=?, height=?, orientation=?, thumb_id=?, state=?, "
+                        "gps_lat=?, gps_lon=?, gps_checked=? WHERE id=?");
                     updFile.bind(1, fileWidth);
                     updFile.bind(2, fileHeight);
                     updFile.bind(3, (int64_t)pt.result.orientation);
                     updFile.bind(4, thumbId);
                     updFile.bind(5, (int64_t)newState);
-                    updFile.bind(6, pt.fileId);
+                    // NULL rather than 0,0 when there are no coordinates - (0,0) is a real
+                    // place in the Gulf of Guinea, and the marker must not light up for it.
+                    if (pt.result.hasGps) {
+                        updFile.bindDouble(6, pt.result.gpsLatitude);
+                        updFile.bindDouble(7, pt.result.gpsLongitude);
+                    } else {
+                        updFile.bindNull(6);
+                        updFile.bindNull(7);
+                    }
+                    // Only claim the file was checked if the generator actually got far
+                    // enough to look; leaving it 0 otherwise lets the backfill sweep pick it
+                    // up later rather than recording a false "no GPS here".
+                    updFile.bind(8, (int64_t)(pt.result.gpsChecked ? 1 : 0));
+                    updFile.bind(9, pt.fileId);
                     updFile.step();
 
                     if (pt.oldThumbId != 0) {
@@ -295,7 +315,55 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
     }
     flushBatch();
 
+    // After Pass B, so files it just thumbnailed already have GPS written from the bytes
+    // that were in memory at the time - this only touches what's genuinely still unchecked.
+    backfillGps(dirId, dirPath, stats);
+
     claims_.release(dirId, opts_.owner);
+}
+
+void Indexer::backfillGps(int64_t dirId, const std::string &dirPath, IndexStats &stats) {
+    // JPEG only, matching what parseJpegExifDetails can actually read. A HEIC or RAW file is
+    // left at gps_checked = 0 rather than being recorded as "checked, no coordinates", so it
+    // gets picked up for free if those formats ever gain GPS support.
+    std::vector<std::pair<int64_t, std::string>> todo;
+    {
+        auto sel = db_.prepare("SELECT id, name FROM files WHERE dir_id=? AND gps_checked=0 AND fmt=?");
+        sel.bind(1, dirId);
+        sel.bind(2, (int64_t)Format::Jpeg);
+        while (sel.step()) todo.emplace_back(sel.columnInt64(0), sel.columnText(1));
+    }
+    if (todo.empty()) return;
+
+    db_.beginTransaction();
+    for (const auto &[fileId, name] : todo) {
+        // A bounded prefix, not the whole file: EXIF lives in the header, so this reads tens
+        // of KB per photo rather than the several MB it occupies. That difference is what
+        // makes backfilling an entire library cheap enough to do inline here.
+        std::vector<uint8_t> prefix;
+        ExifDetails details;
+        if (readFilePrefix(joinPath(dirPath, name), kExifPrefixBytes, prefix) && !prefix.empty()) {
+            details = parseJpegExifDetails(prefix.data(), prefix.size());
+        }
+
+        auto upd = db_.prepare("UPDATE files SET gps_lat=?, gps_lon=?, gps_checked=1 WHERE id=?");
+        if (details.hasGps) {
+            // NULL rather than 0,0 when absent - (0,0) is a real location in the Gulf of
+            // Guinea, and the grid's marker keys off the column being non-NULL.
+            upd.bindDouble(1, details.gpsLatitude);
+            upd.bindDouble(2, details.gpsLongitude);
+            stats.gpsBackfilled++;
+        } else {
+            upd.bindNull(1);
+            upd.bindNull(2);
+        }
+        // Marked checked even when the read failed or found nothing, or every future scan
+        // would retry the same files forever. A file that actually changes gets a fresh
+        // thumbnail pass anyway, which rewrites this from the full bytes.
+        upd.bind(3, fileId);
+        upd.step();
+    }
+    db_.commit();
 }
 
 void Indexer::run(const std::string &rootPath, IndexStats &stats, const IndexCallbacks &callbacks) {

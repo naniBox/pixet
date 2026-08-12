@@ -14,6 +14,7 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QResizeEvent>
 #include <QScrollBar>
@@ -528,9 +529,26 @@ void ThumbGridView::paintCell(QPainter &painter, int row, const QRect &cellRect)
     QRect textRect(cellRect.left() + kCellPadding, imageArea.bottom() + kTextTopGap,
                     cellRect.width() - 2 * kCellPadding, kTextRowHeight);
     QString name = model_->data(index, Qt::DisplayRole).toString();
-    QString elided = QFontMetrics(painter.font()).elidedText(name, Qt::ElideMiddle, textRect.width());
+    const bool hasGps = model_->data(index, ThumbGridModel::HasGpsRole).toBool();
+
+    // Pin and name are centred together as one group rather than the pin being parked at the
+    // left edge - otherwise adding a marker would visibly shift the filename off-centre, and
+    // a grid where geotagged rows sit differently from the rest reads as misalignment rather
+    // than as information. The elide width shrinks by exactly what the pin occupies, so a
+    // long name still truncates cleanly instead of colliding with it.
+    QFontMetrics fm(painter.font());
+    const int pinWidth = hasGps ? qMax(6, fm.height() * 3 / 5) : 0;
+    const int pinGap = hasGps ? 3 : 0;
+    QString elided = fm.elidedText(name, Qt::ElideMiddle, textRect.width() - pinWidth - pinGap);
+    const int textWidth = fm.horizontalAdvance(elided);
+    int x = textRect.left() + (textRect.width() - (pinWidth + pinGap + textWidth)) / 2;
+    if (hasGps) {
+        drawGeotagPin(painter, QRect(x, textRect.top(), pinWidth, textRect.height()));
+        x += pinWidth + pinGap;
+    }
     painter.setPen(palette().color(QPalette::Text));
-    painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignVCenter, elided);
+    painter.drawText(QRect(x, textRect.top(), textWidth, textRect.height()),
+                      Qt::AlignLeft | Qt::AlignVCenter, elided);
 
     // Selection border on top - not a recolor, so the thumbnail's own colors stay
     // readable.
@@ -540,6 +558,38 @@ void ThumbGridView::paintCell(QPainter &painter, int row, const QRect &cellRect)
         painter.setPen(pen);
         painter.drawRect(cellRect.adjusted(1, 1, -2, -2));
     }
+}
+
+void ThumbGridView::drawGeotagPin(QPainter &painter, const QRect &box) const {
+    // The classic map-marker silhouette - a disc with a tapered tail - built as one path so
+    // the join between the two stays clean when it's filled. Drawn in the muted
+    // PlaceholderText role, the same role the section headings use for
+    // legible-but-not-shouting text, so it reads as metadata next to the filename rather
+    // than competing with it.
+    //
+    // Everything is proportional to the box (which is font-height derived), so it scales with
+    // the UI font instead of needing an asset per device pixel ratio - it renders at roughly
+    // 10px, where a bitmap would be the wrong size on half the machines this runs on.
+    const qreal d = qMin<qreal>(box.width(), box.height() * 0.75);
+    const QPointF centre(box.center().x(), box.top() + box.height() / 2.0 - d * 0.12);
+    const qreal r = d * 0.34;
+
+    QPainterPath path;
+    path.addEllipse(centre, r, r);
+    QPolygonF tail;
+    tail << QPointF(centre.x() - r * 0.70, centre.y() + r * 0.60)
+          << QPointF(centre.x() + r * 0.70, centre.y() + r * 0.60)
+          << QPointF(centre.x(), centre.y() + d * 0.72);
+    path.addPolygon(tail);
+
+    // Saved/restored because paintCell() carries on drawing the filename with this same
+    // painter straight afterwards, and would otherwise inherit the brush and pen set here.
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(palette().color(QPalette::PlaceholderText));
+    painter.drawPath(path.simplified());
+    painter.restore();
 }
 
 void ThumbGridView::resizeEvent(QResizeEvent *event) {

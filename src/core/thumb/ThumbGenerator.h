@@ -28,6 +28,15 @@ struct ThumbResult {
     int origWidth = 0;
     int origHeight = 0;
     int orientation = 1;
+
+    // EXIF GPS, extracted while the file's bytes are already in hand for the thumbnail.
+    // gpsChecked is what separates "looked, this shot has no coordinates" from "nothing has
+    // looked at this file yet" - the grid's geotag marker has to tell those apart, and the
+    // backfill sweep needs to know which files it can skip. See files.gps_checked.
+    bool gpsChecked = false;
+    bool hasGps = false;
+    double gpsLatitude = 0;  // decimal degrees, + = North
+    double gpsLongitude = 0; // decimal degrees, + = East
 };
 
 // Runs the extraction ladder for one file: embedded preview -> scaled decode ->

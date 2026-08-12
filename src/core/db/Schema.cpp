@@ -80,6 +80,14 @@ CREATE TABLE IF NOT EXISTS files(
     duration_ms INTEGER,
     thumb_id INTEGER,
     state INTEGER NOT NULL DEFAULT 0,
+    -- Decimal degrees from the EXIF GPS IFD, already hemisphere-adjusted. NULL means no
+    -- coordinates - which is only meaningful alongside gps_checked, since "this photo has
+    -- no GPS" and "nobody has looked yet" are different states and the grid's marker has to
+    -- tell them apart. Stored rather than read on demand because the grid needs the answer
+    -- for every visible cell on every repaint.
+    gps_lat REAL,
+    gps_lon REAL,
+    gps_checked INTEGER NOT NULL DEFAULT 0,
     UNIQUE(dir_id, name)
 );
 

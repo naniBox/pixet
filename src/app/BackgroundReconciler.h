@@ -65,4 +65,5 @@ private:
     size_t cursor_ = 0;
 
     void loadDirList();
+
 };

@@ -33,6 +33,18 @@ ThumbResult generateJpegThumb(const std::vector<uint8_t> &fileBytes, int targetL
         std::swap(result.origWidth, result.origHeight); // EXIF 5-8 rotate 90deg
     }
 
+    // Pull GPS out while the bytes are already in memory. The grid's geotag marker needs the
+    // answer for every visible cell on every repaint, so it has to be stored rather than read
+    // on demand - and doing it here costs a second IFD walk on a buffer we already hold,
+    // against re-reading every original later just to answer the same question.
+    {
+        ExifDetails details = parseJpegExifDetails(fileBytes.data(), fileBytes.size());
+        result.gpsChecked = true;
+        result.hasGps = details.hasGps;
+        result.gpsLatitude = details.gpsLatitude;
+        result.gpsLongitude = details.gpsLongitude;
+    }
+
     RgbImage img;
     bool decoded = false;
 

@@ -16,13 +16,17 @@ ThumbGridModel::Row ThumbGridModel::rowFromStatement(pixet::Statement &sel) {
     row.height = sel.columnIsNull(7) ? 0 : (int)sel.columnInt64(7);
     row.takenAt = sel.columnIsNull(8) ? 0 : sel.columnInt64(8);
     row.durationMs = sel.columnIsNull(9) ? 0 : sel.columnInt64(9);
+    // Presence of a latitude is the flag; gps_checked only matters to the backfill sweep,
+    // not to painting - an unchecked file simply has no marker yet, same as one with no
+    // coordinates.
+    row.hasGps = !sel.columnIsNull(10);
     return row;
 }
 
 bool ThumbGridModel::loadRow(const QString &name, Row &out) const {
     if (dirId_ == 0) return false;
     auto sel = db_.prepare("SELECT id, name, fmt, state, thumb_id, size, width, height, taken_at, "
-                            "duration_ms FROM files WHERE dir_id=? AND name=?");
+                            "duration_ms, gps_lat FROM files WHERE dir_id=? AND name=?");
     sel.bind(1, dirId_);
     sel.bind(2, name.toStdString());
     if (!sel.step()) return false;
@@ -66,8 +70,10 @@ void ThumbGridModel::setDirectory(const QString &path) {
     dirSel.bind(1, pathUtf8);
     if (dirSel.step()) {
         dirId_ = dirSel.columnInt64(0);
+        // Column list must stay in step with loadRow()'s and with rowFromStatement(), which
+        // reads them positionally.
         auto sel = db_.prepare("SELECT id, name, fmt, state, thumb_id, size, width, height, taken_at, "
-                                "duration_ms FROM files WHERE dir_id=? ORDER BY name");
+                                "duration_ms, gps_lat FROM files WHERE dir_id=? ORDER BY name");
         sel.bind(1, dirId_);
         while (sel.step()) {
             Row row = rowFromStatement(sel);
@@ -142,7 +148,7 @@ void ThumbGridModel::refreshThumbStates() {
     // signal is both more efficient and more reliably triggers a full repaint.
     int minChanged = -1, maxChanged = -1;
 
-    auto sel = db_.prepare("SELECT id, state, thumb_id, width, height, taken_at, duration_ms "
+    auto sel = db_.prepare("SELECT id, state, thumb_id, width, height, taken_at, duration_ms, gps_lat "
                             "FROM files WHERE dir_id=?");
     sel.bind(1, dirId_);
     while (sel.step()) {
@@ -160,9 +166,14 @@ void ThumbGridModel::refreshThumbStates() {
         int height = sel.columnIsNull(4) ? 0 : (int)sel.columnInt64(4);
         qint64 takenAt = sel.columnIsNull(5) ? 0 : sel.columnInt64(5);
         qint64 durationMs = sel.columnIsNull(6) ? 0 : sel.columnInt64(6);
+        // Also only known after Pass B (or the backfill sweep) has looked at the file, so
+        // the geotag marker appears incrementally like the thumbnails do rather than
+        // waiting for the next full reload.
+        bool hasGps = !sel.columnIsNull(7);
 
         if (thumbId != rows_[row].thumbId || state != rows_[row].state || width != rows_[row].width ||
-            height != rows_[row].height || takenAt != rows_[row].takenAt || durationMs != rows_[row].durationMs) {
+            height != rows_[row].height || takenAt != rows_[row].takenAt || durationMs != rows_[row].durationMs ||
+            hasGps != rows_[row].hasGps) {
             if (rows_[row].fmt == pixet::Format::Raw && state != rows_[row].state) {
                 // Keep rawRenderedCount_/rawPreviewCount_ live across this incremental
                 // path too, not just a full setDirectory() reload - a RAW file
@@ -180,6 +191,7 @@ void ThumbGridModel::refreshThumbStates() {
             rows_[row].height = height;
             rows_[row].takenAt = takenAt;
             rows_[row].durationMs = durationMs;
+            rows_[row].hasGps = hasGps;
             rows_[row].requested = false; // allow re-request now that a real thumb may exist
             if (minChanged == -1 || row < minChanged) minChanged = row;
             if (row > maxChanged) maxChanged = row;
@@ -223,6 +235,8 @@ QVariant ThumbGridModel::data(const QModelIndex &index, int role) const {
             return row.height;
         case TakenAtRole:
             return (qlonglong)row.takenAt;
+        case HasGpsRole:
+            return row.hasGps;
         case DurationMsRole:
             return (qlonglong)row.durationMs;
         default:

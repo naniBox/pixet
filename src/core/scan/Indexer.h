@@ -23,6 +23,11 @@ struct IndexStats {
     // number the user can see is the difference between "working as designed" and
     // "why is half my library missing".
     int64_t dirsSkippedUnreadable = 0;
+    // Files whose EXIF GPS was filled in this run by the backfill pass (see
+    // Indexer::backfillGps) - i.e. files scanned before GPS was extracted at all. Counts
+    // only rows that gained coordinates, not every file examined, since that's what
+    // actually changes what the UI shows.
+    int64_t gpsBackfilled = 0;
     int64_t filesNew = 0;
     int64_t filesRemoved = 0;
     int64_t thumbsEmbedded = 0;   // ThumbTier::EmbeddedPreview
@@ -91,6 +96,19 @@ private:
     void indexOneDirectory(int64_t dirId, const std::string &dirPath,
                             std::vector<std::pair<int64_t, std::string>> &subdirsOut, IndexStats &stats,
                             const IndexCallbacks &callbacks);
+
+    // Fills in files.gps_lat/gps_lon/gps_checked for files in this directory that nothing has
+    // looked at yet - i.e. rows written before GPS was extracted during thumbnailing at all.
+    //
+    // Lives here rather than in one caller so *every* path that indexes a folder gets it: an
+    // on-demand navigation, the background reconciler's sweep, and pixet-index alike. Putting
+    // it only in the background sweep would mean a folder's geotag markers didn't appear
+    // until that sweep reached it, which on a large library is many minutes after the user
+    // opened the folder.
+    //
+    // Cheap enough to sit on this path: EXIF is in the file header, so this reads a bounded
+    // prefix per file rather than the whole image, and each file is only ever examined once.
+    void backfillGps(int64_t dirId, const std::string &dirPath, IndexStats &stats);
 };
 
 } // namespace pixet

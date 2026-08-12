@@ -43,6 +43,8 @@ Statement &Statement::operator=(Statement &&other) noexcept {
 
 void Statement::bind(int idx, int64_t v) { sqlite3_bind_int64(stmt_, idx, v); }
 
+void Statement::bindDouble(int idx, double v) { sqlite3_bind_double(stmt_, idx, v); }
+
 void Statement::bind(int idx, const std::string &v) {
     sqlite3_bind_text(stmt_, idx, v.data(), (int)v.size(), SQLITE_TRANSIENT);
 }
@@ -70,6 +72,8 @@ void Statement::reset() {
 }
 
 int64_t Statement::columnInt64(int col) const { return sqlite3_column_int64(stmt_, col); }
+
+double Statement::columnDouble(int col) const { return sqlite3_column_double(stmt_, col); }
 
 std::string Statement::columnText(int col) const {
     const unsigned char *text = sqlite3_column_text(stmt_, col);
@@ -169,6 +173,35 @@ void Database::runMigrations() {
         exec("UPDATE files SET state=" + std::to_string((int64_t)FileState::New) +
              " WHERE state=" + std::to_string((int64_t)FileState::Unsupported));
         exec("PRAGMA user_version = 2");
+    }
+
+    if (version < 3) {
+        // Adding *columns* needs an explicit ALTER, unlike the two data fixups above.
+        // applySchema() runs CREATE TABLE IF NOT EXISTS, which is a no-op on a database that
+        // already has the table - so a column added to the schema SQL reaches fresh
+        // databases only, and every existing one would silently never gain it. (Database.h's
+        // comment claimed the schema SQL handled new columns; true for a fresh file, wrong
+        // for an existing one - corrected there.)
+        //
+        // Guarded on the column actually being absent rather than on the version alone: a
+        // *fresh* database gets these from the CREATE and still arrives here at
+        // user_version 0, where an unguarded ALTER fails with "duplicate column name".
+        bool haveGps = false;
+        {
+            auto info = prepare("PRAGMA table_info(files)");
+            while (info.step()) {
+                if (info.columnText(1) == "gps_lat") {
+                    haveGps = true;
+                    break;
+                }
+            }
+        }
+        if (!haveGps) {
+            exec("ALTER TABLE files ADD COLUMN gps_lat REAL");
+            exec("ALTER TABLE files ADD COLUMN gps_lon REAL");
+            exec("ALTER TABLE files ADD COLUMN gps_checked INTEGER NOT NULL DEFAULT 0");
+        }
+        exec("PRAGMA user_version = 3");
     }
 }
 

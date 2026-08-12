@@ -9,6 +9,7 @@
 #include "util/ProcessId.h"
 
 namespace {
+
 // Deliberately gentle - this is background hygiene, not a race to finish. A directory
 // every second and a half is plenty to eventually catch drift across even a very large
 // library without ever being felt during interactive browsing.
@@ -90,7 +91,14 @@ void BackgroundReconciler::sweepNext() {
 
     bool changed = stats.filesRemoved > 0 || stats.thumbsEmbedded > 0 || stats.thumbsDecoded > 0 ||
                    stats.thumbsUnsupported > 0 || stats.thumbsFailed > 0;
+    // GPS backfill happens inside Indexer itself (see Indexer::backfillGps), so it runs for
+    // every path that indexes a folder - this sweep, an on-demand navigation, and
+    // pixet-index alike - rather than only for whatever this background pass happens to
+    // reach. Without that, a folder's geotag markers wouldn't appear until the sweep got to
+    // it, which on a large library is many minutes after opening it.
+    if (stats.gpsBackfilled > 0) changed = true;
     if (changed) emit directoryChanged(QString::fromStdString(dirPath));
 
     timer_->start(kPerDirectoryDelayMs);
 }
+

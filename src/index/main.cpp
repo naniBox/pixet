@@ -82,7 +82,8 @@ int main(int argc, char *argv[]) {
     std::printf("dirs visited:        %lld (%lld fresh-skipped, %lld claimed by another process, %lld unreadable)\n",
                 (long long)stats.dirsVisited, (long long)stats.dirsSkippedFresh, (long long)stats.dirsSkippedClaimed,
                 (long long)stats.dirsSkippedUnreadable);
-    std::printf("files: %lld new, %lld removed\n", (long long)stats.filesNew, (long long)stats.filesRemoved);
+    std::printf("files: %lld new, %lld removed, %lld gained GPS coordinates\n", (long long)stats.filesNew,
+                (long long)stats.filesRemoved, (long long)stats.gpsBackfilled);
     std::printf("thumbnails: %lld embedded-preview, %lld decoded, %lld unsupported-format, %lld failed\n",
                 (long long)stats.thumbsEmbedded, (long long)stats.thumbsDecoded, (long long)stats.thumbsUnsupported,
                 (long long)stats.thumbsFailed);

@@ -30,6 +30,9 @@ public:
         HeightRole,    // px, int (0/invalid if unknown)
         TakenAtRole,   // unix seconds, qint64 (0 if unknown)
         DurationMsRole,// video only, qint64 (0 if unknown/not video)
+        // bool - the file has EXIF GPS coordinates. Stored on the row rather than read
+        // per paint: ThumbGridView asks for this for every visible cell on every repaint.
+        HasGpsRole,
     };
 
     explicit ThumbGridModel(pixet::Database &db, QObject *parent = nullptr);
@@ -126,6 +129,7 @@ private:
         int height = 0;
         qint64 takenAt = 0;
         qint64 durationMs = 0;
+        bool hasGps = false;
         QPixmap thumb;
         mutable bool requested = false;
     };

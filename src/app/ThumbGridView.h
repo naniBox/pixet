@@ -182,6 +182,10 @@ protected:
     void dropEvent(QDropEvent *event) override;
 
 private:
+    // Small map-marker silhouette drawn before the filename for a geotagged file, sized from
+    // `box` (font-height derived) so it scales with the UI font. See the implementation.
+    void drawGeotagPin(class QPainter &painter, const QRect &box) const;
+
     static constexpr int kCellPadding = 8;    // margin around the image area
     static constexpr int kTextTopGap = 4;     // gap between image area and filename
     static constexpr int kTextRowHeight = 18; // reserved height for the filename line
