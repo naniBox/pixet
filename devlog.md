@@ -5,6 +5,42 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-12 — mac — 1.0.0, and the About box now names the commit it was built from
+
+Version bumped to **1.0.0**. It still comes from `project(VERSION)` alone, so the bump
+reaches `version.cpp`, the `.app` bundle's `CFBundleShortVersionString`/`CFBundleVersion`
+and the DMG filename from one place; `vcpkg.json`'s manifest version follows it by hand.
+
+About also reports the commit the binary was built from, flagged `(modified)` when the
+working tree had uncommitted changes at build time. The flag carries as much weight as the
+hash - a dirty build *is not* that commit, and showing the hash alone would quietly claim it
+was.
+
+**The only interesting decision here is when the hash gets captured.** The obvious
+implementation is an `execute_process` at configure time, and it's wrong: configure doesn't
+re-run when you commit, so the value is correct exactly once and then silently goes stale.
+An About box confidently naming the wrong commit is worse than one naming none - it's the
+difference between "no provenance" and "false provenance", and bug reports are exactly where
+that bites. So `cmake/GitVersion.cmake` runs from a custom target at *build* time instead.
+
+The cost that approach usually carries is rebuilding the world on every build, since the
+generated header is touched each time. Avoided by only rewriting the file when its contents
+actually change. Both halves verified rather than assumed: a no-op rebuild runs the capture
+step and compiles nothing at all; and committing then rebuilding **without reconfiguring**
+moved the header from `9d209f8`/dirty=1 to `c1c5c0a`/dirty=0, recompiling only `version.cpp`
+and relinking the three binaries.
+
+`git status --porcelain --untracked-files=no`, deliberately. An untracked scratch file in
+the tree doesn't change what was compiled, and counting it would leave every build
+permanently flagged as modified - which just trains you to ignore the flag. A new source
+file that genuinely *is* compiled necessarily also modifies a tracked `CMakeLists.txt`, so
+the case that matters is still caught. Falls back to `"unknown"` with no dirty flag when the
+tree isn't a git checkout or git isn't installed, so a source export still builds.
+
+Verified: 92/92; both presets; bundle reports 1.0.0; `pixet-index` reports 1.0.0.
+
+---
+
 ## 2026-08-12 — mac — Geotag markers in the grid: GPS stored at scan time, plus the first schema migration that adds a column
 
 A dim map-pin before the filename for any photo carrying EXIF GPS, so geotagged shots are
