@@ -111,8 +111,11 @@ void FullscreenViewer::showRow(int row, bool resetZoom) {
         updateCursor();
     }
 
-    requestFit(row);
+    // Order matters here and reads backwards: FullscreenDecoder is a LIFO stack, so the
+    // request pushed *last* is serviced *first*. Neighbours are therefore queued before the
+    // row actually on screen, not after it.
     prefetchNeighbors();
+    requestFit(row);
     // Restarting an already-running singleshot timer replaces whatever was left of its
     // wait with a fresh one, so this naturally debounces - only the row the user is
     // still on kZoomPrefetchDelayMs later actually triggers prefetchZoom().
@@ -170,8 +173,20 @@ void FullscreenViewer::requestFit(int row) {
 
 void FullscreenViewer::prefetchNeighbors() {
     if (!model_) return;
-    // Current row first (most likely to actually be seen), then outward.
-    for (int d : {0, -1, 1, -2, 2}) requestFit(currentRow_ + d);
+    // Neighbours only - the current row is requested by showRow() *after* this, so that it
+    // sits on top of the LIFO stack and decodes first.
+    //
+    // Listed farthest-first for the same reason: FullscreenDecoder::processOne() takes from
+    // the back, so this list is in reverse order of when things actually decode.
+    //
+    // This used to be `for (int d : {0, -1, 1, -2, 2})` with a comment reading "Current row
+    // first (most likely to actually be seen), then outward" - the right intent, and the
+    // precise opposite of what happened once LIFO was applied to it: the row two *ahead*
+    // decoded first and the visible image decoded fifth. Measured on this machine, a
+    // 4032x3024 JPEG fit-decode is ~65ms in a release build and ~520ms in a debug build, so
+    // being five decodes late meant roughly a third of a second of black screen at best and
+    // over two seconds at worst, every time the viewer opened.
+    for (int d : {2, -2, 1, -1}) requestFit(currentRow_ + d);
     trimFitCache();
 }
 
