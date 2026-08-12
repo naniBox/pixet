@@ -59,4 +59,17 @@ void setCustomVideoPlayerPath(const QString &path) {
     settingsStore().setValue(QStringLiteral("customVideoPlayerPath"), path);
 }
 
+QStringList pathHistory() { return settingsStore().value(QStringLiteral("pathHistory")).toStringList(); }
+
+void addToPathHistory(const QString &dirPath) {
+    if (dirPath.isEmpty()) return;
+    QStringList history = pathHistory();
+    history.removeAll(dirPath); // dedupe - revisiting moves it to the front instead of duplicating
+    history.prepend(dirPath);
+    while (history.size() > kMaxPathHistory) history.removeLast();
+    settingsStore().setValue(QStringLiteral("pathHistory"), history);
+}
+
+void clearPathHistory() { settingsStore().remove(QStringLiteral("pathHistory")); }
+
 } // namespace prefs

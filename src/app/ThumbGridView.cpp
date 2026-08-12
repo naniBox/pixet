@@ -1,13 +1,20 @@
 #include "ThumbGridView.h"
 
 #include <QAbstractItemModel>
+#include <QApplication>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QFontMetrics>
 #include <QKeyEvent>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QResizeEvent>
 #include <QScrollBar>
+#include <QUrl>
 #include <QWheelEvent>
 
 #include "KeyBindings.h"
@@ -22,6 +29,13 @@ ThumbGridView::ThumbGridView(QWidget *parent) : QAbstractScrollArea(parent) {
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setFrameShape(QFrame::NoFrame);
     setFocusPolicy(Qt::StrongFocus);
+    // Both calls are required - drag/drop events on a QAbstractScrollArea are
+    // delivered to whichever widget is actually under the cursor, which is the
+    // viewport (the same mechanism that already makes rowAt()'s viewport-relative
+    // mouse coordinates correct). setAcceptDrops(true) on `this` alone is a silent,
+    // warning-free no-op.
+    setAcceptDrops(true);
+    viewport()->setAcceptDrops(true);
 
     // QAbstractScrollArea doesn't repaint automatically when the scrollbar value
     // changes (unlike QAbstractItemView, which this no longer is) - painting reads
@@ -32,18 +46,32 @@ ThumbGridView::ThumbGridView(QWidget *parent) : QAbstractScrollArea(parent) {
 void ThumbGridView::setModel(QAbstractItemModel *model) {
     if (model_) model_->disconnect(this);
     model_ = model;
+    selected_.clear();
+    selectedCount_ = 0;
     currentRow_ = -1;
+    anchorRow_ = -1;
+    pendingCollapseRow_ = -1;
     if (model_) {
-        // ThumbGridModel only ever does a full reset (setDirectory) or in-place
-        // dataChanged (refreshThumbStates/setThumbnail) - never row insert/remove
-        // mid-lifetime, so those are the only two signals worth connecting.
         connect(model_, &QAbstractItemModel::modelReset, this, [this]() {
+            selected_.clear();
+            selectedCount_ = 0;
             currentRow_ = -1;
+            anchorRow_ = -1;
+            pressRow_ = -1;
+            pendingCollapseRow_ = -1;
             relayout();
         });
         connect(model_, &QAbstractItemModel::dataChanged, this, [this](const QModelIndex &, const QModelIndex &) {
             viewport()->update();
         });
+        // ThumbGridModel can now insert/remove rows mid-lifetime (a file op landing
+        // in, or removing a file from, the currently-displayed folder) instead of
+        // only ever a full reset - shift the selection to track the surviving rows
+        // rather than let it silently point at the wrong file.
+        connect(model_, &QAbstractItemModel::rowsInserted, this,
+                [this](const QModelIndex &, int first, int last) { onRowsInserted(first, last); });
+        connect(model_, &QAbstractItemModel::rowsRemoved, this,
+                [this](const QModelIndex &, int first, int last) { onRowsRemoved(first, last); });
     }
     relayout();
 }
@@ -68,6 +96,14 @@ void ThumbGridView::relayout() {
     }
 
     int rc = rowCount();
+    // Preserves existing bits when growing/shrinking (QBitArray::resize() zero-fills
+    // any newly-added bits) - relayout() also runs on plain viewport resize/icon-size
+    // change, where the selection must survive untouched. A row-count change here
+    // only ever means a model reset (which already cleared selected_ to empty above)
+    // or an incremental insert/remove (which shifts selected_ itself before calling
+    // relayout() - see the rowsInserted/rowsRemoved handlers in setModel()).
+    if (selected_.size() != rc) selected_.resize(rc);
+
     int totalRows = columns_ > 0 ? (rc + columns_ - 1) / columns_ : 0;
     int totalHeight = totalRows * cellHeight_;
     int vh = viewport()->height();
@@ -97,14 +133,212 @@ int ThumbGridView::rowAt(const QPoint &pos) const {
     return row;
 }
 
+bool ThumbGridView::isRowSelected(int row) const {
+    return row >= 0 && row < selected_.size() && selected_.testBit(row);
+}
+
+QList<int> ThumbGridView::selectedRows() const {
+    QList<int> rows;
+    rows.reserve(selectedCount_);
+    for (int r = 0; r < selected_.size(); ++r) {
+        if (selected_.testBit(r)) rows.push_back(r);
+    }
+    return rows;
+}
+
+void ThumbGridView::setSelectedBit(int row, bool on) {
+    if (row < 0 || row >= selected_.size()) return;
+    if (selected_.testBit(row) == on) return;
+    selected_.setBit(row, on);
+    selectedCount_ += on ? 1 : -1;
+}
+
+void ThumbGridView::replaceSelectionWith(int row) {
+    selected_.fill(false);
+    selectedCount_ = 0;
+    setSelectedBit(row, true);
+    currentRow_ = row;
+    anchorRow_ = row;
+}
+
+void ThumbGridView::clearSelectionInternal() {
+    selected_.fill(false);
+    selectedCount_ = 0;
+    currentRow_ = -1;
+    anchorRow_ = -1;
+}
+
+void ThumbGridView::toggleRow(int row) {
+    if (isRowSelected(row)) {
+        setSelectedBit(row, false);
+        anchorRow_ = row;
+        if (currentRow_ == row) {
+            // The lead was just deselected - fall back to the highest remaining
+            // selected row (arbitrary but deterministic) rather than leaving the
+            // preview pointed at a file that's no longer selected.
+            currentRow_ = -1;
+            for (int r = selected_.size() - 1; r >= 0; --r) {
+                if (selected_.testBit(r)) {
+                    currentRow_ = r;
+                    break;
+                }
+            }
+        }
+    } else {
+        setSelectedBit(row, true);
+        currentRow_ = row;
+        anchorRow_ = row;
+    }
+}
+
+void ThumbGridView::selectRange(int row, bool unionMode) {
+    if (anchorRow_ < 0) {
+        replaceSelectionWith(row);
+        return;
+    }
+    if (!unionMode) {
+        selected_.fill(false);
+        selectedCount_ = 0;
+    }
+    int lo = qMin(anchorRow_, row);
+    int hi = qMax(anchorRow_, row);
+    for (int r = lo; r <= hi; ++r) setSelectedBit(r, true);
+    currentRow_ = row; // anchor stays put - only the lead moves
+}
+
+void ThumbGridView::applySelectionResult(int oldCurrentRow) {
+    viewport()->update();
+    emit selectionChanged();
+    if (currentRow_ != oldCurrentRow) emit currentRowChanged(currentRow_);
+}
+
 void ThumbGridView::setCurrentRow(int row) {
     int rc = rowCount();
     if (row < -1) row = -1;
     if (row >= rc) row = rc - 1;
-    if (row == currentRow_) return;
-    currentRow_ = row;
-    viewport()->update();
-    emit currentRowChanged(currentRow_);
+
+    if (row < 0) {
+        if (currentRow_ == -1 && selectedCount_ == 0) return;
+        int oldCurrent = currentRow_;
+        clearSelectionInternal();
+        applySelectionResult(oldCurrent);
+        return;
+    }
+
+    if (currentRow_ == row && selectedCount_ == 1 && isRowSelected(row)) return; // already exactly this
+    int oldCurrent = currentRow_;
+    replaceSelectionWith(row);
+    applySelectionResult(oldCurrent);
+}
+
+void ThumbGridView::selectAll() {
+    int rc = rowCount();
+    if (rc == 0) return;
+    if (selectedCount_ == rc) return; // already all selected
+    int oldCurrent = currentRow_;
+    selected_.fill(true);
+    selectedCount_ = rc;
+    // Leave the lead/preview alone when a selection already exists - Select All is a
+    // precursor to Cut/Copy, not a navigation gesture. Jumping the preview to an
+    // arbitrary (possibly huge RAW) file and scrolling there would repeat the exact
+    // scroll-position-loss class of bug this project has already fixed once (see
+    // devlog). Only pick a lead when nothing was selected before.
+    if (currentRow_ < 0) currentRow_ = 0;
+    anchorRow_ = currentRow_;
+    applySelectionResult(oldCurrent);
+}
+
+void ThumbGridView::clearSelection() {
+    if (selectedCount_ == 0 && currentRow_ == -1) return;
+    int oldCurrent = currentRow_;
+    clearSelectionInternal();
+    applySelectionResult(oldCurrent);
+}
+
+void ThumbGridView::setSelection(const QList<int> &rows, int currentRow) {
+    int oldCurrent = currentRow_;
+    selected_.fill(false);
+    selectedCount_ = 0;
+    for (int r : rows) setSelectedBit(r, true);
+
+    currentRow_ = (currentRow >= 0 && currentRow < selected_.size() && selected_.testBit(currentRow)) ? currentRow : -1;
+    if (currentRow_ < 0 && selectedCount_ > 0) {
+        for (int r = 0; r < selected_.size(); ++r) {
+            if (selected_.testBit(r)) {
+                currentRow_ = r;
+                break;
+            }
+        }
+    }
+    anchorRow_ = currentRow_;
+    applySelectionResult(oldCurrent);
+}
+
+void ThumbGridView::onRowsInserted(int first, int last) {
+    int n = last - first + 1;
+    int oldSize = selected_.size();
+    // Grow, then shift existing bits at/after `first` up by n (inserted rows start
+    // unselected) - processed from the top down so a bit's destination is always
+    // written before its own slot is read as someone else's source.
+    selected_.resize(oldSize + n);
+    for (int r = oldSize - 1; r >= first; --r) selected_.setBit(r + n, selected_.testBit(r));
+    for (int r = first; r < first + n; ++r) selected_.setBit(r, false);
+
+    // Index-only shifts - the file each of these refers to hasn't changed identity,
+    // just its row number, so no signal is emitted here (contrast onRowsRemoved()).
+    if (currentRow_ >= first) currentRow_ += n;
+    if (anchorRow_ >= first) anchorRow_ += n;
+    if (pressRow_ >= first) pressRow_ += n;
+    if (pendingCollapseRow_ >= first) pendingCollapseRow_ += n;
+
+    relayout();
+}
+
+void ThumbGridView::onRowsRemoved(int first, int last) {
+    int n = last - first + 1;
+    int oldSize = selected_.size();
+    int oldCurrent = currentRow_;
+    int oldCount = selectedCount_;
+
+    int removedSelected = 0;
+    for (int r = first; r <= last && r < oldSize; ++r) {
+        if (selected_.testBit(r)) removedSelected++;
+    }
+    selectedCount_ -= removedSelected;
+
+    for (int r = last + 1; r < oldSize; ++r) selected_.setBit(r - n, selected_.testBit(r));
+    selected_.resize(oldSize - n);
+
+    if (currentRow_ >= first && currentRow_ <= last) {
+        // The lead was itself removed - fall back to the highest remaining selected
+        // row, same convention as toggleRow()'s "lead deselected" case.
+        currentRow_ = -1;
+        for (int r = selected_.size() - 1; r >= 0; --r) {
+            if (selected_.testBit(r)) {
+                currentRow_ = r;
+                break;
+            }
+        }
+    } else if (currentRow_ > last) {
+        currentRow_ -= n;
+    }
+
+    if (anchorRow_ >= first && anchorRow_ <= last) anchorRow_ = currentRow_;
+    else if (anchorRow_ > last) anchorRow_ -= n;
+
+    // Stale mid-gesture state after a row shift out from under a press - safest to
+    // just drop it rather than try to remap it.
+    pressRow_ = -1;
+    pendingCollapseRow_ = -1;
+
+    relayout();
+
+    // Unlike onRowsInserted(), a removal can genuinely change what's selected or
+    // which file is the lead (a file moved out from under the current selection) -
+    // notify listeners (MainWindow: status bar/preview) so they don't keep
+    // describing a file that's no longer there.
+    if (selectedCount_ != oldCount) emit selectionChanged();
+    if (currentRow_ != oldCurrent) emit currentRowChanged(currentRow_);
 }
 
 void ThumbGridView::scrollToRow(int row, bool center) {
@@ -142,18 +376,32 @@ void ThumbGridView::scrollToRow(int row, bool center) {
     verticalScrollBar()->setValue(qBound(0, scrollValue, verticalScrollBar()->maximum()));
 }
 
-void ThumbGridView::moveCurrentRow(int delta) {
+void ThumbGridView::moveCurrentRow(int delta, bool extendSelection) {
     int rc = rowCount();
     if (rc == 0) return;
     int newRow = currentRow_ < 0 ? 0 : qBound(0, currentRow_ + delta, rc - 1);
-    setCurrentRow(newRow);
+
+    int oldCurrent = currentRow_;
+    // Ctrl+Shift+<key> isn't given a distinct meaning here (Explorer's "move focus
+    // without selecting" is Ctrl+Arrow, already spent on folder navigation in
+    // keyPressEvent) - it just extends the same as plain Shift+<key>, a reasonable
+    // fallback rather than a dead combination.
+    if (extendSelection && anchorRow_ >= 0) {
+        selectRange(newRow, /*unionMode=*/false);
+    } else {
+        replaceSelectionWith(newRow);
+    }
+    applySelectionResult(oldCurrent);
     scrollToRow(newRow);
 }
 
 void ThumbGridView::paintEvent(QPaintEvent *event) {
     QPainter painter(viewport());
     painter.fillRect(event->rect(), palette().color(QPalette::Base));
-    if (!model_ || columns_ <= 0 || cellHeight_ <= 0) return;
+    if (!model_ || columns_ <= 0 || cellHeight_ <= 0) {
+        if (dragActive_) drawDropFeedback(painter);
+        return;
+    }
 
     int rc = rowCount();
     int scrollValue = verticalScrollBar()->value();
@@ -168,15 +416,47 @@ void ThumbGridView::paintEvent(QPaintEvent *event) {
             paintCell(painter, row, rect);
         }
     }
+
+    if (dragActive_) drawDropFeedback(painter);
+}
+
+void ThumbGridView::drawDropFeedback(QPainter &painter) const {
+    // Move (the default) uses the same accent color as selection; Copy (Ctrl held)
+    // gets a visually distinct amber - the OS's own drag cursor already shows the
+    // standard copy/move badge too (a side effect of actually setting
+    // QDropEvent::setDropAction() instead of blindly accepting the OS's proposal -
+    // see dragEnterEvent/dragMoveEvent), so this is corroborating, not the only cue.
+    QColor color = dragCopyMode_ ? QColor(230, 160, 30) : palette().color(QPalette::Highlight);
+    QPen pen(color);
+    pen.setWidth(3);
+    painter.setPen(pen);
+    painter.drawRect(viewport()->rect().adjusted(1, 1, -2, -2));
+
+    QString label = dragCopyMode_ ? QStringLiteral("Copy") : QStringLiteral("Move");
+    QRect labelRect = viewport()->rect().adjusted(8, 8, -8, -8);
+    painter.setPen(color);
+    painter.drawText(labelRect, Qt::AlignTop | Qt::AlignLeft, label);
 }
 
 void ThumbGridView::paintCell(QPainter &painter, int row, const QRect &cellRect) const {
     QModelIndex index = model_->index(row, 0);
-    bool selected = (row == currentRow_);
+    bool selected = isRowSelected(row);
+    bool isLead = (row == currentRow_);
 
     // Soft border around every cell, regardless of selection.
     painter.setPen(palette().color(QPalette::Mid));
     painter.drawRect(cellRect.adjusted(0, 0, -1, -1));
+
+    // Faint fill under the lead row specifically (drawn before the thumbnail so it
+    // reads as a background tint, not an overlay) - in a multi-selection every
+    // selected cell gets the highlight border below, but only one of them is what the
+    // preview pane is actually showing, and this is what keeps that one visually
+    // distinguishable from the rest.
+    if (isLead && selected) {
+        QColor tint = palette().color(QPalette::Highlight);
+        tint.setAlpha(48);
+        painter.fillRect(cellRect.adjusted(1, 1, -1, -1), tint);
+    }
 
     // Thumbnail centered within a fixed-size image area at the top of the cell -
     // pixmaps are already scaled to fit within iconSize_ (aspect preserved, see
@@ -256,37 +536,42 @@ void ThumbGridView::keyPressEvent(QKeyEvent *event) {
         return;
     }
 
+    // Shift extends the selection from anchorRow_ instead of replacing it - covers
+    // Shift+Arrow/Home/End/PageUp/PageDown range-select in one change. See
+    // moveCurrentRow() for why Ctrl+Shift+<key> isn't given its own distinct meaning.
+    const bool extend = event->modifiers().testFlag(Qt::ShiftModifier);
+
     switch (event->key()) {
         case Qt::Key_Left:
-            moveCurrentRow(-1);
+            moveCurrentRow(-1, extend);
             event->accept();
             return;
         case Qt::Key_Right:
-            moveCurrentRow(1);
+            moveCurrentRow(1, extend);
             event->accept();
             return;
         case Qt::Key_Up:
-            moveCurrentRow(-columns_);
+            moveCurrentRow(-columns_, extend);
             event->accept();
             return;
         case Qt::Key_Down:
-            moveCurrentRow(columns_);
+            moveCurrentRow(columns_, extend);
             event->accept();
             return;
         case Qt::Key_Home:
-            moveCurrentRow(-rowCount());
+            moveCurrentRow(-rowCount(), extend);
             event->accept();
             return;
         case Qt::Key_End:
-            moveCurrentRow(rowCount());
+            moveCurrentRow(rowCount(), extend);
             event->accept();
             return;
         case Qt::Key_PageUp:
-            moveCurrentRow(-qMax(1, viewport()->height() / qMax(1, cellHeight_)) * columns_);
+            moveCurrentRow(-qMax(1, viewport()->height() / qMax(1, cellHeight_)) * columns_, extend);
             event->accept();
             return;
         case Qt::Key_PageDown:
-            moveCurrentRow(qMax(1, viewport()->height() / qMax(1, cellHeight_)) * columns_);
+            moveCurrentRow(qMax(1, viewport()->height() / qMax(1, cellHeight_)) * columns_, extend);
             event->accept();
             return;
         default:
@@ -295,16 +580,158 @@ void ThumbGridView::keyPressEvent(QKeyEvent *event) {
 }
 
 void ThumbGridView::mousePressEvent(QMouseEvent *event) {
+    if (event->button() == Qt::RightButton) {
+        // Selects the row under the cursor first, matching Explorer - but only if
+        // it isn't already part of the current selection, so right-clicking inside
+        // an existing multi-selection to Cut/Copy the whole thing doesn't collapse
+        // it down to just the one row that happened to be under the cursor. Right-
+        // click on empty space leaves the selection untouched (MainWindow's context
+        // menu still shows Paste, just with Cut/Copy/View Fullscreen disabled).
+        int row = rowAt(event->pos());
+        if (row >= 0 && !isRowSelected(row)) {
+            int oldCurrent = currentRow_;
+            replaceSelectionWith(row);
+            applySelectionResult(oldCurrent);
+        }
+        return;
+    }
+
     if (event->button() != Qt::LeftButton) return;
     int row = rowAt(event->pos());
-    if (row >= 0) setCurrentRow(row);
+    pressPos_ = event->pos();
+    pressRow_ = row;
+    pendingCollapseRow_ = -1;
+
+    if (row < 0) {
+        // Only a plain click on empty space deselects - a modified click there (e.g.
+        // an accidental Ctrl+click past the last row) has no target row to act on,
+        // so it's simplest and safest to leave the selection alone.
+        if (event->modifiers() == Qt::NoModifier) clearSelection();
+        return;
+    }
+
+    const Qt::KeyboardModifiers mods = event->modifiers();
+    const int oldCurrent = currentRow_;
+
+    if (mods & Qt::ShiftModifier) {
+        selectRange(row, mods & Qt::ControlModifier);
+        applySelectionResult(oldCurrent);
+    } else if (mods & Qt::ControlModifier) {
+        toggleRow(row);
+        applySelectionResult(oldCurrent);
+    } else if (isRowSelected(row)) {
+        // Defer collapsing to just this row until mouseReleaseEvent (or until a drag
+        // starts) rather than collapsing immediately - otherwise pressing on an
+        // already-multi-selected thumbnail to start a drag-out would collapse the
+        // selection to one item before the drag even began, the same way Explorer
+        // avoids doing.
+        pendingCollapseRow_ = row;
+    } else {
+        replaceSelectionWith(row);
+        applySelectionResult(oldCurrent);
+    }
+}
+
+void ThumbGridView::mouseMoveEvent(QMouseEvent *event) {
+    if (!(event->buttons() & Qt::LeftButton) || pressRow_ < 0) {
+        QAbstractScrollArea::mouseMoveEvent(event);
+        return;
+    }
+    if ((event->pos() - pressPos_).manhattanLength() < QApplication::startDragDistance()) return;
+
+    // A drag consumes the deferred collapse - the multi-selection must survive into
+    // the drag (see mousePressEvent's comment: pressing on an already-selected row
+    // doesn't collapse the selection until release, specifically so a drag-out of a
+    // multi-selection is still possible).
+    pendingCollapseRow_ = -1;
+    emit dragOutRequested();
+}
+
+void ThumbGridView::mouseReleaseEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && pendingCollapseRow_ >= 0) {
+        int row = pendingCollapseRow_;
+        pendingCollapseRow_ = -1;
+        int oldCurrent = currentRow_;
+        replaceSelectionWith(row);
+        applySelectionResult(oldCurrent);
+    }
+    QAbstractScrollArea::mouseReleaseEvent(event);
 }
 
 void ThumbGridView::mouseDoubleClickEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton) return;
     int row = rowAt(event->pos());
     if (row >= 0) {
-        setCurrentRow(row);
+        pendingCollapseRow_ = -1; // the second press already set this - resolve now instead
+        int oldCurrent = currentRow_;
+        replaceSelectionWith(row);
+        applySelectionResult(oldCurrent);
         emit activated(row);
     }
+}
+
+namespace {
+bool hasLocalFileUrl(const QMimeData *mime) {
+    if (!mime->hasUrls()) return false;
+    for (const QUrl &url : mime->urls()) {
+        if (url.isLocalFile()) return true;
+    }
+    return false;
+}
+
+// Windows' own OS-level default for a plain cross-application drag is Copy - but
+// dragging photos into a library should move them in by default (leaving a
+// duplicate behind is the surprising outcome here, not the safe one), so the
+// OS-proposed action is deliberately overridden rather than accepted as-is. Ctrl
+// switches to Copy, matching Explorer's own override key for the same drag.
+bool wantsCopy(const QDropEvent *event) { return event->keyboardModifiers() & Qt::ControlModifier; }
+} // namespace
+
+void ThumbGridView::dragEnterEvent(QDragEnterEvent *event) {
+    // A drop of pixet's own drag-out (see MainWindow's drag-out handling) landing
+    // back on this same view must be a no-op, not a self-import.
+    if (event->source() == this) return;
+    if (!hasLocalFileUrl(event->mimeData())) return;
+    dragActive_ = true;
+    dragCopyMode_ = wantsCopy(event);
+    event->setDropAction(dragCopyMode_ ? Qt::CopyAction : Qt::MoveAction);
+    event->accept();
+    viewport()->update();
+}
+
+void ThumbGridView::dragMoveEvent(QDragMoveEvent *event) {
+    if (event->source() == this || !hasLocalFileUrl(event->mimeData())) return;
+    // Modifiers can change mid-drag (Ctrl pressed/released while still hovering) -
+    // re-evaluate every move, not just on entry, and repaint if the mode actually
+    // flipped so drawDropFeedback()'s border color stays live.
+    bool copyMode = wantsCopy(event);
+    if (copyMode != dragCopyMode_) {
+        dragCopyMode_ = copyMode;
+        viewport()->update();
+    }
+    event->setDropAction(dragCopyMode_ ? Qt::CopyAction : Qt::MoveAction);
+    event->accept();
+}
+
+void ThumbGridView::dragLeaveEvent(QDragLeaveEvent *) {
+    dragActive_ = false;
+    viewport()->update();
+}
+
+void ThumbGridView::dropEvent(QDropEvent *event) {
+    dragActive_ = false;
+    viewport()->update();
+
+    if (event->source() == this || !hasLocalFileUrl(event->mimeData())) return;
+
+    QStringList paths;
+    for (const QUrl &url : event->mimeData()->urls()) {
+        if (url.isLocalFile()) paths << url.toLocalFile();
+    }
+    if (paths.isEmpty()) return;
+
+    bool copyMode = wantsCopy(event);
+    event->setDropAction(copyMode ? Qt::CopyAction : Qt::MoveAction);
+    event->accept();
+    emit filesDropped(paths, /*move=*/!copyMode);
 }

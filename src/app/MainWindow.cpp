@@ -1,15 +1,19 @@
 #include "MainWindow.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QDateTime>
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDrag>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemModel>
+#include <QFileSystemWatcher>
 #include <QMessageBox>
 #include <QGuiApplication>
 #include <QHeaderView>
@@ -19,6 +23,8 @@
 #include <QLocale>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMimeData>
+#include <QPixmap>
 #include <QProcess>
 #include <QScreen>
 #include <QScrollBar>
@@ -31,6 +37,9 @@
 #include <QVBoxLayout>
 
 #include "BackgroundReconciler.h"
+#include "ClipboardOps.h"
+#include "CollisionDialog.h"
+#include "FileOpsWorker.h"
 #include "FolderIndexer.h"
 #include "FolderTreeView.h"
 #include "FullscreenViewer.h"
@@ -49,6 +58,7 @@
 #include "db/Database.h"
 #include "db/Schema.h"
 #include "util/AppPaths.h"
+#include "util/FileMove.h"
 #include "util/PathUtil.h"
 #include "version.h"
 
@@ -188,12 +198,21 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     grid_->setModel(gridModel_);
     grid_->setIconSize(QSize(prefs::thumbnailIconSize(), prefs::thumbnailIconSize()));
     connect(grid_, &ThumbGridView::currentRowChanged, this, &MainWindow::onGridSelectionChanged);
+    // currentRowChanged (above) covers the lead-row-moved case (preview/path bar/
+    // status-bar detail); selectionChanged covers count/membership changes that don't
+    // necessarily move the lead (e.g. a Ctrl+click toggling some other row) - both
+    // feed updateSelectionStatus(), which reads whichever of currentRow()/
+    // selectedRows() it needs regardless of which signal triggered it.
+    connect(grid_, &ThumbGridView::selectionChanged, this, &MainWindow::updateSelectionStatus);
+    connect(grid_, &ThumbGridView::selectionChanged, this, &MainWindow::updateEditActionsEnabled);
     grid_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(grid_, &QWidget::customContextMenuRequested, this, &MainWindow::onGridContextMenu);
     connect(grid_, &ThumbGridView::navigateFolderRequested, this, &MainWindow::onNavigateFolderRequested);
     // Fires on both double-click and Enter/Return - exactly the two ways to "open"
     // an item.
     connect(grid_, &ThumbGridView::activated, this, &MainWindow::onGridItemActivated);
+    connect(grid_, &ThumbGridView::filesDropped, this, &MainWindow::onFilesDroppedOnGrid);
+    connect(grid_, &ThumbGridView::dragOutRequested, this, &MainWindow::onDragOutRequested);
 
     fullscreenViewer_ = new FullscreenViewer(this);
     // Keep the grid's selection following along while browsing fullscreen, so
@@ -204,14 +223,28 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
         grid_->scrollToRow(row);
     });
 
-    // --- path bar: shows/edits currentPath_; Enter navigates (see navigateToInput) ---
-    pathBar_ = new QLineEdit(this);
+    // --- path bar: shows/edits currentPath_; Enter navigates (see navigateToInput).
+    // Editable QComboBox rather than a plain QLineEdit so its dropdown can double as
+    // recently-visited-folder history (see refreshPathBarHistory()/prefs::pathHistory()) ---
+    pathBar_ = new QComboBox(this);
+    pathBar_->setEditable(true);
+    pathBar_->setInsertPolicy(QComboBox::NoInsert); // history is only ever written via navigateTo(), never by typing
     pathBar_->setPlaceholderText(QStringLiteral("Path..."));
-    connect(pathBar_, &QLineEdit::returnPressed, this, &MainWindow::onPathBarReturnPressed);
+    refreshPathBarHistory();
+    // returnPressed lives on the combo's internal line edit, not the combo itself -
+    // fires for text typed/pasted directly, matching the old QLineEdit behavior
+    // exactly (an arbitrary path doesn't need to already be a history entry).
+    connect(pathBar_->lineEdit(), &QLineEdit::returnPressed, this, &MainWindow::onPathBarReturnPressed);
+    // Fires when a dropdown entry is actually picked (mouse click, or arrow keys +
+    // Enter while the popup is open) - textActivated already updates currentText()
+    // before this runs, so the same submit path applies.
+    connect(pathBar_, &QComboBox::textActivated, this, &MainWindow::onPathBarHistoryActivated);
     // select-all-on-focus is implemented in eventFilter() (QEvent::FocusIn) - that
     // only fires because of this call, which got missed when the feature was
-    // originally added.
-    pathBar_->installEventFilter(this);
+    // originally added. Installed on the combo's actual line edit, since that's what
+    // receives keyboard focus (and therefore FocusIn) for an editable QComboBox, not
+    // the QComboBox widget itself.
+    pathBar_->lineEdit()->installEventFilter(this);
 
     // --- top-level: path bar above, left column (40%) vs. thumbnail grid (60%) below ---
     splitter_ = new QSplitter(this);
@@ -315,10 +348,30 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(this, &MainWindow::requestRawRenderPriority, rawRenderer_.get(), &RawRenderer::prioritize);
     rawRenderer_->start();
 
+    fileOps_ = std::make_unique<FileOpsWorker>();
+    connect(this, &MainWindow::requestFileOpPreflight, fileOps_.get(), &FileOpsWorker::preflight);
+    connect(this, &MainWindow::requestFileOpExecute, fileOps_.get(), &FileOpsWorker::execute);
+    connect(fileOps_.get(), &FileOpsWorker::preflightReady, this, &MainWindow::onFileOpPreflightReady);
+    connect(fileOps_.get(), &FileOpsWorker::progress, this, &MainWindow::onFileOpProgress);
+    connect(fileOps_.get(), &FileOpsWorker::finished, this, &MainWindow::onFileOpFinished);
+
     previewDebounce_ = new QTimer(this);
     previewDebounce_->setSingleShot(true);
     previewDebounce_->setInterval(80);
     connect(previewDebounce_, &QTimer::timeout, this, &MainWindow::triggerPreviewRequest);
+
+    // See folderWatcher_'s member comment: a real-time watch on whichever folder is
+    // currently on screen, so an external change (most concretely, Explorer
+    // performing the actual move for a Cut that originated in pixet) shows up
+    // immediately instead of waiting on BackgroundReconciler's slow rotation.
+    folderWatcher_ = new QFileSystemWatcher(this);
+    connect(folderWatcher_, &QFileSystemWatcher::directoryChanged, this, &MainWindow::onWatchedDirectoryChanged);
+    folderWatchDebounce_ = new QTimer(this);
+    folderWatchDebounce_->setSingleShot(true);
+    folderWatchDebounce_->setInterval(400); // coalesces the several native notifications one multi-file paste fires
+    connect(folderWatchDebounce_, &QTimer::timeout, this, [this]() {
+        if (!currentPath_.isEmpty()) emit requestIndex(currentPath_, /*force=*/true, false);
+    });
 
     // --- menu ---
     // Shortcuts are user-configurable (see KeyBindings.h/PreferencesDialog) - the
@@ -328,6 +381,27 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     fileMenu->addAction(QStringLiteral("Choose Folder..."), this, &MainWindow::onChooseFolder);
 
+    // Select All uses a fixed QKeySequence::StandardKey rather than the configurable
+    // KeyBindings system - see KeyBindings.h's class comment. setShortcuts() (plural)
+    // installs every platform binding for that standard key, not just the primary
+    // one (e.g. Windows also gets the legacy Ins/Del-based Copy/Cut/Paste aliases
+    // once those are added in a later phase).
+    auto *editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
+    cutAction_ = editMenu->addAction(QStringLiteral("Cut"), this, &MainWindow::onEditCut);
+    cutAction_->setShortcuts(QKeySequence::Cut);
+    copyAction_ = editMenu->addAction(QStringLiteral("Copy"), this, &MainWindow::onEditCopy);
+    copyAction_->setShortcuts(QKeySequence::Copy);
+    pasteAction_ = editMenu->addAction(QStringLiteral("Paste"), this, &MainWindow::onEditPaste);
+    pasteAction_->setShortcuts(QKeySequence::Paste);
+    editMenu->addSeparator();
+    selectAllAction_ = editMenu->addAction(QStringLiteral("Select All"), this, &MainWindow::onEditSelectAll);
+    selectAllAction_->setShortcuts(QKeySequence::SelectAll);
+    // Cut/Copy need a selection; Paste needs somewhere to land. Kept in sync from
+    // two places: selectionChanged (so a disabled action's shortcut correctly
+    // doesn't fire even without the menu ever being opened) and aboutToShow (belt
+    // and suspenders for anything else that could change either condition).
+    connect(editMenu, &QMenu::aboutToShow, this, &MainWindow::updateEditActionsEnabled);
+
     auto *bookmarksMenu = menuBar()->addMenu(QStringLiteral("&Bookmarks"));
     addBookmarkAction_ = bookmarksMenu->addAction(QStringLiteral("Add Current Folder"), this, &MainWindow::onAddBookmark);
 
@@ -336,18 +410,27 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     toggleSidePanelAction_ = viewMenu->addAction(QStringLiteral("Toggle Side Panel"), this, &MainWindow::onToggleSidePanel);
     applyKeyBindingShortcuts();
 
+    // Tools always exists now (unconditionally, on both platforms) - Force
+    // Re-thumbnail lives here rather than buried in the grid's right-click menu,
+    // same reasoning as Refresh already living in View: a folder-wide, occasional
+    // action belongs in a real menu, not a context menu meant for per-item actions
+    // (Cut/Copy/Paste/View Fullscreen - see onGridContextMenu()).
+    auto *toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
+    toolsMenu->addAction(QStringLiteral("Force Re-thumbnail This Folder"), this, &MainWindow::onForceRethumbnail);
+    toolsMenu->addAction(QStringLiteral("Purge Path History"), this, &MainWindow::onPurgePathHistory);
+
     // Qt's Cocoa menu bar relocates Preferences and About into the macOS *application* menu
     // (as Cmd-, and "About pixet"). So on Apple they're added to File, which still has
-    // Choose Folder left in it after the move - putting Preferences alone in a Tools menu,
-    // the way the Windows build does, would leave a visible "Tools" title with nothing at
-    // all under it.
+    // Choose Folder left in it after the move - this used to be the reason Tools was
+    // Windows-only too (a Tools menu holding *only* Preferences would look empty once
+    // Cocoa relocated it out), but that no longer applies now that Tools always has Force
+    // Re-thumbnail in it regardless of platform.
     QAction *prefsAction = nullptr;
     QAction *aboutAction = nullptr;
 #ifdef Q_OS_MACOS
     prefsAction = fileMenu->addAction(QStringLiteral("Preferences..."), this, &MainWindow::onPreferences);
     aboutAction = fileMenu->addAction(QStringLiteral("About pixet"), this, &MainWindow::onAbout);
 #else
-    auto *toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
     prefsAction = toolsMenu->addAction(QStringLiteral("Preferences..."), this, &MainWindow::onPreferences);
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("&Help"));
     aboutAction = helpMenu->addAction(QStringLiteral("About pixet"), this, &MainWindow::onAbout);
@@ -420,7 +503,20 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
     // must not later resurrect a stale one.
     pendingSelectFileName_.clear();
     currentPath_ = normalized;
-    pathBar_->setText(normalized);
+    // Directory only, never a file path - `normalized` is always a resolved folder
+    // here (navigateToInput() resolves a file path to its parent before ever
+    // calling this), which is what keeps a pasted/typed file path out of history.
+    prefs::addToPathHistory(normalized);
+    refreshPathBarHistory();
+    pathBar_->setCurrentText(normalized);
+
+    // Re-point the live watch (see folderWatcher_'s member comment) at the folder
+    // now on screen. addPath() on a path already being watched, or removePaths()
+    // on an empty list, are both harmless no-ops, so this doesn't need to special-
+    // case "watching nothing yet" (first navigation) or "re-navigating to the same
+    // folder".
+    if (!folderWatcher_->directories().isEmpty()) folderWatcher_->removePaths(folderWatcher_->directories());
+    folderWatcher_->addPath(normalized);
     preview_->clear();
     // Show whatever's already cached instantly. For a folder that's new or stale,
     // this shows 0 rows - onFilesListed (fired once Pass A commits, see FolderIndexer)
@@ -574,10 +670,223 @@ void MainWindow::onBookmarksContextMenu(const QPoint &pos) {
 }
 
 void MainWindow::onGridContextMenu(const QPoint &pos) {
+    // Refresh and Force Re-thumbnail moved out to real menus (View and Tools
+    // respectively) - this menu is for per-item actions on whatever's under the
+    // cursor/selected, not folder-wide ones. Reuses the Edit menu's own
+    // cutAction_/copyAction_/pasteAction_ QAction objects directly (Qt actions are
+    // meant to be shared across multiple menus/toolbars - same shortcut text,
+    // enabled state, and slot everywhere they appear, no duplicate wiring needed)
+    // rather than building parallel entries here.
+    updateEditActionsEnabled();
+
     QMenu menu(this);
-    menu.addAction(QStringLiteral("Refresh (check for new/changed files)"), this, &MainWindow::onRefresh);
-    menu.addAction(QStringLiteral("Force Re-thumbnail This Folder"), this, &MainWindow::onForceRethumbnail);
+    QAction *fullscreenAction = menu.addAction(QStringLiteral("View Fullscreen"), this, [this]() {
+        if (grid_->currentRow() >= 0) onGridItemActivated(grid_->currentRow());
+    });
+    fullscreenAction->setEnabled(grid_->currentRow() >= 0);
+    menu.addSeparator();
+    menu.addAction(cutAction_);
+    menu.addAction(copyAction_);
+    menu.addAction(pasteAction_);
     menu.exec(grid_->mapToGlobal(pos));
+}
+
+void MainWindow::onFilesDroppedOnGrid(QStringList localPaths, bool move) {
+    if (currentPath_.isEmpty() || localPaths.isEmpty()) return;
+
+    FileOpsWorker::Request req;
+    req.id = ++fileOpCounter_;
+    req.move = move;
+    req.dstDirPath = currentPath_;
+    for (const QString &path : localPaths) {
+        FileOpsWorker::Item item;
+        item.srcPath = path;
+        // srcFileId/srcDirId stay 0 - these are external files, not rows pixet's
+        // index already knows about.
+        req.items << item;
+    }
+    emit requestFileOpPreflight(req);
+}
+
+void MainWindow::onFileOpPreflightReady(FileOpsWorker::Request req, QStringList rejected) {
+    if (!rejected.isEmpty()) {
+        statusBar()->showMessage(
+            QStringLiteral("%1 item(s) skipped (folders aren't supported yet, or the file is gone)")
+                .arg(rejected.size()),
+            6000);
+    }
+    if (req.items.isEmpty()) {
+        pendingCutClipboardClear_ = false; // nothing will reach onFileOpFinished() to consume this
+        return;
+    }
+
+    int totalConflicts = 0;
+    for (const auto &item : req.items) {
+        if (item.hasConflict) totalConflicts++;
+    }
+
+    // One dialog per conflict, resolved entirely here before any I/O starts (see
+    // FileOpsWorker's two-stage preflight/execute protocol) - "apply to all
+    // remaining" is honored by not asking again for the rest of this loop.
+    bool applyToAll = false;
+    CollisionDialog::Choice appliedChoice = CollisionDialog::Skip;
+    int conflictsSeen = 0;
+
+    for (int i = 0; i < req.items.size(); ++i) {
+        FileOpsWorker::Item &item = req.items[i];
+        if (!item.hasConflict) continue;
+
+        CollisionDialog::Choice choice;
+        if (applyToAll) {
+            choice = appliedChoice;
+        } else {
+            int64_t srcSize = 0, srcMtime = 0;
+            // item.conflictSize/conflictMtime describe the *existing destination*
+            // file (set by FileOpsWorker::preflight) - the dialog's "Incoming" line
+            // needs the source's own stat.
+            pixet::statFile(item.srcPath.toStdString(), &srcSize, &srcMtime);
+            int remaining = totalConflicts - conflictsSeen - 1;
+            bool checkedApplyToAll = false;
+            choice = CollisionDialog::ask(this, item.dstName, req.dstDirPath, srcSize, srcMtime, item.conflictSize,
+                                          item.conflictMtime, remaining, &checkedApplyToAll);
+            if (choice == CollisionDialog::CancelAll) {
+                // Cancelling must not clear a Cut clipboard - nothing was actually
+                // moved, so the user's cut selection should still be pasteable.
+                pendingCutClipboardClear_ = false;
+                statusBar()->showMessage(QStringLiteral("File operation cancelled"), 4000);
+                return;
+            }
+            if (checkedApplyToAll) {
+                applyToAll = true;
+                appliedChoice = choice;
+            }
+        }
+        conflictsSeen++;
+
+        switch (choice) {
+            case CollisionDialog::Replace:
+                item.resolution = FileOpsWorker::Collision::Replace;
+                break;
+            case CollisionDialog::Skip:
+                item.resolution = FileOpsWorker::Collision::Skip;
+                break;
+            case CollisionDialog::KeepBoth:
+                item.resolution = FileOpsWorker::Collision::KeepBoth;
+                break;
+            case CollisionDialog::CancelAll:
+                break; // unreachable - handled above
+        }
+    }
+
+    emit requestFileOpExecute(req);
+}
+
+void MainWindow::onFileOpProgress(quint64, int done, int total, QString currentName) {
+    statusBar()->showMessage(QStringLiteral("%1 / %2 - %3").arg(done).arg(total).arg(currentName));
+}
+
+void MainWindow::onFileOpFinished(quint64, QString dstDirPath, QList<qint64> srcFileIds, QStringList addedNames,
+                                   int succeeded, int failed, QStringList errors) {
+    if (pendingCutClipboardClear_) {
+        pendingCutClipboardClear_ = false;
+        // Matches Explorer's own behavior of clearing the clipboard once a
+        // cut-paste actually completes, so a second Ctrl+V can't try to move
+        // already-moved files.
+        clipops::clearAfterCutPaste();
+    }
+
+    if (dstDirPath == currentPath_) {
+        // Safe even for ids that aren't currently loaded (a no-op) - see the
+        // signal's doc comment on FileOpsWorker::finished.
+        for (qint64 id : srcFileIds) gridModel_->removeFileById(id);
+
+        // Two passes, deliberately not one: insertOrUpdateFileByName()'s return
+        // value is only that row's index *at the moment of that one insertion* -
+        // inserting "a.jpg" after "b.jpg" shifts "b.jpg" up by one, silently
+        // invalidating an index already collected for it. Re-deriving every index
+        // fresh via rowForName() only after every insert has landed (rowByName_ is
+        // fully rebuilt after each one - see reindexLookups()) is what keeps a
+        // multi-file drop from ending up with some of newRows pointing at the wrong
+        // row, or a duplicate row, once shifting is accounted for.
+        for (const QString &name : addedNames) gridModel_->insertOrUpdateFileByName(name);
+        QList<int> newRows;
+        for (const QString &name : addedNames) {
+            int r = gridModel_->rowForName(name);
+            if (r >= 0) newRows << r;
+        }
+        if (!newRows.isEmpty()) grid_->setSelection(newRows, newRows.last());
+        updateSelectionStatus();
+
+        // The new rows are already committed to the DB (state=New) - a plain
+        // non-forced index is enough to pick up thumbnails. Pass B runs
+        // unconditionally after Indexer's freshness check rather than only inside
+        // it, so this never triggers a wasted full re-diff of the rest of the folder.
+        emit requestIndex(currentPath_, /*force=*/false, /*forceRethumbnail=*/false);
+    } else if (!gridModel_->hasDirectory()) {
+        reloadGridPreservingSelection();
+    }
+
+    if (failed > 0) {
+        statusBar()->showMessage(QStringLiteral("%1 succeeded, %2 failed").arg(succeeded).arg(failed), 8000);
+        QMessageBox::warning(this, QStringLiteral("Some items failed"),
+                              errors.size() <= 5 ? errors.join(QStringLiteral("\n"))
+                                                  : errors.mid(0, 5).join(QStringLiteral("\n")) +
+                                                        QStringLiteral("\n...and %1 more").arg(errors.size() - 5));
+    } else if (succeeded > 0) {
+        statusBar()->showMessage(QStringLiteral("%1 item(s) added").arg(succeeded), 4000);
+    }
+}
+
+void MainWindow::onDragOutRequested() {
+    if (currentPath_.isEmpty()) return;
+
+    QStringList paths;
+    for (int r : grid_->selectedRows()) {
+        QString name = gridModel_->index(r).data(Qt::DisplayRole).toString();
+        paths << joinPathQ(currentPath_, name);
+    }
+    if (paths.isEmpty()) return;
+
+    QList<QUrl> urls;
+    urls.reserve(paths.size());
+    for (const QString &p : paths) urls << QUrl::fromLocalFile(p);
+
+    auto *mime = new QMimeData;
+    mime->setUrls(urls);
+    mime->setText(paths.join(QLatin1Char('\n')));
+    clipops::markPreferMove(mime);
+
+    auto *drag = new QDrag(grid_); // Qt deletes it once the drag finishes
+    drag->setMimeData(mime);
+
+    QModelIndex leadIdx = gridModel_->index(grid_->currentRow());
+    QVariant deco = leadIdx.data(Qt::DecorationRole);
+    if (deco.canConvert<QPixmap>()) {
+        QPixmap pix = deco.value<QPixmap>();
+        if (!pix.isNull()) {
+            QPixmap scaled = pix.scaled(QSize(96, 96), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            drag->setPixmap(scaled);
+            drag->setHotSpot(QPoint(scaled.width() / 2, scaled.height() / 2));
+        }
+    }
+
+    // Disclosed limitation, not a bug to chase: pixet does not perform the physical
+    // move itself here - Explorer/Finder does, as the drop target, and the actual
+    // copy-vs-move outcome remains governed by the OS's own conventions at the drop
+    // side (same-volume vs. cross-volume, Ctrl/Shift overrides). markPreferMove()
+    // and Qt::MoveAction below are hints a target is free to ignore.
+    Qt::DropAction result = drag->exec(Qt::CopyAction | Qt::MoveAction, Qt::MoveAction);
+    if (result == Qt::MoveAction) {
+        // Explorer/Finder already performed the move; pixet only has to notice.
+        // Reusing the already-tested by-name diff (a forced non-recursive rescan)
+        // is both correct and simpler than independently guessing which of these
+        // specific files are now gone - and it can't accidentally delete rows for
+        // files that are still there. Feeds into onFilesListed() ->
+        // reloadGridPreservingSelection(), so this doesn't reintroduce
+        // scroll-position loss. Never gets the thumb_id-preservation win drag-out
+        // (unlike Cut/Paste and drag-in) - pixet never learns the destination path.
+        emit requestIndex(currentPath_, /*force=*/true, false);
+    }
 }
 
 void MainWindow::onGridItemActivated(int row) {
@@ -621,7 +930,9 @@ void MainWindow::onGridItemActivated(int row) {
     fullscreenViewer_->openAt(gridModel_, currentPath_, row);
 }
 
-void MainWindow::onPathBarReturnPressed() { navigateToInput(pathBar_->text()); }
+void MainWindow::onPathBarReturnPressed() { navigateToInput(pathBar_->currentText()); }
+
+void MainWindow::onPathBarHistoryActivated() { navigateToInput(pathBar_->currentText()); }
 
 void MainWindow::onGridSelectionChanged() {
     currentPreviewBpp_ = 0; // stale from whatever was selected before - cleared until this item's preview lands
@@ -637,14 +948,18 @@ void MainWindow::onGridSelectionChanged() {
     if (!idx.isValid()) {
         pendingPreviewPath_.clear();
         preview_->clear();
-        pathBar_->setText(currentPath_);
+        pathBar_->setCurrentText(currentPath_);
         return;
     }
 
     QString name = idx.data(Qt::DisplayRole).toString();
     pendingPreviewFmt_ = idx.data(ThumbGridModel::FormatRole).toInt();
     pendingPreviewPath_ = joinPathQ(currentPath_, name);
-    pathBar_->setText(pendingPreviewPath_);
+    // Display only - the full file path never gets recorded into history (see
+    // prefs::pathHistory()'s doc comment). setCurrentText() on an editable combo
+    // just sets the edit line's text; it doesn't need to match (or become) a
+    // dropdown item.
+    pathBar_->setCurrentText(pendingPreviewPath_);
 
     previewDebounce_->start();
 }
@@ -732,6 +1047,96 @@ void MainWindow::applyKeyBindingShortcuts() {
     addBookmarkAction_->setShortcut(keybindings::binding(keybindings::Action::AddBookmark));
 }
 
+QLineEdit *MainWindow::focusedLineEdit() const { return qobject_cast<QLineEdit *>(QApplication::focusWidget()); }
+
+void MainWindow::onEditSelectAll() {
+    if (QLineEdit *le = focusedLineEdit()) {
+        le->selectAll();
+        return;
+    }
+    grid_->selectAll();
+}
+
+void MainWindow::onEditCopy() {
+    if (QLineEdit *le = focusedLineEdit()) {
+        le->copy();
+        return;
+    }
+    QStringList paths;
+    for (int r : grid_->selectedRows()) {
+        QString name = gridModel_->index(r).data(Qt::DisplayRole).toString();
+        paths << joinPathQ(currentPath_, name);
+    }
+    if (paths.isEmpty()) return;
+    clipops::writeFiles(paths, /*cut=*/false);
+    statusBar()->showMessage(QStringLiteral("%1 item(s) copied").arg(paths.size()), 3000);
+}
+
+void MainWindow::onEditCut() {
+    if (QLineEdit *le = focusedLineEdit()) {
+        le->cut();
+        return;
+    }
+    QStringList paths;
+    for (int r : grid_->selectedRows()) {
+        QString name = gridModel_->index(r).data(Qt::DisplayRole).toString();
+        paths << joinPathQ(currentPath_, name);
+    }
+    if (paths.isEmpty()) return;
+    // No I/O here - Cut only marks the clipboard. The actual move happens on
+    // Paste, exactly like Explorer's own Ctrl+X.
+    clipops::writeFiles(paths, /*cut=*/true);
+    statusBar()->showMessage(QStringLiteral("%1 item(s) cut").arg(paths.size()), 3000);
+}
+
+void MainWindow::onEditPaste() {
+    if (QLineEdit *le = focusedLineEdit()) {
+        le->paste();
+        return;
+    }
+    if (currentPath_.isEmpty()) return;
+
+    clipops::Files files = clipops::read();
+    if (files.paths.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Nothing to paste"), 3000);
+        return;
+    }
+
+    FileOpsWorker::Request req;
+    req.id = ++fileOpCounter_;
+    req.move = files.isCut;
+    req.dstDirPath = currentPath_;
+    for (const QString &path : files.paths) {
+        FileOpsWorker::Item item;
+        item.srcPath = path;
+
+        // If this happens to be a file pixet's own index already knows about (e.g.
+        // Cut in one pixet-browsed folder, Paste in another), populate srcFileId/
+        // srcDirId so the smart move (see fileops::execute()) can preserve its
+        // thumbnail rather than re-thumbnailing from scratch - the same lookup
+        // navigateTo() already does to turn a filesystem path into a DB row.
+        QString normalized = normalizeForDb(path);
+        QFileInfo info(normalized);
+        auto dirSel = db_->prepare("SELECT id FROM dirs WHERE path=?");
+        dirSel.bind(1, normalizeForDb(info.absolutePath()).toStdString());
+        if (dirSel.step()) {
+            int64_t dirId = dirSel.columnInt64(0);
+            auto fileSel = db_->prepare("SELECT id FROM files WHERE dir_id=? AND name=?");
+            fileSel.bind(1, dirId);
+            fileSel.bind(2, info.fileName().toStdString());
+            if (fileSel.step()) {
+                item.srcFileId = fileSel.columnInt64(0);
+                item.srcDirId = dirId;
+            }
+        }
+
+        req.items << item;
+    }
+
+    pendingCutClipboardClear_ = files.isCut;
+    emit requestFileOpPreflight(req);
+}
+
 void MainWindow::onToggleSidePanel() {
     // QSplitter automatically gives a hidden child's space to the remaining visible
     // one(s) - grid_ expands to fill the whole width - and ThumbGridView already
@@ -814,10 +1219,13 @@ void MainWindow::onIndexerStarted(QString path) {
 
 void MainWindow::onFilesListed(QString path) {
     // Pass A just finished - the file list is final, even though thumbnails are
-    // mostly still pending. Full reload: this is the one point where resetting the
-    // model is correct, since nothing meaningful is on screen yet to flicker away.
+    // mostly still pending. This is usually the very first real file list for a
+    // freshly-navigated-to folder (nothing selected yet, nothing to preserve), but
+    // it also fires on an explicit Refresh of the folder already on screen -
+    // reloadGridPreservingSelection() carries the user's selection/scroll position
+    // across that case instead of dropping them on every Refresh.
     if (path != currentPath_) return;
-    gridModel_->setDirectory(path);
+    reloadGridPreservingSelection();
     updateSelectionStatus(); // folder aggregates changed (this is often the first real file list)
     trySelectPendingFile(); // this folder may not have had rows loaded until just now
 }
@@ -846,6 +1254,11 @@ void MainWindow::onBackgroundDirectoryChanged(QString path) {
     gridModel_->refreshThumbStates();
     grid_->viewport()->update();
     updateSelectionStatus();
+}
+
+void MainWindow::onWatchedDirectoryChanged(const QString &path) {
+    if (path != currentPath_) return; // stale signal for a folder navigated away from since
+    folderWatchDebounce_->start(); // (re)starts - several notifications in a row collapse to one rescan
 }
 
 void MainWindow::loadBookmarks() {
@@ -944,12 +1357,12 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
-    if (watched == pathBar_ && event->type() == QEvent::FocusIn) {
+    if (watched == pathBar_->lineEdit() && event->type() == QEvent::FocusIn) {
         // A plain selectAll() here gets immediately undone by the mouse-press event
         // that triggered this focus-in (it repositions the cursor to the click point,
         // collapsing the selection) - deferring to the next event loop turn lets that
         // click finish being processed first.
-        QTimer::singleShot(0, pathBar_, &QLineEdit::selectAll);
+        QTimer::singleShot(0, pathBar_->lineEdit(), &QLineEdit::selectAll);
     }
     return QMainWindow::eventFilter(watched, event);
 }
@@ -987,7 +1400,7 @@ void MainWindow::navigateToInput(const QString &input) {
     }
 
     statusBar()->showMessage(QStringLiteral("Not found: %1").arg(trimmed), 4000);
-    pathBar_->setText(currentPath_);
+    pathBar_->setCurrentText(currentPath_);
 }
 
 void MainWindow::trySelectPendingFile() {
@@ -997,6 +1410,51 @@ void MainWindow::trySelectPendingFile() {
     grid_->setCurrentRow(row);
     grid_->scrollToRow(row, /*center=*/true);
     pendingSelectFileName_.clear();
+}
+
+void MainWindow::refreshPathBarHistory() {
+    // Preserved explicitly rather than relying on clear()/addItems() to leave it
+    // alone - QComboBox::clear() drops the current index (and, with it, an editable
+    // combo's displayed text) as a side effect, which would otherwise blow away
+    // whatever's currently shown (e.g. a selected file's full path) every time a new
+    // folder is visited.
+    QString current = pathBar_->currentText();
+    QSignalBlocker blocker(pathBar_); // clear()/addItems() below must not look like a user pick
+    pathBar_->clear();
+    pathBar_->addItems(prefs::pathHistory());
+    pathBar_->setCurrentText(current);
+}
+
+void MainWindow::onPurgePathHistory() {
+    prefs::clearPathHistory();
+    refreshPathBarHistory();
+    statusBar()->showMessage(QStringLiteral("Path history cleared"), 3000);
+}
+
+void MainWindow::reloadGridPreservingSelection() {
+    QList<qint64> selectedIds;
+    for (int r : grid_->selectedRows()) {
+        qint64 id = gridModel_->index(r).data(ThumbGridModel::FileIdRole).toLongLong();
+        if (id != 0) selectedIds << id;
+    }
+    // FileIdRole is 0 for an invalid index (grid_->currentRow() == -1) - rowForFileId(0)
+    // below correctly finds nothing, so no separate "was there a selection at all" check.
+    qint64 currentId = gridModel_->index(grid_->currentRow()).data(ThumbGridModel::FileIdRole).toLongLong();
+    int scrollValue = grid_->verticalScrollBar()->value();
+
+    gridModel_->setDirectory(currentPath_);
+
+    QList<int> rows;
+    for (qint64 id : selectedIds) {
+        int r = gridModel_->rowForFileId(id);
+        if (r >= 0) rows << r;
+    }
+    grid_->setSelection(rows, gridModel_->rowForFileId(currentId));
+
+    // Set after setSelection() (which itself doesn't scroll) so nothing downstream
+    // moves the scrollbar again after this - restores the exact pre-reload position
+    // rather than re-deriving it from whichever row ended up selected.
+    grid_->verticalScrollBar()->setValue(scrollValue);
 }
 
 void MainWindow::updateSelectionStatus() {
@@ -1037,8 +1495,20 @@ void MainWindow::updateSelectionStatus() {
     // Elided rather than left to wrap/clip raggedly - the label's fixed width means a
     // long filename would otherwise just get cut off mid-character. Full name still
     // available on hover (StatusLabel::setStatusText() sets it as a tooltip).
+    //
+    // With more than one item selected, this and the size label switch to an
+    // Explorer-style aggregate (count + the previewed item's name; combined size);
+    // format/dimensions/date/duration keep describing the previewed (lead) item
+    // specifically, same as the single-selection case - blanking them on every
+    // Ctrl+click would be exactly the label-jitter StatusBarRow/StatusLabel were
+    // built to avoid (see the member comment on these labels in MainWindow.h).
+    int selCount = grid_->selectionCount();
     QString name = idx.data(Qt::DisplayRole).toString();
-    fileNameLabel_->setStatusText(name, Qt::ElideMiddle);
+    if (selCount > 1) {
+        fileNameLabel_->setStatusText(QStringLiteral("%1 selected · %2").arg(selCount).arg(name), Qt::ElideMiddle);
+    } else {
+        fileNameLabel_->setStatusText(name, Qt::ElideMiddle);
+    }
 
     int fmt = idx.data(ThumbGridModel::FormatRole).toInt();
     formatLabel_->setStatusText(QString::fromUtf8(pixet::formatName((pixet::Format)fmt)));
@@ -1055,7 +1525,8 @@ void MainWindow::updateSelectionStatus() {
         dimsLabel_->setStatusText(QString());
     }
 
-    qint64 size = idx.data(ThumbGridModel::SizeRole).toLongLong();
+    qint64 size = selCount > 1 ? gridModel_->sizeForRows(grid_->selectedRows())
+                                : idx.data(ThumbGridModel::SizeRole).toLongLong();
     sizeLabel_->setStatusText(size > 0 ? QLocale().formattedDataSize(size) : QString());
 
     qint64 takenAt = idx.data(ThumbGridModel::TakenAtRole).toLongLong();
@@ -1071,6 +1542,21 @@ void MainWindow::updateSelectionStatus() {
     } else {
         durationLabel_->setStatusText(QString());
     }
+
+    // Bundled here (rather than left to selectionChanged/aboutToShow alone) so a
+    // keyboard-only Ctrl+V works immediately after a navigateTo()/onFilesListed()
+    // call, which resets the grid's selection without emitting selectionChanged
+    // (see ThumbGridView::setModel's modelReset handling) and doesn't otherwise
+    // touch this - without this, currentPath_ becoming non-empty on first launch
+    // wouldn't enable Paste until the user opened the Edit menu once.
+    updateEditActionsEnabled();
+}
+
+void MainWindow::updateEditActionsEnabled() {
+    bool hasSelection = grid_->selectionCount() > 0;
+    cutAction_->setEnabled(hasSelection);
+    copyAction_->setEnabled(hasSelection);
+    pasteAction_->setEnabled(!currentPath_.isEmpty());
 }
 
 void MainWindow::restoreWindowState() {

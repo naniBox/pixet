@@ -5,6 +5,8 @@ add_executable(pixet_tests
     test_schema.cpp
     test_claims.cpp
     test_pathutil.cpp
+    test_filemove.cpp
+    test_fileops.cpp
     test_exif.cpp
     test_thumbgen.cpp
     test_pngcodec.cpp

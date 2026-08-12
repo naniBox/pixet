@@ -16,6 +16,7 @@ add_library(pixet_core STATIC
     util/Time.h
     util/Time.cpp
     util/FileIO.h
+    util/FileMove.h
     util/PathUtil.h
     util/PathUtil.cpp
     util/ProcessId.h
@@ -27,10 +28,15 @@ add_library(pixet_core STATIC
     db/Database.cpp
 
     scan/DirWalker.h
+    scan/DirRows.h
+    scan/DirRows.cpp
     scan/Claims.h
     scan/Claims.cpp
     scan/Indexer.h
     scan/Indexer.cpp
+
+    fileops/FileOps.h
+    fileops/FileOps.cpp
 
     meta/JpegExif.h
     meta/JpegExif.cpp
@@ -73,6 +79,7 @@ if(WIN32)
         util/StringUtil.h
         util/StringUtil_win.cpp
         util/FileIO_win.cpp
+        util/FileMove_win.cpp
         util/PathUtil_win.cpp
         util/AppPaths_win.cpp
         scan/DirWalker_win.cpp
@@ -82,6 +89,7 @@ elseif(APPLE)
         util/Unicode.h
         util/Unicode_mac.cpp
         util/FileIO_mac.cpp
+        util/FileMove_mac.cpp
         util/PathUtil_mac.cpp
         util/AppPaths_mac.cpp
         scan/DirWalker_mac.cpp

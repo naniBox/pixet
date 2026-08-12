@@ -15,10 +15,20 @@
 #include "FullscreenDecoder.h"
 #include "KeyBindings.h"
 #include "PathQ.h"
+#include "Preferences.h"
 #include "ThumbGridModel.h"
 #include "db/Schema.h"
 
 namespace {
+// prefs::settingsStore() key trueFullscreen_ is persisted under - see the header's
+// member comment and the constructor/keyPressEvent's F-key handler below. Deliberately
+// not "fullscreenTrueFullscreen" - KeyBindings.cpp already uses that exact string as
+// the *keybinding's* settings key (under a separate "keybindings" INI group, for what
+// key triggers the toggle - default F). Different group so there's no actual
+// collision, but the same string meaning two different things (one a QKeySequence,
+// this one a bool) is exactly the kind of thing worth not doing anyway.
+const QString kUseTrueFullscreenSettingsKey = QStringLiteral("fullscreenUseTrueFullscreen");
+
 // Every format ThumbGenerator supports also has a decodeForDisplay() path (see
 // DisplayCodec.h) - Video included, via its poster frame (see decodeVideoPosterFrame) -
 // only Unknown has none, and falls back to the grid's cached thumbnail like before.
@@ -60,6 +70,8 @@ FullscreenViewer::FullscreenViewer(QWidget *parent) : QWidget(parent) {
     zoomPrefetchTimer_->setSingleShot(true);
     zoomPrefetchTimer_->setInterval(kZoomPrefetchDelayMs);
     connect(zoomPrefetchTimer_, &QTimer::timeout, this, &FullscreenViewer::prefetchZoom);
+
+    trueFullscreen_ = prefs::settingsStore().value(kUseTrueFullscreenSettingsKey, trueFullscreen_).toBool();
 }
 
 FullscreenViewer::~FullscreenViewer() = default;
@@ -79,9 +91,10 @@ void FullscreenViewer::openAt(ThumbGridModel *model, const QString &directoryPat
     zoomPrefetchTimer_->stop();
     infoOverlayLevel_ = 0;
 
-    // trueFullscreen_ deliberately isn't reset here - it's a session-level display
-    // preference (F key), so re-opening on another image keeps whichever mode the
-    // user last chose rather than jumping back to true fullscreen every time.
+    // trueFullscreen_ deliberately isn't reset here - it's a persisted display
+    // preference (F key, saved to prefs::settingsStore()), so re-opening on another
+    // image - in this session or the next one - keeps whichever mode the user last
+    // chose rather than jumping back to true fullscreen every time.
     if (trueFullscreen_) showFullScreen(); else showMaximized();
     setFocus();
     showRow(startRow, /*resetZoom=*/true);
@@ -501,6 +514,7 @@ void FullscreenViewer::keyPressEvent(QKeyEvent *event) {
     }
     if (keybindings::matches(event, keybindings::binding(keybindings::Action::FullscreenToggleTrueFullscreen))) {
         trueFullscreen_ = !trueFullscreen_;
+        prefs::settingsStore().setValue(kUseTrueFullscreenSettingsKey, trueFullscreen_);
         if (trueFullscreen_) showFullScreen(); else showMaximized();
         updateWindowTitle();
         return;

@@ -5,9 +5,13 @@
 
 #include <memory>
 
+#include "FileOpsWorker.h"
+
 class QAction;
 class QCloseEvent;
+class QComboBox;
 class QFileSystemModel;
+class QFileSystemWatcher;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -54,6 +58,10 @@ signals:
     // Connected (queued, cross-thread) to BackgroundReconciler::triggerFullSweepNow -
     // the Preferences dialog's "Re-index Known Folders" button.
     void requestFullReindex();
+    // Connected (queued, cross-thread) to FileOpsWorker::preflight/execute - see
+    // onFilesDroppedOnGrid()/onFileOpPreflightReady() for the two-stage protocol.
+    void requestFileOpPreflight(FileOpsWorker::Request req);
+    void requestFileOpExecute(FileOpsWorker::Request req);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -68,6 +76,16 @@ private slots:
     // Double-click or Enter/Return on a thumbnail - opens the fullscreen viewer (P3).
     void onGridItemActivated(int row);
     void onPathBarReturnPressed();
+    // A history entry was picked from the path bar's dropdown - navigates the same
+    // way as typing a path and pressing Enter (see onPathBarReturnPressed()).
+    void onPathBarHistoryActivated();
+    // Tools > Purge Path History.
+    void onPurgePathHistory();
+    void onEditSelectAll();
+    void onEditCut();
+    void onEditCopy();
+    void onEditPaste();
+    void updateEditActionsEnabled();
     void onAddBookmark();
     void onRefresh();
     void onForceRethumbnail();
@@ -102,6 +120,38 @@ private slots:
     // rendered/preview status) if that's the one currently on screen (no-op otherwise).
     // Connected to both workers' directoryChanged signals - same handling either way.
     void onBackgroundDirectoryChanged(QString path);
+    // The currently-open folder changed on disk from *outside* pixet - a file
+    // manager's own paste of something pixet put on the clipboard (see
+    // ClipboardOps), another program, or a second pixet instance. Fires often (once
+    // per native change notification, which can be several for one logical
+    // operation) - debounced through folderWatchDebounce_ before actually
+    // triggering a rescan. See folderWatcher_'s member comment for why this exists
+    // as a real-time watch rather than relying solely on BackgroundReconciler's slow
+    // rotating sweep.
+    void onWatchedDirectoryChanged(const QString &path);
+
+    // Files dropped from Explorer/Finder onto the grid (see
+    // ThumbGridView::filesDropped) - kicks off FileOpsWorker's preflight stage
+    // targeting the currently-open folder.
+    void onFilesDroppedOnGrid(QStringList localPaths, bool move);
+    // Preflight stats are back - shows one CollisionDialog per conflict (honoring
+    // "apply to all remaining"), then re-emits requestFileOpExecute() with every
+    // item's resolution filled in. CancelAll (Escape/close on any dialog) drops the
+    // whole batch rather than partially applying it.
+    void onFileOpPreflightReady(FileOpsWorker::Request req, QStringList rejected);
+    void onFileOpProgress(quint64 id, int done, int total, QString currentName);
+    // The batch is done - if the destination is the folder currently on screen,
+    // reflects the change incrementally (ThumbGridModel::removeFileById()/
+    // insertOrUpdateFileByName()) rather than a full reload, so this doesn't lose
+    // scroll position/selection the way a reset would.
+    void onFileOpFinished(quint64 id, QString dstDirPath, QList<qint64> srcFileIds, QStringList addedNames,
+                          int succeeded, int failed, QStringList errors);
+    // A drag past the OS threshold started on the grid (see
+    // ThumbGridView::dragOutRequested) - builds and exec()s the actual QDrag with
+    // the selected files' real paths. pixet does not perform the physical move
+    // itself here; Explorer/Finder does, as the drop target (see the .cpp for the
+    // disclosed limitation on how much control pixet actually has over copy-vs-move).
+    void onDragOutRequested();
 
 private:
     std::unique_ptr<pixet::Database> db_; // main-thread: bookmarks CRUD + fast metadata queries
@@ -117,13 +167,25 @@ private:
     // thumbLoader_/previewDecoder_/folderIndexer_ workers below. Created once, reused
     // (shown/hidden) for every fullscreen session rather than per-activation.
     FullscreenViewer *fullscreenViewer_;
-    QLineEdit *pathBar_;
+    // Editable QComboBox, not a plain QLineEdit: shows/edits currentPath_ (or a full
+    // file path - see onGridSelectionChanged()) exactly as before, but its dropdown
+    // now doubles as recently-visited-folder history (prefs::pathHistory(), directories
+    // only - see that function's doc comment) - see refreshPathBarHistory().
+    QComboBox *pathBar_;
     // Shortcuts are user-configurable (see KeyBindings.h) - kept as members so
     // applyKeyBindingShortcuts() can re-apply them after the Preferences dialog's
     // keybindings editor closes.
     QAction *refreshAction_;
     QAction *toggleSidePanelAction_;
     QAction *addBookmarkAction_;
+    // Edit menu: Select All/Cut/Copy/Paste are fixed (non-remappable)
+    // QKeySequence::StandardKey actions, wired directly rather than through
+    // KeyBindings - see KeyBindings.h's class comment on why standard Edit
+    // shortcuts live outside that system.
+    QAction *selectAllAction_;
+    QAction *cutAction_;
+    QAction *copyAction_;
+    QAction *pasteAction_;
     // Status bar: separate labels (capped, not fixed, width - see makeStatusLabel()
     // in the constructor) rather than one joined string, so browsing (arrow keys,
     // clicking through images) doesn't visually jitter as filenames/values change
@@ -164,7 +226,31 @@ private:
     // Low-priority background upgrade of RAW files from their fast embedded-preview
     // thumbnail to a full demosaic render - see RawRenderer's class comment.
     std::unique_ptr<RawRenderer> rawRenderer_;
+    // The app's first code path that can move/copy/overwrite a real file - see
+    // FileOpsWorker's class comment for the preflight/execute protocol.
+    std::unique_ptr<FileOpsWorker> fileOps_;
+    quint64 fileOpCounter_ = 0;
+    // Set by onEditPaste() when the clipboard's contents were a Cut (not Copy);
+    // consumed by onFileOpFinished() to clear the clipboard only once that paste
+    // actually completes - reset early instead in onFileOpPreflightReady() if the
+    // user cancels the collision dialog or every item got rejected, so a cancelled
+    // paste doesn't lose the cut selection for nothing.
+    bool pendingCutClipboardClear_ = false;
 
+    // Real-time watch on currentPath_ (native OS notification - ReadDirectoryChangesW
+    // on Windows - not polling), so a file that leaves or arrives from *outside*
+    // pixet (most concretely: Cut in pixet, then paste in Explorer - the actual move
+    // happens entirely in Explorer's process, so pixet has no other way to find out
+    // it happened) is reflected without waiting for BackgroundReconciler's slow
+    // rotating sweep (one directory every ~1.5s, full-library rest of ~10min between
+    // cycles - fine as a self-healing backstop, far too slow to feel like "the UI
+    // updated" for the folder actually on screen right now). Re-pointed at
+    // currentPath_ every navigateTo(). One native notification can fire several
+    // times for one logical operation (e.g. a multi-file paste), so
+    // onWatchedDirectoryChanged() only starts folderWatchDebounce_ rather than
+    // triggering a rescan directly.
+    QFileSystemWatcher *folderWatcher_;
+    QTimer *folderWatchDebounce_;
     QTimer *previewDebounce_;
     QString currentPath_;
     QString pendingPreviewPath_;
@@ -188,6 +274,23 @@ private:
     // and just reports the problem in the status bar.
     void navigateToInput(const QString &input);
     void trySelectPendingFile();
+    // Repopulates pathBar_'s dropdown list from prefs::pathHistory(), preserving
+    // whatever text is currently displayed in the edit line (which may not itself be
+    // a history entry - e.g. a file path from the current grid selection). Called
+    // once at startup and after every history mutation (a new folder visited, or an
+    // explicit purge).
+    void refreshPathBarHistory();
+    // setDirectory() on the *same* path, with selection and scroll position carried
+    // across the reset: captures the selected rows' file ids (and the lead row's)
+    // beforehand, reloads, then re-derives row indices via
+    // ThumbGridModel::rowForFileId() and restores the scrollbar's raw pixel value
+    // afterward - safe here because the viewport width (and therefore column count)
+    // is untouched by a same-path reload, unlike onToggleSidePanel(), which has to
+    // re-center instead. Used wherever the row *set* for the currently-open folder
+    // may have changed (Pass A completing, an explicit Refresh) but there's nothing
+    // about the change a targeted insertOrUpdateFileByName()/removeFileById() call
+    // could describe more precisely (see ThumbGridModel).
+    void reloadGridPreservingSelection();
     void updateSelectionStatus();
     void repositionTreeToTop(const QModelIndex &idx);
     void loadBookmarks();
@@ -209,6 +312,14 @@ private:
     // closes, since a QAction's shortcut doesn't update itself when the underlying
     // setting changes.
     void applyKeyBindingShortcuts();
+
+    // A menu-bar QAction's shortcut has Qt::WindowShortcut context and is dispatched
+    // *before* key events reach the focused widget - and QLineEdit implements
+    // Ctrl+A/C/X/V in its own keyPressEvent, not via actions. Every Edit-menu handler
+    // checks this first and forwards to the line edit's own selectAll()/copy()/
+    // cut()/paste() instead - otherwise Ctrl+A while editing the path bar would
+    // select grid thumbnails instead of the path text.
+    QLineEdit *focusedLineEdit() const;
 
     // Window position/size and splitter layout persistence (QSettings) - see
     // restoreWindowState()'s doc comment in the .cpp for the off-screen/reset behavior.

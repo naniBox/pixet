@@ -88,7 +88,23 @@ add_executable(pixet ${PIXET_APP_TYPE}
     StatusLabel.cpp
     StatusBarRow.h
     StatusBarRow.cpp
+
+    FileOpsWorker.h
+    FileOpsWorker.cpp
+    CollisionDialog.h
+    CollisionDialog.cpp
+    ClipboardOps.h
+    ClipboardOps.cpp
+
+    icons.qrc
 )
+
+if(WIN32)
+    # pixet.ico is generated from pixet.icns (see pixet.rc's comment for how) - CMake
+    # recognizes a .rc source on a Windows target automatically and compiles it via
+    # rc.exe, no extra properties needed the way the macOS .icns below requires.
+    target_sources(pixet PRIVATE pixet.rc)
+endif()
 
 if(APPLE)
     # The .icns has to be a source file with MACOSX_PACKAGE_LOCATION, not just named in the

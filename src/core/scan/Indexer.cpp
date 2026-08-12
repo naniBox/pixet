@@ -8,6 +8,7 @@
 #include "../thumb/ThumbGenerator.h"
 #include "../util/PathUtil.h"
 #include "../util/Time.h"
+#include "DirRows.h"
 #include "DirWalker.h"
 
 namespace pixet {
@@ -36,18 +37,6 @@ struct PendingThumb {
 } // namespace
 
 Indexer::Indexer(Database &db, IndexOptions opts) : db_(db), opts_(std::move(opts)), claims_(db) {}
-
-int64_t Indexer::upsertDir(const std::string &path, int64_t parentId) {
-    auto ins = db_.prepare("INSERT OR IGNORE INTO dirs(parent_id, path, mtime, scanned_at) VALUES(?,?,0,0)");
-    if (parentId < 0) ins.bindNull(1); else ins.bind(1, parentId);
-    ins.bind(2, path);
-    ins.step();
-
-    auto sel = db_.prepare("SELECT id FROM dirs WHERE path=?");
-    sel.bind(1, path);
-    sel.step();
-    return sel.columnInt64(0);
-}
 
 void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
                                  std::vector<std::pair<int64_t, std::string>> &subdirsOut, IndexStats &stats,
@@ -123,7 +112,8 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
 
         for (const auto &entry : entries) {
             if (entry.isDir) {
-                subdirsOut.emplace_back(upsertDir(joinPath(dirPath, entry.name), dirId), joinPath(dirPath, entry.name));
+                subdirsOut.emplace_back(upsertDir(db_, joinPath(dirPath, entry.name), dirId),
+                                         joinPath(dirPath, entry.name));
                 continue;
             }
 
@@ -309,7 +299,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
 }
 
 void Indexer::run(const std::string &rootPath, IndexStats &stats, const IndexCallbacks &callbacks) {
-    int64_t rootId = upsertDir(rootPath, -1);
+    int64_t rootId = upsertDir(db_, rootPath, -1);
 
     // This is a plain worklist, so anything that makes the directory graph cyclic turns it
     // into a loop that keeps inserting dirs rows until the disk fills. DirWalker's macOS

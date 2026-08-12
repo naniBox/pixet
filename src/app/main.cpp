@@ -2,6 +2,7 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QFileOpenEvent>
+#include <QIcon>
 #include <QObject>
 
 #include "MainWindow.h"
@@ -59,12 +60,21 @@ int main(int argc, char *argv[]) {
     QApplication::setOrganizationName(QStringLiteral("naniBox"));
     QApplication::setOrganizationDomain(QStringLiteral("nanibox.com"));
 
-    // No setWindowIcon() call on purpose. On macOS the Dock/Finder icon comes from the
+#ifdef Q_OS_WIN
+    // pixet.rc embeds pixet.ico as the .exe's own file icon (what Explorer shows),
+    // but Windows does NOT also use that as the *running* window's icon (title bar,
+    // taskbar, Alt+Tab) - Qt needs an explicit setWindowIcon() call for that. Loaded
+    // from a Qt resource (icons.qrc) rather than a loose path so it doesn't depend
+    // on anything being deployed alongside the exe. Qt's ICO/BMP support is built
+    // directly into QtGui, not a runtime-discovered plugin, so this doesn't
+    // reintroduce the image-plugin dependency the macOS branch below avoids.
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/pixet.ico")));
+#endif
+    // No further setWindowIcon() call on macOS. The Dock/Finder icon comes from the
     // bundle's CFBundleIconFile (src/app/pixet.icns), and loading the same icon again
     // through Qt would mean either a .qrc holding a duplicate copy or relying on Qt's ICNS
     // image plugin - and this app deliberately avoids depending on Qt's image plugins at
-    // runtime (see QtInterop.h). Windows will want a .rc icon resource eventually; that's a
-    // separate, platform-local piece of work.
+    // runtime (see QtInterop.h).
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("pixet photo/video viewer"));

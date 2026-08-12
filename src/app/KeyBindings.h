@@ -50,11 +50,14 @@ void setBinding(Action action, const QKeySequence &seq);
 void resetBinding(Action action); // removes the override; binding() falls back to the default again
 
 // Keys ThumbGridView/FullscreenViewer's own keyPressEvent() always handles itself
-// (navigation, Escape) - picking one of these for a configurable action would make
-// that action unreachable, so the editor UI blocks it. One shared list rather than
-// splitting by which surface each action actually lives in: none of the
-// configurable actions have any legitimate reason to want a navigation key anyway,
-// so a single superset keeps validation trivial without weakening it.
+// (navigation, Escape), plus the fixed standard Edit-menu shortcuts (Select All/
+// Copy/Cut/Paste - see MainWindow's Edit menu, which wires these directly via
+// QKeySequence::StandardKey rather than through this configurable system at all) -
+// picking one of these for a configurable action would make that action
+// unreachable, or would silently steal Ctrl+C/X/V from file copy/cut/paste, so the
+// editor UI blocks it. One shared list rather than splitting by source: none of the
+// configurable actions have any legitimate reason to want any of these anyway, so a
+// single superset keeps validation trivial without weakening it.
 const QList<QKeySequence> &reservedSequences();
 
 // True if `event` matches `seq` - a plain equality check, except Qt::Key_Enter (the

@@ -41,7 +41,7 @@ QList<ActionInfo> buildActionList() {
 }
 
 QList<QKeySequence> buildReservedList() {
-    return {
+    QList<QKeySequence> list = {
         QKeySequence(Qt::Key_Left),
         QKeySequence(Qt::Key_Right),
         QKeySequence(Qt::Key_Up),
@@ -57,6 +57,18 @@ QList<QKeySequence> buildReservedList() {
         QKeySequence(QStringLiteral("Ctrl+Up")),
         QKeySequence(QStringLiteral("Ctrl+Down")),
     };
+    // Also reserve the fixed (non-remappable) Edit-menu standard shortcuts - Select
+    // All/Copy/Cut/Paste are wired directly in MainWindow via QKeySequence::StandardKey,
+    // outside this configurable-bindings system entirely, but a user must still be
+    // blocked from rebinding some other configurable action onto Ctrl+C etc.
+    // QKeySequence::keyBindings() rather than a hand-spelled literal so this also
+    // covers each platform's extra aliases (e.g. Windows' Ctrl+Insert/Shift+Insert/
+    // Shift+Delete for Copy/Paste/Cut).
+    for (QKeySequence::StandardKey sk :
+         {QKeySequence::SelectAll, QKeySequence::Copy, QKeySequence::Cut, QKeySequence::Paste}) {
+        list += QKeySequence::keyBindings(sk);
+    }
+    return list;
 }
 
 } // namespace

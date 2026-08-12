@@ -122,7 +122,11 @@ private:
     qreal scale_ = 1.0;
     QPointF centerImagePoint_;
 
-    bool trueFullscreen_ = true; // vs. a maximized window with a title bar (F key) - persists across opens
+    // vs. a maximized window with a title bar (F key). Initialized from
+    // prefs::settingsStore() in the constructor and written back there on every
+    // toggle, so this is a persisted preference (survives closing and relaunching
+    // the app), not just a within-session one - see the .cpp.
+    bool trueFullscreen_ = true;
     int infoOverlayLevel_ = 0;   // 0 = off, 1 = on (I key) - see the .cpp for why not full EXIF cycling
 
     QPoint dragStartMouse_;

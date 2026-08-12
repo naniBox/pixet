@@ -88,7 +88,6 @@ private:
     IndexOptions opts_;
     ClaimManager claims_;
 
-    int64_t upsertDir(const std::string &path, int64_t parentId);
     void indexOneDirectory(int64_t dirId, const std::string &dirPath,
                             std::vector<std::pair<int64_t, std::string>> &subdirsOut, IndexStats &stats,
                             const IndexCallbacks &callbacks);

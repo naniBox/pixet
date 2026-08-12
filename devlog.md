@@ -5,6 +5,100 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-12 — desktop — multi-select + Cut/Copy/Paste + drag in/out (pixet's first FS writes)
+
+The first feature that lets pixet modify the filesystem: multi-select in the grid
+(click/Ctrl+click/Shift+click/Shift+Arrow), an Edit menu (Select All/Cut/Copy/Paste on
+fixed, non-remappable standard shortcuts), dragging files in from Explorer to import
+them, and dragging a selection out to Explorer to move the real files there. Planned in
+detail first (three research passes plus a dedicated design pass) given the blast
+radius - see the plan file this was built from for the full phase breakdown and the
+gotchas worked through up front (collision-safe primitives, WAL multi-ATTACH atomicity,
+best-effort claims, the path-bar-shortcut-theft trap, etc.). Landed as seven phases,
+each built and verified (build + full test suite, 85/85) before the next started:
+
+1. **Multi-select in `ThumbGridView`.** Selection went from one `int currentRow_` to a
+   `QBitArray` + a "lead" row (`currentRow_`, now meaning "most recently selected," with
+   the invariant that it's always a selected row or -1) + an anchor row for range-select.
+   Preview/status-bar-detail follow the lead only, even with N>1 selected - that's the
+   "preview the latest selected image" requirement. A plain click on an *already*-
+   selected row defers collapsing to just that row until `mouseReleaseEvent` (or a drag
+   claims the press first) - otherwise starting a drag-out from a multi-selection would
+   collapse it to one item before the drag even began.
+2. **`ThumbGridModel` gained real insert/remove.** It only ever did a full reset or an
+   in-place `dataChanged` before - a file landing in, or leaving, the currently-open
+   folder now gets a single `begin/endInsertRows`/`begin/endRemoveRows`, not a reset,
+   so it doesn't lose scroll position/selection the way every Refresh used to (fixed
+   that as a side effect via `MainWindow::reloadGridPreservingSelection()`, used for
+   Refresh too now).
+3. **The core primitives, in `pixet_core`, tested before any UI touched them
+   (`src/core/util/FileMove.h`+`_win.cpp`, `src/core/fileops/FileOps.h/.cpp`).**
+   `std::filesystem::rename`/POSIX `rename()` silently overwrite, so the actual
+   primitive is `MoveFileExW`/`CopyFileExW` without `MOVEFILE_REPLACE_EXISTING` -
+   never overwrites by construction. The move that matters most: when both source and
+   destination are folders pixet has indexed, `fileops::execute()` does
+   `UPDATE files SET dir_id=?,name=?` on the *existing* row instead of the indexer's
+   blind delete+reinsert, preserving `thumb_id` - zero re-thumbnailing for an
+   in-app move. `tests/test_fileops.cpp`'s
+   `SmartMovePostOpStatPreventsRethumbnailOnNextIndex` is the one that actually proves
+   this end-to-end (runs a forced `Indexer` pass afterward and asserts
+   `thumbsDecoded==0`). Worked through a full crash-recovery matrix - every point
+   self-heals via the existing `BackgroundReconciler` at the cost of at most one
+   unnecessary re-thumbnail, never data loss.
+4. **`FileOpsWorker` + `CollisionDialog` + drag-in.** Same off-thread pattern as
+   `FolderIndexer`/`ThumbLoader`. Two-stage protocol: `preflight()` stats everything and
+   reports collisions, then one `CollisionDialog` per conflict (Replace/Skip/Keep Both,
+   "apply to all remaining") runs entirely before `execute()` ever touches a file. Drag-in
+   needed `viewport()->setAcceptDrops(true)`, not just `this` - the classic
+   `QAbstractScrollArea` drop-event gotcha (events go to whatever's actually under the
+   cursor).
+5. **Real OS clipboard interop (`ClipboardOps`).** Ctrl+C/X/V write/read actual
+   `QUrl` file lists via `QMimeData`, so Explorer's own Ctrl+V pastes real files and vice
+   versa. Cut-vs-copy on Windows is the `CFSTR_PREFERREDDROPEFFECT` clipboard format -
+   reachable through Qt's built-in any-mime converter via the mime-type spelling
+   `application/x-qt-windows-mime;value="Preferred DropEffect"`, no raw Win32 clipboard
+   code needed (a raw `OpenClipboard`/`SetClipboardData` shim alongside Qt's own
+   `setMimeData()` isn't actually viable - `SetClipboardData` requires being the
+   clipboard owner, which only `EmptyClipboard()` establishes, i.e. wiping what Qt just
+   wrote).
+6. **Drag-out.** `mousePressEvent`'s deferred-collapse plus a new `mouseMoveEvent`
+   past `QApplication::startDragDistance()` gets a real multi-file `QDrag` out of the
+   grid. Explicitly disclosed, not "fixed": pixet does not perform the physical move on
+   drag-out - Explorer does, as the drop target, and the real copy-vs-move outcome is
+   still ultimately Explorer's own modifier-key convention, not something
+   `markPreferMove()`/`Qt::MoveAction` can force. After `exec()` returns `MoveAction`,
+   pixet just runs its existing forced-rescan path rather than independently guessing
+   which dragged files are gone.
+
+**What's explicitly deferred, not forgotten:** Delete/Recycle-Bin-Trash, rubber-band
+select, dropped-directory support (recursive copy+index), a per-file right-click context
+menu, the copy-the-thumb-blob optimization for plain Copy (Move gets the win today; Copy
+still always re-thumbnails), a modal progress dialog for large batches (status bar only
+for now).
+
+**Still needs a pass on the Mac** (same "best-effort from Windows, verify with the Mac in
+hand" posture as the P5 port work below) - `FileMove_mac.cpp` was written but never run:
+`renamex_np`/`RENAME_EXCL` availability against the real deployment target, `copyfile()`
+flag behavior, `EXDEV` handling across an actual external volume; whether the custom
+`application/x-pixet-cut` mime type survives an NSPasteboard round trip and whether
+Finder actually accepts pixet's clipboard for Cmd+V/Cmd+Opt+V (Finder has no Cut of its
+own to interoperate with - Cmd+Opt+V "Move Item Here" on an ordinary copy pasteboard is
+the platform's real model, so the private marker is the honest answer here, not a
+compromise); what `QDrag::exec()` actually reports for a real Finder drop; and - the one
+correctness-relevant item, not just a nice-to-verify - that a filename arriving from a
+Finder drag-in (NFD) gets run through `normalizeForDb()`/NFC pinning before any DB
+lookup, the same bug class that helper exists to prevent, and drag-in is a brand-new
+entry point that bypasses it if forgotten.
+
+**Not yet live-tested on this machine either**, for a mundane reason: real OS-level
+drag-and-drop between Explorer and a running app isn't something that can be reliably
+synthesized via scripted mouse/keyboard input, so it needs a human's hands-on pass -
+everything else (multi-select gestures, the collision dialog, Cut/Copy/Paste) is
+implemented and compiles/passes the full suite but is likewise still pending an
+interactive click-through.
+
+---
+
 ## 2026-08-11 — desktop — verified the macOS port still builds and runs on Windows
 
 Pulled `feature/osx-port`'s four Mac commits onto this box and checked nothing regressed

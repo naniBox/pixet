@@ -2,6 +2,7 @@
 
 #include <QSettings>
 #include <QString>
+#include <QStringList>
 
 // User-configurable settings, backed by the same on-disk store MainWindow also uses
 // for window/layout state - a single place for the actual *keys* and defaults,
@@ -46,5 +47,19 @@ void setUseSystemVideoPlayer(bool useSystem);
 
 QString customVideoPlayerPath();
 void setCustomVideoPlayerPath(const QString &path);
+
+// Recently-visited *folder* history for the path bar's dropdown - directories only,
+// even though the bar itself can display a full file path (see
+// MainWindow::onGridSelectionChanged()) when a specific selected file, e.g. one
+// arrived at by pasting a full path, is shown. The only place entries get added is
+// MainWindow::navigateTo(), whose `path` argument is always a resolved directory -
+// a pasted/typed file path is resolved to its parent folder before it ever reaches
+// there (see navigateToInput()), so this can't accidentally end up with a file path
+// in it. Most-recent-first, deduplicated (revisiting an existing entry moves it to
+// the front rather than creating a duplicate), capped at kMaxPathHistory entries.
+QStringList pathHistory();
+void addToPathHistory(const QString &dirPath);
+void clearPathHistory();
+constexpr int kMaxPathHistory = 20;
 
 } // namespace prefs

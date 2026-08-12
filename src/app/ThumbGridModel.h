@@ -9,6 +9,7 @@
 
 namespace pixet {
 class Database;
+class Statement;
 }
 
 // Backs the thumbnail grid for the current folder. Rows come from a synchronous
@@ -51,6 +52,37 @@ public:
     // Row index for the (currently loaded) file named `name`, or -1 if there's no
     // such row - used by the path bar's "paste a file path" -> select-it behavior.
     int rowForName(const QString &name) const;
+
+    // Sum of `size` over the given rows, read directly from rows_ rather than N
+    // QVariant round trips through data() - Select All on a large folder would
+    // otherwise be tens of thousands of QVariant constructions per status-bar update.
+    qint64 sizeForRows(const QList<int> &rows) const;
+
+    // True once setDirectory() has resolved a real dirs row - insertOrUpdateFileByName()/
+    // removeFileById() are meaningless before that (there's nothing to query
+    // against); callers should fall back to a full setDirectory() reload instead.
+    bool hasDirectory() const { return dirId_ != 0; }
+
+    // Row index for the (currently loaded) file with id `fileId`, or -1 - mirror of
+    // rowForName(), used to re-derive a selection by file identity across a reload
+    // (see MainWindow::reloadGridPreservingSelection).
+    int rowForFileId(qint64 fileId) const;
+
+    // Re-reads the files row for `name` in the current directory and inserts it at
+    // its correct sorted-by-name position (matching SQLite's BINARY ORDER BY name,
+    // not QString::operator<), or updates it in place if a row for that name already
+    // exists. Emits begin/endInsertRows or dataChanged accordingly, so an already-
+    // displayed grid gains/updates exactly one cell rather than resetting (and losing
+    // scroll position/selection) - used after a file-move/copy/drag/paste lands a
+    // file in the currently-open folder. Returns the resulting row index, or -1 if
+    // there's no such files row (caller must commit it to the DB first) or
+    // hasDirectory() is false.
+    int insertOrUpdateFileByName(const QString &name);
+
+    // Removes the row for `fileId`, emitting begin/endRemoveRows - the counterpart to
+    // insertOrUpdateFileByName() for a file that moved *out* of the currently-open
+    // folder. False if there was no such row.
+    bool removeFileById(qint64 fileId);
 
     // Folder-level aggregates over every row currently loaded (all states, including
     // not-yet-thumbnailed - size/kind are known from Pass A alone) - recomputed by
@@ -97,6 +129,24 @@ private:
         QPixmap thumb;
         mutable bool requested = false;
     };
+
+    // Maps the current row of a "SELECT id, name, fmt, state, thumb_id, size, width,
+    // height, taken_at, duration_ms FROM files ..." statement (this exact column
+    // list/order is shared by setDirectory()'s bulk query and loadRow()'s single-row
+    // query) into a Row.
+    static Row rowFromStatement(pixet::Statement &sel);
+    // Single-row mirror of setDirectory()'s bulk query, for (dirId_, name) - false if
+    // no such files row exists (caller must commit it to the DB first).
+    bool loadRow(const QString &name, Row &out) const;
+    // Adds (sign=+1) or removes (sign=-1) `row`'s contribution to the five running
+    // aggregates below - shared by setDirectory() and the incremental insert/remove
+    // paths so they can't drift apart on a future schema addition.
+    void accumulate(const Row &row, int sign);
+    // Rebuilds rowByFileId_/rowByName_ from rows_ in one pass. Every insert/remove
+    // invalidates every index at or after the mutation point - rebuilding wholesale
+    // (cheap: a folder's worth of rows, not the whole library) is simpler and less
+    // bug-prone than shifting each index in place.
+    void reindexLookups();
 
     pixet::Database &db_;
     int64_t dirId_ = 0;

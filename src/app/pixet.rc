@@ -1,0 +1,10 @@
+// Windows resource script - sets the .exe's icon (Explorer, taskbar, Alt+Tab). The
+// first ICON resource in the file is what Explorer/the taskbar actually use as the
+// executable's own icon, regardless of the numeric id - IDI_APP just names it.
+//
+// pixet.ico is generated from pixet.icns (the macOS icon built during the P5 port),
+// not drawn separately - see scripts/ (or the devlog entry it was built in) for how
+// to regenerate it if pixet.icns is ever replaced: extract the ic11/ic12/ic07/ic13
+// PNG chunks (32/64/128/256px) and pack them into one multi-resolution .ico.
+#define IDI_APP 101
+IDI_APP ICON "pixet.ico"
