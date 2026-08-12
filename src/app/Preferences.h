@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QList>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
@@ -27,9 +28,23 @@ QSettings settingsStore();
 // it from its own worker thread, not just the UI thread.
 int thumbnailIconSize();
 void setThumbnailIconSize(int px);
-constexpr int kDefaultThumbnailIconSize = 150;
+constexpr int kDefaultThumbnailIconSize = 180;
 constexpr int kMinThumbnailIconSize = 80;
-constexpr int kMaxThumbnailIconSize = 400;
+constexpr int kMaxThumbnailIconSize = 480;
+
+// The sizes offered in the UI. One list, used by both the status bar drop-down and the
+// Preferences dialog - they used to be a preset list and a free-form spinbox respectively,
+// which meant Preferences could produce a value the drop-down had no entry for.
+//
+// kMin/kMaxThumbnailIconSize deliberately stay wider than this: they're the clamp applied to
+// whatever is *read back* from the ini, so a value saved by an older build (the previous
+// default was 150) still loads intact rather than being silently snapped to a preset.
+constexpr int kThumbnailSizePresets[] = {180, 240, 300, 400, 480};
+
+// The presets, plus `current` inserted in order if it isn't one of them. Keeps a value
+// carried over from an older build visible and selectable instead of quietly rewriting the
+// user's setting the first time a dialog is opened.
+QList<int> thumbnailSizeChoices(int current);
 
 // Grid cells reserve a landscape-shaped image area (height = this x thumbnailIconSize()),
 // not a square one.
@@ -54,6 +69,16 @@ int thumbnailImageAreaHeightFor(int iconWidth);
 // thumbnails aren't retroactively regenerated at the new size just because this
 // preference changed - that's what "Force Re-thumbnail This Folder" is for.
 int thumbnailTargetLongEdge();
+
+// When true, browsing into a folder whose stored thumbnails are too small for the current
+// display size regenerates them straight away, instead of just lighting the status bar's
+// freshness dot red and waiting to be clicked.
+//
+// Off by default, and deliberately so: re-thumbnailing re-reads and re-decodes every
+// original in the folder, so on a large or slow directory it's a visible cost that should be
+// something the user opted into rather than something browsing silently triggers.
+bool autoRethumbnail();
+void setAutoRethumbnail(bool enabled);
 
 // true = open videos with whatever the OS has associated with the file type;
 // false = launch customVideoPlayerPath() instead - see

@@ -37,6 +37,24 @@ void setThumbnailIconSize(int px) {
     settingsStore().setValue(QStringLiteral("thumbnailIconSize"), px);
 }
 
+bool autoRethumbnail() {
+    return settingsStore().value(QStringLiteral("autoRethumbnail"), false).toBool();
+}
+
+void setAutoRethumbnail(bool enabled) {
+    settingsStore().setValue(QStringLiteral("autoRethumbnail"), enabled);
+}
+
+QList<int> thumbnailSizeChoices(int current) {
+    QList<int> sizes;
+    for (int px : kThumbnailSizePresets) sizes.append(px);
+    if (!sizes.contains(current)) {
+        sizes.append(current);
+        std::sort(sizes.begin(), sizes.end());
+    }
+    return sizes;
+}
+
 int thumbnailImageAreaHeightFor(int iconWidth) {
     return std::max(1, (int)std::lround(iconWidth * kThumbnailTileAspect));
 }

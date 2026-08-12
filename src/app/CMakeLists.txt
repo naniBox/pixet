@@ -76,6 +76,9 @@ add_executable(pixet ${PIXET_APP_TYPE}
     RawRenderer.h
     RawRenderer.cpp
 
+    DatabaseStatsDialog.h
+    DatabaseStatsDialog.cpp
+
     Preferences.h
     Preferences.cpp
     PreferencesDialog.h

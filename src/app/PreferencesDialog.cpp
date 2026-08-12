@@ -4,6 +4,8 @@
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QFrame>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QKeySequenceEdit>
@@ -61,13 +63,17 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
 
     auto *thumbGroup = new QGroupBox(QStringLiteral("Thumbnails"), generalTab);
     auto *thumbLayout = new QFormLayout(thumbGroup);
-    thumbnailSizeSpin_ = new QSpinBox(thumbGroup);
-    thumbnailSizeSpin_->setRange(prefs::kMinThumbnailIconSize, prefs::kMaxThumbnailIconSize);
-    thumbnailSizeSpin_->setSuffix(QStringLiteral(" px"));
-    thumbnailSizeSpin_->setSingleStep(10);
+    // A drop-down over prefs::thumbnailSizeChoices(), not a free-form spinbox: the status
+    // bar offers the same setting as a fixed list, and a spinbox here could produce a value
+    // that list had no entry for. One shared source, so the two controls always agree.
     originalThumbnailSize_ = prefs::thumbnailIconSize();
-    thumbnailSizeSpin_->setValue(originalThumbnailSize_);
-    thumbLayout->addRow(QStringLiteral("Grid thumbnail size:"), thumbnailSizeSpin_);
+    thumbnailSizeCombo_ = new QComboBox(thumbGroup);
+    for (int px : prefs::thumbnailSizeChoices(originalThumbnailSize_)) {
+        thumbnailSizeCombo_->addItem(QStringLiteral("%1 px").arg(px), px);
+    }
+    thumbnailSizeCombo_->setCurrentIndex(
+        thumbnailSizeCombo_->findData(originalThumbnailSize_));
+    thumbLayout->addRow(QStringLiteral("Grid thumbnail size:"), thumbnailSizeCombo_);
     generalLayout->addWidget(thumbGroup);
     generalLayout->addStretch(1);
     tabs->addTab(generalTab, QStringLiteral("General"));
@@ -130,6 +136,36 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     indexLayout->addWidget(reindexStatusLabel_);
     maintenanceLayout->addWidget(indexGroup);
     connect(reindexButton, &QPushButton::clicked, this, &PreferencesDialog::onReindexClicked);
+
+    auto *thumbMaintGroup = new QGroupBox(QStringLiteral("Thumbnails"), maintenanceTab);
+    auto *thumbMaintLayout = new QVBoxLayout(thumbMaintGroup);
+    autoRethumbCheck_ = new QCheckBox(QStringLiteral("Auto rethumb"), thumbMaintGroup);
+    autoRethumbCheck_->setChecked(prefs::autoRethumbnail());
+    auto *autoRethumbHint = new QLabel(
+        QStringLiteral("Thumbnails are stored at whatever size was configured when a folder was scanned, so "
+                        "raising the grid size leaves older folders looking soft. The status bar's dot turns red "
+                        "when the folder on screen is affected, and clicking it regenerates that folder.\n\n"
+                        "With this on, those folders are regenerated automatically as you browse into them "
+                        "instead of waiting to be clicked. Off by default: regenerating re-reads and re-decodes "
+                        "every original in the folder, which is worth opting into rather than having browsing "
+                        "quietly trigger it."),
+        thumbMaintGroup);
+    autoRethumbHint->setWordWrap(true);
+    thumbMaintLayout->addWidget(autoRethumbCheck_);
+    thumbMaintLayout->addWidget(autoRethumbHint);
+    maintenanceLayout->addWidget(thumbMaintGroup);
+
+    auto *dbGroup = new QGroupBox(QStringLiteral("Database"), maintenanceTab);
+    auto *dbLayout = new QVBoxLayout(dbGroup);
+    auto *statsButton = new QPushButton(QStringLiteral("Database Statistics..."), dbGroup);
+    auto *statsHint = new QLabel(
+        QStringLiteral("Row counts, on-disk size, and how much space could be reclaimed by compacting."),
+        dbGroup);
+    statsHint->setWordWrap(true);
+    dbLayout->addWidget(statsButton);
+    dbLayout->addWidget(statsHint);
+    maintenanceLayout->addWidget(dbGroup);
+    connect(statsButton, &QPushButton::clicked, this, &PreferencesDialog::databaseStatsRequested);
 
     auto *dangerGroup = new QGroupBox(QStringLiteral("Danger Zone"), maintenanceTab);
     auto *dangerLayout = new QVBoxLayout(dangerGroup);
@@ -240,7 +276,9 @@ void PreferencesDialog::accept() {
     prefs::setUseSystemVideoPlayer(systemPlayerRadio_->isChecked());
     prefs::setCustomVideoPlayerPath(customPlayerPathEdit_->text());
 
-    int newSize = thumbnailSizeSpin_->value();
+    prefs::setAutoRethumbnail(autoRethumbCheck_->isChecked());
+
+    int newSize = thumbnailSizeCombo_->currentData().toInt();
     prefs::setThumbnailIconSize(newSize);
     if (newSize != originalThumbnailSize_) emit thumbnailSizeChanged();
 

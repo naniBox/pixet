@@ -5,10 +5,11 @@
 
 #include "KeyBindings.h"
 
+class QCheckBox;
+class QComboBox;
 class QLineEdit;
 class QPushButton;
 class QRadioButton;
-class QSpinBox;
 class QLabel;
 class QKeySequenceEdit;
 
@@ -38,6 +39,10 @@ signals:
     // MainWindow does the actual deletion (it owns the live Database connection this
     // dialog deliberately doesn't touch directly) and refreshes the grid afterward.
     void nukeDatabaseRequested();
+    // "Database Statistics..." was clicked - MainWindow opens the dialog, for the same
+    // reason nukeDatabaseRequested() exists: it owns the live Database connection, which
+    // this dialog deliberately never touches directly.
+    void databaseStatsRequested();
 
 private slots:
     void onBrowseCustomPlayer();
@@ -50,7 +55,8 @@ private:
     QRadioButton *customPlayerRadio_;
     QLineEdit *customPlayerPathEdit_;
     QPushButton *browseButton_;
-    QSpinBox *thumbnailSizeSpin_;
+    QComboBox *thumbnailSizeCombo_;
+    QCheckBox *autoRethumbCheck_;
     QLabel *reindexStatusLabel_;
     QLabel *nukeStatusLabel_;
     QMap<keybindings::Action, QKeySequenceEdit *> keyBindingEdits_;
