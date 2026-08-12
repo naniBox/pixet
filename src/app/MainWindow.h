@@ -73,6 +73,12 @@ private slots:
     void onBookmarkClicked(QListWidgetItem *item);
     void onBookmarksContextMenu(const QPoint &pos);
     void onGridSelectionChanged();
+    // Ctrl-hover over the grid (see ThumbGridView::ctrlHoverRowChanged) - previews
+    // whatever's under the cursor without touching the actual selection, so a
+    // multi-select in progress isn't disturbed. row == -1 means "stop peeking" (Ctrl
+    // released, mouse left the grid, or moved over empty space) - reverts to
+    // whatever's actually selected via onGridSelectionChanged().
+    void onGridCtrlHoverChanged(int row);
     void onGridContextMenu(const QPoint &pos);
     // Double-click or Enter/Return on a thumbnail - opens the fullscreen viewer (P3).
     void onGridItemActivated(int row);
@@ -326,6 +332,14 @@ private:
     // is available without adding a DB column (see updateSelectionStatus()). 0 until
     // the preview for the current selection actually lands.
     int currentPreviewBpp_ = 0;
+    // True when the in-flight/most recent preview request (pendingPreviewPath_ at the
+    // time triggerPreviewRequest() fired it, tracked forward via currentPreviewRequestId_)
+    // is a Ctrl-hover peek (see ThumbGridView::ctrlHoverRowChanged) rather than the
+    // real selection. onPreviewReady() uses this to show the image without touching
+    // currentPreviewBpp_/updateSelectionStatus() - those describe the actual selected
+    // item's status bar labels, which a transient hover peek elsewhere must not stomp.
+    bool pendingPreviewIsCtrlHover_ = false;
+    bool currentPreviewIsCtrlHover_ = false;
     // Set by navigateToInput() when the path bar was given a *file* path rather than
     // a directory - applied (and cleared) as soon as the grid model has that file's
     // row, which may not be immediate on a folder that needs indexing. See

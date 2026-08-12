@@ -156,12 +156,21 @@ signals:
     // view can't build the drag payload itself (it only knows filenames, not the
     // folder path), so MainWindow constructs and exec()s the actual QDrag.
     void dragOutRequested();
+    // Ctrl is held and the mouse moved onto a different cell than last reported (or
+    // Ctrl was released, or the mouse left the grid, or moved over empty space) -
+    // row is -1 for all of the latter cases, meaning "stop peeking, go back to
+    // showing whatever's actually selected." Deliberately independent of
+    // selected_/currentRow_ - this lets the preview pane show any thumbnail under
+    // the cursor without disturbing an in-progress multi-select, which is the whole
+    // point (see MainWindow::onGridCtrlHoverChanged).
+    void ctrlHoverRowChanged(int row);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
@@ -210,6 +219,12 @@ private:
     // drawDropFeedback()'s border color, the same way the cursor's own OS-drawn
     // copy/move badge already reflects it natively.
     bool dragCopyMode_ = false;
+
+    // Last row reported via ctrlHoverRowChanged() - -1 means either Ctrl isn't
+    // currently held or the mouse isn't over a cell. Independent of hoverRow_ (the
+    // info-tooltip's own hover tracking) - the two features share mouseMoveEvent but
+    // don't otherwise interact.
+    int ctrlHoverRow_ = -1;
 
     // Hover-info tooltip: deliberately a self-managed timer rather than Qt's own
     // QEvent::ToolTip/QToolTip auto-trigger - this class extends QAbstractScrollArea

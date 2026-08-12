@@ -209,6 +209,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // selectedRows() it needs regardless of which signal triggered it.
     connect(grid_, &ThumbGridView::selectionChanged, this, &MainWindow::updateSelectionStatus);
     connect(grid_, &ThumbGridView::selectionChanged, this, &MainWindow::updateEditActionsEnabled);
+    connect(grid_, &ThumbGridView::ctrlHoverRowChanged, this, &MainWindow::onGridCtrlHoverChanged);
     grid_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(grid_, &QWidget::customContextMenuRequested, this, &MainWindow::onGridContextMenu);
     connect(grid_, &ThumbGridView::navigateFolderRequested, this, &MainWindow::onNavigateFolderRequested);
@@ -1084,6 +1085,7 @@ void MainWindow::onGridSelectionChanged() {
     QModelIndex idx = gridModel_->index(grid_->currentRow());
     if (!idx.isValid()) {
         pendingPreviewPath_.clear();
+        pendingPreviewIsCtrlHover_ = false;
         preview_->clear();
         pathBar_->setCurrentText(currentPath_);
         return;
@@ -1092,6 +1094,7 @@ void MainWindow::onGridSelectionChanged() {
     QString name = idx.data(Qt::DisplayRole).toString();
     pendingPreviewFmt_ = idx.data(ThumbGridModel::FormatRole).toInt();
     pendingPreviewPath_ = joinPathQ(currentPath_, name);
+    pendingPreviewIsCtrlHover_ = false;
     // Display only - the full file path never gets recorded into history (see
     // prefs::pathHistory()'s doc comment). setCurrentText() on an editable combo
     // just sets the edit line's text; it doesn't need to match (or become) a
@@ -1101,9 +1104,34 @@ void MainWindow::onGridSelectionChanged() {
     previewDebounce_->start();
 }
 
+void MainWindow::onGridCtrlHoverChanged(int row) {
+    if (row < 0) {
+        // Ctrl released / mouse left the grid / hovered empty space - go back to
+        // showing whatever's actually selected. Reuses onGridSelectionChanged()
+        // wholesale rather than a separate revert path: the real selection never
+        // changed, so recomputing its status-bar/path-bar/viewport state is
+        // redundant but harmless, and this way there's exactly one place that knows
+        // how to derive "what should the preview show" from the actual selection.
+        onGridSelectionChanged();
+        return;
+    }
+
+    QModelIndex idx = gridModel_->index(row);
+    if (!idx.isValid()) return;
+
+    // Deliberately skips onGridSelectionChanged()'s other side effects (status bar,
+    // path bar text, viewport repaint) - the actual selection hasn't changed, only
+    // the preview pane should react to a Ctrl-hover peek.
+    pendingPreviewFmt_ = idx.data(ThumbGridModel::FormatRole).toInt();
+    pendingPreviewPath_ = joinPathQ(currentPath_, idx.data(Qt::DisplayRole).toString());
+    pendingPreviewIsCtrlHover_ = true;
+    previewDebounce_->start();
+}
+
 void MainWindow::triggerPreviewRequest() {
     if (pendingPreviewPath_.isEmpty()) return;
     currentPreviewRequestId_ = ++previewRequestCounter_;
+    currentPreviewIsCtrlHover_ = pendingPreviewIsCtrlHover_;
     previewDecoder_->requestPreview(currentPreviewRequestId_, pendingPreviewPath_, pendingPreviewFmt_,
                                      preview_->preferredTargetLongEdge());
 }
@@ -1111,6 +1139,7 @@ void MainWindow::triggerPreviewRequest() {
 void MainWindow::onPreviewReady(qint64 requestId, QImage image) {
     if (requestId != currentPreviewRequestId_) return; // superseded by a newer selection
     preview_->setImage(image);
+    if (currentPreviewIsCtrlHover_) return; // a hover peek, not the real selection - see the member comment
     // QImage::depth() (bits per pixel, e.g. 24 for 8-bit/channel RGB) is the only place
     // this app has bit-depth info without adding a DB column - see the member comment.
     currentPreviewBpp_ = image.isNull() ? 0 : image.depth();

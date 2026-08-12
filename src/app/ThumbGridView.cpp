@@ -665,6 +665,13 @@ void ThumbGridView::mousePressEvent(QMouseEvent *event) {
 void ThumbGridView::mouseMoveEvent(QMouseEvent *event) {
     if (!(event->buttons() & Qt::LeftButton) || pressRow_ < 0) {
         handleHoverMove(event->pos());
+
+        int ctrlRow = (event->modifiers() & Qt::ControlModifier) ? rowAt(event->pos()) : -1;
+        if (ctrlRow != ctrlHoverRow_) {
+            ctrlHoverRow_ = ctrlRow;
+            emit ctrlHoverRowChanged(ctrlRow);
+        }
+
         QAbstractScrollArea::mouseMoveEvent(event);
         return;
     }
@@ -674,6 +681,10 @@ void ThumbGridView::mouseMoveEvent(QMouseEvent *event) {
     if (hoverRow_ >= 0) {
         hoverRow_ = -1;
         QToolTip::hideText();
+    }
+    if (ctrlHoverRow_ >= 0) {
+        ctrlHoverRow_ = -1;
+        emit ctrlHoverRowChanged(-1);
     }
     if ((event->pos() - pressPos_).manhattanLength() < QApplication::startDragDistance()) return;
 
@@ -714,7 +725,23 @@ void ThumbGridView::leaveEvent(QEvent *event) {
         hoverRow_ = -1;
         QToolTip::hideText();
     }
+    if (ctrlHoverRow_ >= 0) {
+        ctrlHoverRow_ = -1;
+        emit ctrlHoverRowChanged(-1);
+    }
     QAbstractScrollArea::leaveEvent(event);
+}
+
+void ThumbGridView::keyReleaseEvent(QKeyEvent *event) {
+    // Catches releasing Ctrl while the mouse sits still over a cell (no
+    // mouseMoveEvent to notice it otherwise) - only reachable while this widget has
+    // focus, which covers the common case (clicking into the grid before Ctrl-
+    // hovering around it), not e.g. Ctrl released while some other widget has focus.
+    if (event->key() == Qt::Key_Control && ctrlHoverRow_ >= 0) {
+        ctrlHoverRow_ = -1;
+        emit ctrlHoverRowChanged(-1);
+    }
+    QAbstractScrollArea::keyReleaseEvent(event);
 }
 
 void ThumbGridView::handleHoverMove(const QPoint &viewportPos) {
