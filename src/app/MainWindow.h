@@ -103,6 +103,12 @@ private slots:
     void addFileInfoToContextMenu(QMenu &menu, int row);
     void onAddBookmark();
     void onRefresh();
+    // Ctrl+D by default (see KeyBindings.cpp), configurable like the other
+    // single-action-trigger keys. No visible menu entry - see focusAddressBarAction_'s
+    // own comment for why. Gives the path bar focus and selects its text, matching
+    // the "type a new destination immediately" convention address-bar-focus
+    // shortcuts have in browsers.
+    void onFocusAddressBar();
     void onForceRethumbnail();
     void onPreferences();
     // File > Choose Folder... - until now there was no folder picker anywhere in the app;
@@ -227,6 +233,13 @@ private:
     // applyKeyBindingShortcuts() can re-apply them after the Preferences dialog's
     // keybindings editor closes.
     QAction *refreshAction_;
+    // Deliberately never added to a QMenu - unlike refreshAction_/toggleSidePanelAction_/
+    // addBookmarkAction_, "focus the address bar" isn't a command anyone would look
+    // for in a menu, just a keyboard convenience. Still goes through the exact same
+    // QAction + applyKeyBindingShortcuts() machinery (added to the window itself via
+    // addAction() instead, so its shortcut is live) so it's configurable in
+    // PreferencesDialog like every other single-key action.
+    QAction *focusAddressBarAction_;
     QAction *toggleSidePanelAction_;
     QAction *hoverInfoAction_;
     QAction *addBookmarkAction_;

@@ -19,6 +19,7 @@ enum class Action {
     ToggleSidePanel,
     Refresh,
     AddBookmark,
+    FocusAddressBar,
     // Grid: opens the current selection in FullscreenViewer (ThumbGridView's
     // activated() signal). FullscreenViewer: closes back to the grid - the same
     // binding does both, a deliberate toggle (see FullscreenViewer::keyPressEvent).

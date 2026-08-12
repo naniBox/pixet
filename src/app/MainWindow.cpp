@@ -443,6 +443,13 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     hoverInfoAction_ = viewMenu->addAction(QStringLiteral("Show Hover Info"), this, &MainWindow::onToggleHoverInfo);
     hoverInfoAction_->setCheckable(true);
     hoverInfoAction_->setChecked(prefs::hoverInfoEnabled());
+
+    // Not in any menu - see the member's own doc comment - just registered on the
+    // window so its shortcut is live.
+    focusAddressBarAction_ = new QAction(this);
+    connect(focusAddressBarAction_, &QAction::triggered, this, &MainWindow::onFocusAddressBar);
+    addAction(focusAddressBarAction_);
+
     applyKeyBindingShortcuts();
 
     // Tools always exists now (unconditionally, on both platforms) - Force
@@ -771,6 +778,18 @@ void MainWindow::onGridContextMenu(const QPoint &pos) {
     menu.addAction(cutAction_);
     menu.addAction(copyAction_);
     menu.addAction(pasteAction_);
+
+    int row = grid_->currentRow();
+    if (row >= 0) {
+        menu.addSeparator();
+        QString name = gridModel_->index(row).data(Qt::DisplayRole).toString();
+        QString fullPath = joinPathQ(currentPath_, name);
+        menu.addAction(QStringLiteral("Copy Name"), this,
+                        [name]() { QGuiApplication::clipboard()->setText(name); });
+        menu.addAction(QStringLiteral("Copy Path"), this,
+                        [fullPath]() { QGuiApplication::clipboard()->setText(fullPath); });
+    }
+
     menu.exec(grid_->mapToGlobal(pos));
 }
 
@@ -1102,6 +1121,11 @@ void MainWindow::onAddBookmark() {
     if (!currentPath_.isEmpty()) addBookmark(currentPath_);
 }
 
+void MainWindow::onFocusAddressBar() {
+    pathBar_->setFocus(Qt::ShortcutFocusReason);
+    if (QLineEdit *le = pathBar_->lineEdit()) le->selectAll();
+}
+
 void MainWindow::onRefresh() {
     if (!currentPath_.isEmpty()) navigateTo(currentPath_, /*forceReindex=*/true);
 }
@@ -1163,6 +1187,7 @@ void MainWindow::applyKeyBindingShortcuts() {
     refreshAction_->setShortcut(keybindings::binding(keybindings::Action::Refresh));
     toggleSidePanelAction_->setShortcut(keybindings::binding(keybindings::Action::ToggleSidePanel));
     addBookmarkAction_->setShortcut(keybindings::binding(keybindings::Action::AddBookmark));
+    focusAddressBarAction_->setShortcut(keybindings::binding(keybindings::Action::FocusAddressBar));
 }
 
 QLineEdit *MainWindow::focusedLineEdit() const { return qobject_cast<QLineEdit *>(QApplication::focusWidget()); }
@@ -1337,7 +1362,17 @@ void MainWindow::onCopyGridDebugInfo() {
 }
 
 void MainWindow::onIndexerStarted(QString path) {
-    if (path == currentPath_) statusBar()->showMessage(QStringLiteral("Indexing %1...").arg(path));
+    if (path != currentPath_) return;
+    // Folder name only, not the full path (see addBookmark() for the same
+    // drive-root fallback) - a long full path was the same class of collision-with-
+    // the-permanent-widget-row bug as onIndexerFinished's old message (see that
+    // handler's comment), and is more than anyone needs for "which folder is this
+    // about" when it's already the one on screen. No explicit timeout - cleared by
+    // onIndexerFinished(), not by a fixed delay, since indexing can take anywhere
+    // from milliseconds to well over a minute on a large folder.
+    QString label = QFileInfo(path).fileName();
+    if (label.isEmpty()) label = path;
+    statusBar()->showMessage(QStringLiteral("Indexing %1...").arg(label));
 }
 
 void MainWindow::onFilesListed(QString path) {
@@ -1366,7 +1401,22 @@ void MainWindow::onIndexerFinished(QString path) {
     if (path != currentPath_) return;
     gridModel_->refreshThumbStates(); // catch any trailing batch
     grid_->viewport()->update();
-    statusBar()->showMessage(QStringLiteral("%1 - %2 items").arg(path).arg(gridModel_->rowCount()), 4000);
+    // Used to also post a transient statusBar()->showMessage("<path> - N items", ...)
+    // here - redundant with folderStatsLabel_ (which already shows this persistently)
+    // and the actual bug: QStatusBar's built-in temporary-message label doesn't elide/
+    // shrink the way StatusLabel does (see its class comment), so a long full path
+    // routinely ran right into the permanent widget row, e.g. rendering as
+    // "...\Models - 4 i" immediately followed by folderStatsLabel_'s own
+    // "4 items (4 img, 0 vid) · 9.52 MiB" with no gap - a real reported bug, not
+    // hypothetical. updateSelectionStatus() here instead keeps rawStatusLabel_ (RAW
+    // rendered/preview counts) fresh too, which this handler previously didn't touch.
+    updateSelectionStatus();
+    // Clears onIndexerStarted()'s "Indexing <folder>..." message, which has no
+    // timeout of its own (indexing can take anywhere from milliseconds to well over
+    // a minute) - without this call, removing the old showMessage() here (above)
+    // left nothing to ever replace/clear it, so it silently lingered forever. A real
+    // reported regression from that first fix, not hypothetical either.
+    statusBar()->clearMessage();
 }
 
 void MainWindow::onBackgroundDirectoryChanged(QString path) {

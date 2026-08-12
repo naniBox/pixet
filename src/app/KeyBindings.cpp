@@ -27,7 +27,12 @@ QList<ActionInfo> buildActionList() {
 #else
          QKeySequence(QStringLiteral("F5"))},
 #endif
+        // Was Ctrl+D by default - freed up for FocusAddressBar below (an explicit
+        // user request), since two actions can't share a default without one
+        // silently winning; B for "bookmark" doesn't collide with anything else here.
         {Action::AddBookmark, QStringLiteral("addBookmark"), QStringLiteral("Add current folder to bookmarks"),
+         QKeySequence(QStringLiteral("Ctrl+B"))},
+        {Action::FocusAddressBar, QStringLiteral("focusAddressBar"), QStringLiteral("Focus address bar"),
          QKeySequence(QStringLiteral("Ctrl+D"))},
         {Action::ActivateFullscreen, QStringLiteral("activateFullscreen"),
          QStringLiteral("Open / close fullscreen viewer"), QKeySequence(Qt::Key_Return)},
