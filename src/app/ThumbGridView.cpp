@@ -123,18 +123,22 @@ void ThumbGridView::relayout() {
 
     int vw = viewport()->width();
     if (vw > 0) {
-        // Cells keep their natural width; the leftover is centred as an outer margin rather
-        // than divided among the cells.
-        //
-        // This used to be `cellWidth_ = vw / columns_`, stretching every cell to fill the row
-        // evenly. That sounds harmless and isn't: the thumbnail inside is still only
-        // iconSize_ wide, so all of the leftover became empty space *around each photo*, and
-        // the amount jumped around as the window resized (at a 240px icon size: 2px per side
-        // at a 1300px viewport, 22px at 1500px). Concentrating it in one margin makes the
-        // spacing between photos constant, and independent of window width.
+        // Cells keep their natural width (iconSize_ + padding) - only the *gutters*
+        // between/around them absorb the leftover. This used to be
+        // `cellWidth_ = vw / columns_`, stretching every cell to fill the row evenly:
+        // that sounds harmless and isn't, since the thumbnail inside is still only
+        // iconSize_ wide, so all of the leftover became empty space *around each
+        // photo*, and the amount jumped around as the window resized (at a 240px icon
+        // size: 2px per side at a 1300px viewport, 22px at 1500px). Spreading it across
+        // (columns_+1) equal gutters instead keeps every photo exactly the size the
+        // user picked, and reads as intentional grid spacing rather than a wide dead
+        // margin down each side - see the class comment on gridOffsetX_/columnStride_.
         cellWidth_ = iconSize_ + 2 * kCellPadding;
         columns_ = qMax(1, vw / cellWidth_);
-        gridOffsetX_ = qMax(0, (vw - columns_ * cellWidth_) / 2);
+        int leftover = qMax(0, vw - columns_ * cellWidth_);
+        int gutter = leftover / (columns_ + 1);
+        gridOffsetX_ = gutter;
+        columnStride_ = cellWidth_ + gutter;
     }
 
     int rc = rowCount();
@@ -160,19 +164,23 @@ QRect ThumbGridView::contentRect(int row) const {
     if (columns_ <= 0) return QRect();
     int gridRow = row / columns_;
     int gridCol = row % columns_;
-    return QRect(gridOffsetX_ + gridCol * cellWidth_, gridRow * cellHeight_, cellWidth_, cellHeight_);
+    return QRect(gridOffsetX_ + gridCol * columnStride_, gridRow * cellHeight_, cellWidth_, cellHeight_);
 }
 
 int ThumbGridView::rowAt(const QPoint &pos) const {
-    if (columns_ <= 0 || cellWidth_ <= 0 || cellHeight_ <= 0) return -1;
+    if (columns_ <= 0 || columnStride_ <= 0 || cellHeight_ <= 0) return -1;
     int contentY = pos.y() + verticalScrollBar()->value();
-    // gridOffsetX_ is the centring margin (see relayout()); a click to the left of the first
-    // column lands negative here and is correctly "no row", same as one past the last column.
+    // gridOffsetX_ is the left gutter (see relayout()); a click to the left of the
+    // first column lands negative here and is correctly "no row", same as one past the
+    // last column.
     int gridX = pos.x() - gridOffsetX_;
     if (contentY < 0 || gridX < 0) return -1;
     int gridRow = contentY / cellHeight_;
-    int gridCol = gridX / cellWidth_;
-    if (gridCol >= columns_) return -1; // clicked past the last column's cell (empty margin)
+    int gridCol = gridX / columnStride_;
+    if (gridCol >= columns_) return -1; // clicked past the last column's cell (trailing gutter)
+    // Within a column's stride, but past its cell into the gutter before the next one -
+    // still empty space, not an early hit on the next column.
+    if (gridX % columnStride_ >= cellWidth_) return -1;
     int row = gridRow * columns_ + gridCol;
     if (row >= rowCount()) return -1;
     return row;
@@ -457,7 +465,7 @@ void ThumbGridView::paintEvent(QPaintEvent *event) {
         for (int col = 0; col < columns_; ++col) {
             int row = gridRow * columns_ + col;
             if (row >= rc) break;
-            QRect rect(gridOffsetX_ + col * cellWidth_, gridRow * cellHeight_ - scrollValue, cellWidth_,
+            QRect rect(gridOffsetX_ + col * columnStride_, gridRow * cellHeight_ - scrollValue, cellWidth_,
                         cellHeight_);
             paintCell(painter, row, rect);
         }

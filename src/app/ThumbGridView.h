@@ -261,11 +261,18 @@ private:
     // Height of the image area inside a cell - deliberately less than iconSize_, so a
     // landscape photo isn't letterboxed inside a square box. See prefs::kThumbnailTileAspect.
     int imageAreaHeight_ = 0;
-    // Left margin, centring the block of columns in the viewport. Cells are a fixed width
-    // rather than stretched to fill the row, so whatever width doesn't divide evenly into
-    // whole columns collects here instead of being shared out as extra padding around every
-    // thumbnail - see relayout(). Painting and hit-testing both offset by it.
+    // Whatever viewport width doesn't divide evenly into whole columns is spread out as
+    // equal gutters - between every pair of adjacent columns, and on the two outer edges
+    // - rather than collected into one pair of big outer margins. Cells themselves stay a
+    // fixed width (iconSize_ + 2*kCellPadding, matching the user's chosen icon size
+    // exactly - see relayout()'s comment on why a *stretched* cell width was tried and
+    // reverted before: it made the empty space *around each photo* grow unpredictably
+    // with window width instead of just the gaps between photos). gridOffsetX_ is the
+    // left edge of column 0 (== one gutter width, in this scheme); columnStride_ is the
+    // distance from one column's left edge to the next (cellWidth_ + one gutter).
+    // Painting and hit-testing both use these instead of cellWidth_ alone.
     int gridOffsetX_ = 0;
+    int columnStride_ = 0;
 
     // High-resolution mice/trackpads deliver many small fractional wheel deltas
     // instead of one clean 120-unit notch per click - accumulate across events so a
