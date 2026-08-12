@@ -5,6 +5,139 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-12 — mac — Fullscreen priority inversion, grid density, thumbnail-size control, and a thumbnail cap that made "re-thumbnail" a no-op
+
+Second mac session. Verified the desktop machine's feature work (multi-select, clipboard,
+drag in/out, hover info, path history) builds and passes on macOS untouched - 92/92, both
+presets - then eight commits of fixes and additions, each verified to build on its own so
+a bisect through them stays useful.
+
+**Fullscreen's first image was 1-2 seconds late, and it was a priority inversion, not a
+slow decoder.** `FullscreenDecoder` is a LIFO stack (`processOne()` does
+`stack_.takeLast()`), but `showRow()` pushed the current row and *then* `prefetchNeighbors()`
+pushed `{0, -1, 1, -2, 2}` on top of it. The stack ended up
+`[row, row-1, row+1, row-2, row+2]`, so LIFO serviced the row *two ahead* first and the
+image actually on screen fifth. The comment above the loop read "Current row first (most
+likely to actually be seen), then outward" - the correct intent, and the exact opposite of
+the effect once LIFO was applied to it. Neighbours are now queued before the visible row so
+it lands on top, and the neighbour list is ordered farthest-first for the same reason.
+
+Worth knowing the decode costs, measured here on a 4032x3024 JPEG rather than guessed:
+a fit decode is **~65ms release / ~518ms debug**, a full-resolution one 88ms/1120ms. Being
+five decodes late therefore cost ~0.3s at best and over 2s in a debug build - which is what
+was being felt, since a debug build is an 8x penalty on every decode by itself. Also ruled
+out this machine's HiDPI work as the cause first: the displays here are 1920x1080 at DPR
+1.0, so the fullscreen decode target is unchanged by it.
+
+**The grid looked far sparser than on Windows, and it was two effects, neither
+platform-specific.** Both scale with the icon size, so at the 240px this machine was set to
+they were roughly twice as visible as at the old 150 default. Vertically, the image area was
+a *square* of iconSize while almost nothing photographic is square - a 3:2 landscape in a
+240x240 box left 40px empty above and below, a third of the tile. It's now 3:4
+(`prefs::kThumbnailTileAspect`), which fits 4:3 exactly and 3:2 nearly, dropping cell height
+278 -> 218 and putting ~28% more rows on screen. Horizontally, `relayout()` stretched every
+cell to fill the row (`cellWidth_ = vw / columns_`), so all the leftover became padding
+*around each photo* and jittered with window width (2px per side at a 1300px viewport, 22px
+at 1500px). Cells now keep their natural width with the column block centred, so leftover
+collects in one outer margin and photo spacing is constant. The trade is inherent to uniform
+tiles and worth stating: portraits are now narrower than their cell instead of filling it.
+
+`ThumbLoader` had to change with it - thumbnails are fitted to a WxH box rather than a
+single edge, or a portrait would decode to a full-width square and overflow the shorter
+area. `ThumbGridView` also centres pixmaps by `deviceIndependentSize()` rather than `size()`,
+without which a Retina thumbnail sits half its own size up and to the left.
+
+**Thumbnail size moved to the status bar, with a folder freshness dot next to it.** The
+size existed only in Preferences, as a free-form spinbox that could produce values the
+(new) preset list had no entry for - so both now read one source,
+`kThumbnailSizePresets = {180, 240, 300, 400, 480}`. `kMax` rose 400 -> 480 and the default
+150 -> 180; `kMin`/`kMax` deliberately stay wider than the preset list because they clamp
+what's read back from the ini, so a size saved by an older build still loads intact rather
+than being silently snapped.
+
+The split the UI rests on is one the code already made: `thumbnailIconSize()` is the
+on-screen size (relayout plus a re-decode from the cached blob, instant), while
+`thumbnailTargetLongEdge()` is what blobs are *stored* at, and only regenerating that
+touches originals. So changing size relayouts immediately and re-thumbnails only when the
+stored blobs genuinely can't satisfy it - shrinking never triggers one.
+
+Staleness is derived from the blobs rather than recorded per folder:
+`WHERE MAX(t.w,t.h) < MIN(:needed, MAX(f.width,f.height))`. `files.width/height` are the
+ORIGINAL dimensions and `thumbs.thumbs.w/h` the thumbnail's, and the MIN against the
+original is what stops a legitimately small photo counting as behind forever - a 200px
+original can never yield a 480px thumbnail. Verified against the real library: one folder
+reports 0 stale at 240 but only 14 of 29 at 400, the other 15 being originals too small to
+improve. `:needed` is the *display* requirement (iconSize x DPR), not
+`thumbnailTargetLongEdge()` (deliberately ~2x for headroom) - judging by the generation
+target would light the dot red for folders whose blobs are perfectly adequate on screen.
+The check runs on folder-level events only, never from `updateSelectionStatus()`, which
+fires on every selection change and would make it a DB query per arrow-key press.
+
+Also new under Maintenance: **"Auto rethumb"** (off by default - regenerating re-reads and
+re-decodes every original, worth opting into rather than having browsing quietly trigger),
+and a **Database Statistics** dialog with row counts, on-disk sizes, free pages and a
+Compact Now button.
+
+**On whether compaction is actually needed: yes, and re-thumbnailing is exactly what
+creates the need.** SQLite never shrinks a file on delete - it keeps the pages for reuse -
+and every regenerated thumbnail deletes a blob and writes a larger one. Demonstrated on a
+copy of the real 68MB thumbs.db rather than asserted: deleting half the rows freed 8737 of
+17659 pages while the file stayed 68MB, and VACUUM brought it to 34MB. Both databases
+currently report **zero** free pages, so the dialog correctly says there's nothing to
+reclaim; the dialog only *recommends* compacting past both 20MB and 20% of total so it
+won't nag about a mostly-empty 700KB index.db.
+
+**The big one: `generateJpegThumb` capped thumbnails at the embedded EXIF preview's size,
+which made "Force Re-thumbnail" a permanent no-op for affected files.** Found because a
+folder stayed red in the new freshness dot no matter how many times it was regenerated -
+the indicator was right, and this is what it was pointing at. The preview was used
+*unconditionally* whenever present, and `decodeJpeg` downscales but never upscales, so a
+160x120 EXIF thumbnail inside a 4032px original capped the stored thumbnail at 160px however
+large `targetLongEdge` was. Because the preview is always there, regenerating produced the
+identical small image forever.
+
+The preview's dimensions are now read header-only (no pixel decode) and used only when at
+least `targetLongEdge`; otherwise the scaled-DCT decode of the original runs. A rejected
+preview stays the last resort when the full decode fails - a truncated file with an intact
+EXIF thumb - which the old unconditional ordering handled by accident. Verified on
+`IMG_0088.JPG` (preview 160x120, original 4032px): targets of 320/480/600 now produce
+240x320, 360x480 and 450x600 as `Decoded`, where all three previously produced 160x120.
+
+**This costs indexing throughput and the trade is deliberate.** Measured over 30 of those
+JPEGs in a release build: **~26 files/s**, with 29 of 30 now taking a real decode. At a 320
+target only *1 of 30* had a preview large enough to use - which is precisely why that whole
+folder had been 160px thumbnails. **P1's 69 files/s benchmark no longer describes this
+code.** If that becomes painful the knob is accepting a preview that's *close* to the target
+(say 80%) rather than strictly >=, keeping the fast path for marginally-small previews while
+still rejecting the 160px ones.
+
+Smaller additions: mouse back/forward buttons drive the folder history (an application-wide
+event filter, necessarily - the grid, tree and preview all accept mouse presses themselves,
+so a window-level override would never see them; deliberately inert while the fullscreen
+viewer is up, where "back" reads as the previous image). Right-click in fullscreen now gives
+the grid's per-item menu, via a shared `buildItemContextMenu()` rather than a second list
+that would drift - parented to the viewer, since a menu parented to the window underneath
+can render behind a top-level one. And a folder-tree right-click bookmarks the folder under
+the cursor, checking `isBookmarked()` first because `bookmarks` has no UNIQUE on path and
+`addBookmark()` never checked (the existing "Add Current Folder" can already double-add).
+
+**Next Windows session should re-verify:** `ThumbGenerator`'s embedded-preview change is
+`pixet_core`, so Windows gets both the fix and the throughput cost, and folders thumbnailed
+before it need one more regeneration pass to benefit. The grid tile-shape and centring
+changes, `ThumbLoader`'s WxH fit, the `Preferences` preset/default changes (a stored 150
+will now show as an extra drop-down entry), and the shared context-menu refactor all touch
+code Windows compiles. `DirWalker_win.cpp`'s `while (FindNextFileW(...))` still can't
+distinguish end-of-directory from a mid-enumeration error - flagged last session, still
+unfixed, still worth doing.
+
+**Not verified here:** the mouse back/forward path is reasoned from Qt's
+`Qt::BackButton`/`Qt::ForwardButton` mapping, not observed - there's no such mouse on this
+machine, and vendor software can intercept those buttons before the app sees them. Retina
+sharpness still hasn't been eyeballed against Preview.app; this machine is DPR 1.0, so the
+HiDPI work remains effectively untested rather than merely unverified.
+
+---
+
 ## 2026-08-12 — desktop — multi-select + Cut/Copy/Paste + drag in/out (pixet's first FS writes)
 
 The first feature that lets pixet modify the filesystem: multi-select in the grid
