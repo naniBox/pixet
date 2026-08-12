@@ -5,6 +5,43 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-12 — mac — The DMG carries the app icon, both places it needs to
+
+Small packaging follow-up to 1.0.0, recorded because the mechanism is unobvious and the
+obvious half of it is the wrong half.
+
+A disk image has **two** icons, set by unrelated mechanisms:
+
+1. The mounted **volume's** icon - Finder's sidebar, the desktop, the window that opens.
+   Comes from a `.VolumeIcon.icns` at the volume root *plus* the volume carrying the
+   `kHasCustomIcon` flag, and that flag can only be set while the image is mounted
+   read-write. So `deploy-mac.sh` now builds `UDRW` first, mounts it (`-nobrowse
+   -noautoopen`, so cutting a release doesn't throw a Finder window in your face), sets the
+   flag with `SetFile -a C`, detaches, and only then converts to the compressed read-only
+   `UDZO` that actually ships.
+2. The **`.dmg` file's own** icon, before anyone opens it. Entirely unrelated - it lives in
+   the file's *resource fork*, so it needs `sips -i` → `DeRez` → `Rez` → `SetFile`, four
+   steps of which any one alone does nothing visible. Setting `.VolumeIcon.icns` does
+   precisely nothing for it.
+
+Doing only (1) is the tempting half-measure, and it fails exactly where it matters: the
+image still looks like a generic white drive right up until it's opened, which is the moment
+a recipient is deciding whether to trust an unsigned download.
+
+`SetFile`/`Rez`/`DeRez` turn out to ship with the Command Line Tools on this machine, so no
+full Xcode is needed - worth knowing, since they're usually described as Xcode-only.
+
+Verified by flags rather than by eye: the `.dmg`'s FinderInfo reads `0x0400` with a resource
+fork attached, and the mounted volume's reads `0x0400` with `.VolumeIcon.icns` present (a
+dotfile, so it stays hidden next to `pixet.app` and the Applications symlink). Then the real
+test - the app launched **from inside the mounted DMG** with `~/Qt` moved aside, which
+exercises the shipped artifact rather than the build-tree copy the earlier check used.
+
+Side effect worth noting: 37MB → 35MB. The `UDRW`→`UDZO` conversion compresses slightly
+better than creating `UDZO` straight from a folder.
+
+---
+
 ## 2026-08-12 — mac — 1.0.0, and the About box now names the commit it was built from
 
 Version bumped to **1.0.0**. It still comes from `project(VERSION)` alone, so the bump
