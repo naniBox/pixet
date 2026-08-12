@@ -42,6 +42,13 @@ FsResult renameWithinDir(const std::string &fromUtf8, const std::string &toUtf8)
 
 FsResult removeFile(const std::string &pathUtf8);
 
+// Moves a file to the OS Recycle Bin (Windows) / Trash (macOS) rather than permanently
+// erasing it - the only delete primitive this codebase exposes, since these are the
+// user's real photos and a permanent-delete path isn't worth the risk it carries for
+// the convenience it'd save. Never overwrites/merges with anything already in the
+// trash - the OS owns collision-naming there.
+FsResult moveToTrash(const std::string &pathUtf8);
+
 bool fileExists(const std::string &pathUtf8);
 bool isDirectory(const std::string &pathUtf8);
 

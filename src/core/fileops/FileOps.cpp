@@ -197,6 +197,53 @@ void executeOneItem(Database &db, OpKind kind, const std::string &dstDirPath, in
     }
 }
 
+// Mirrors executeOneItem()'s structure for the simpler delete case: no destination, no
+// collision, just trash-then-remove-the-row. Never throws (any DB exception is caught
+// and turned into a failed outcome), same reasoning as executeOneItem.
+void executeOneDelete(Database &db, const DeleteItem &item, ItemOutcome &outcome) {
+    try {
+        FsResult opResult = moveToTrash(item.path);
+        if (opResult != FsResult::Ok) {
+            outcome.fsResult = opResult;
+            outcome.error = std::string("delete failed: ") + fsResultName(opResult);
+            return;
+        }
+
+        int64_t thumbId = 0;
+        if (item.fileId != 0) {
+            Transaction txn(db);
+            auto sel = db.prepare("SELECT thumb_id FROM files WHERE id=?");
+            sel.bind(1, item.fileId);
+            if (sel.step()) thumbId = sel.columnIsNull(0) ? 0 : sel.columnInt64(0);
+
+            auto del = db.prepare("DELETE FROM files WHERE id=?");
+            del.bind(1, item.fileId);
+            del.step();
+
+            txn.commit();
+        }
+
+        // Outside the transaction on purpose - see executeOneItem()'s identical
+        // reasoning: SQLite's multi-ATTACH transactions aren't atomic across databases
+        // under WAL, so a crash between the two leaks one orphaned (invisible) blob
+        // rather than risking a files row left with a dangling thumb_id.
+        if (thumbId != 0) {
+            try {
+                auto del = db.prepare("DELETE FROM thumbs.thumbs WHERE id=?");
+                del.bind(1, thumbId);
+                del.step();
+            } catch (const std::exception &) {
+                // Not worth failing an otherwise-successful delete over a leaked blob.
+            }
+        }
+
+        outcome.ok = true;
+    } catch (const std::exception &e) {
+        outcome.ok = false;
+        outcome.error = std::string("database error: ") + e.what();
+    }
+}
+
 } // namespace
 
 bool CaseInsensitiveLess::operator()(const std::string &a, const std::string &b) const {
@@ -284,6 +331,56 @@ Report execute(Database &db, const Plan &plan, const std::string &owner,
 
         ++index;
         if (onProgress) onProgress(Progress{index, total, item.dstName});
+        if (index % 16 == 0) {
+            for (int64_t dirId : dirIds) claims.heartbeat(dirId, owner, nowMillis());
+        }
+    }
+
+    for (int64_t dirId : dirIds) claims.release(dirId, owner);
+    return report;
+}
+
+Report executeDelete(Database &db, const std::vector<DeleteItem> &items, const std::string &owner,
+                      const std::function<void(const Progress &)> &onProgress, const std::atomic_bool *cancel) {
+    Report report;
+    if (items.empty()) return report;
+
+    // Best-effort claims, same reasoning as execute() - see that function's comment.
+    std::vector<int64_t> dirIds;
+    for (const auto &item : items) {
+        if (item.dirId != 0) dirIds.push_back(item.dirId);
+    }
+    std::sort(dirIds.begin(), dirIds.end());
+    dirIds.erase(std::unique(dirIds.begin(), dirIds.end()), dirIds.end());
+
+    ClaimManager claims(db);
+    for (int64_t dirId : dirIds) {
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            if (claims.tryClaim(dirId, owner, nowMillis())) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        }
+    }
+
+    size_t total = items.size();
+    size_t index = 0;
+    for (const auto &item : items) {
+        if (cancel && cancel->load()) {
+            report.cancelled = true;
+            break;
+        }
+
+        ItemOutcome outcome;
+        outcome.srcPath = item.path;
+        outcome.srcFileId = item.fileId;
+
+        executeOneDelete(db, item, outcome);
+
+        if (outcome.ok) report.succeeded++;
+        else report.failed++;
+        report.outcomes.push_back(std::move(outcome));
+
+        ++index;
+        if (onProgress) onProgress(Progress{index, total, baseNameOf(item.path)});
         if (index % 16 == 0) {
             for (int64_t dirId : dirIds) claims.heartbeat(dirId, owner, nowMillis());
         }

@@ -5,6 +5,8 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 
 #include <algorithm>
 #include <QDateTime>
@@ -29,6 +31,7 @@
 #include <QMimeData>
 #include <QPixmap>
 #include <QProcess>
+#include <QPushButton>
 #include <QScreen>
 #include <QScrollBar>
 #include <QSettings>
@@ -398,6 +401,8 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(fileOps_.get(), &FileOpsWorker::preflightReady, this, &MainWindow::onFileOpPreflightReady);
     connect(fileOps_.get(), &FileOpsWorker::progress, this, &MainWindow::onFileOpProgress);
     connect(fileOps_.get(), &FileOpsWorker::finished, this, &MainWindow::onFileOpFinished);
+    connect(this, &MainWindow::requestFileDelete, fileOps_.get(), &FileOpsWorker::deleteFiles);
+    connect(fileOps_.get(), &FileOpsWorker::deleteFinished, this, &MainWindow::onFileDeleteFinished);
 
     previewDebounce_ = new QTimer(this);
     previewDebounce_->setSingleShot(true);
@@ -437,6 +442,14 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     copyAction_->setShortcuts(QKeySequence::Copy);
     pasteAction_ = editMenu->addAction(QStringLiteral("Paste"), this, &MainWindow::onEditPaste);
     pasteAction_->setShortcuts(QKeySequence::Paste);
+    editMenu->addSeparator();
+    renameAction_ = editMenu->addAction(QStringLiteral("Rename..."), this, &MainWindow::onEditRename);
+#ifdef Q_OS_MACOS
+    deleteAction_ = editMenu->addAction(QStringLiteral("Move to Trash"), this, &MainWindow::onEditDelete);
+#else
+    deleteAction_ = editMenu->addAction(QStringLiteral("Move to Recycle Bin"), this, &MainWindow::onEditDelete);
+#endif
+    deleteAction_->setShortcuts(QKeySequence::Delete);
     editMenu->addSeparator();
     selectAllAction_ = editMenu->addAction(QStringLiteral("Select All"), this, &MainWindow::onEditSelectAll);
     selectAllAction_->setShortcuts(QKeySequence::SelectAll);
@@ -813,6 +826,8 @@ void MainWindow::buildItemContextMenu(QMenu &menu, int row, bool fromFullscreen)
     menu.addAction(cutAction_);
     menu.addAction(copyAction_);
     menu.addAction(pasteAction_);
+    menu.addAction(renameAction_);
+    menu.addAction(deleteAction_);
 
     if (row >= 0) {
         menu.addSeparator();
@@ -1020,6 +1035,24 @@ void MainWindow::onFileOpFinished(quint64, QString dstDirPath, QList<qint64> src
                                                         QStringLiteral("\n...and %1 more").arg(errors.size() - 5));
     } else if (succeeded > 0) {
         statusBar()->showMessage(QStringLiteral("%1 item(s) added").arg(succeeded), 4000);
+    }
+}
+
+void MainWindow::onFileDeleteFinished(quint64, QList<qint64> removedFileIds, int succeeded, int failed,
+                                       QStringList errors) {
+    // Safe even for ids that aren't currently loaded (a no-op) - same contract as
+    // onFileOpFinished()'s srcFileIds.
+    for (qint64 id : removedFileIds) gridModel_->removeFileById(id);
+    if (!removedFileIds.isEmpty()) updateSelectionStatus();
+
+    if (failed > 0) {
+        statusBar()->showMessage(QStringLiteral("%1 succeeded, %2 failed").arg(succeeded).arg(failed), 8000);
+        QMessageBox::warning(this, QStringLiteral("Some items failed"),
+                              errors.size() <= 5 ? errors.join(QStringLiteral("\n"))
+                                                  : errors.mid(0, 5).join(QStringLiteral("\n")) +
+                                                        QStringLiteral("\n...and %1 more").arg(errors.size() - 5));
+    } else if (succeeded > 0) {
+        statusBar()->showMessage(QStringLiteral("%1 item(s) deleted").arg(succeeded), 4000);
     }
 }
 
@@ -1433,6 +1466,7 @@ void MainWindow::applyKeyBindingShortcuts() {
     toggleSidePanelAction_->setShortcut(keybindings::binding(keybindings::Action::ToggleSidePanel));
     addBookmarkAction_->setShortcut(keybindings::binding(keybindings::Action::AddBookmark));
     focusAddressBarAction_->setShortcut(keybindings::binding(keybindings::Action::FocusAddressBar));
+    renameAction_->setShortcut(keybindings::binding(keybindings::Action::Rename));
 }
 
 QLineEdit *MainWindow::focusedLineEdit() const { return qobject_cast<QLineEdit *>(QApplication::focusWidget()); }
@@ -1523,6 +1557,117 @@ void MainWindow::onEditPaste() {
 
     pendingCutClipboardClear_ = files.isCut;
     emit requestFileOpPreflight(req);
+}
+
+void MainWindow::onEditDelete() {
+    if (focusedLineEdit()) return; // let the line edit delete a character instead of files
+
+    QList<int> rows = grid_->selectedRows();
+    if (rows.isEmpty() || currentPath_.isEmpty()) return;
+
+    int64_t dirId = 0;
+    auto dirSel = db_->prepare("SELECT id FROM dirs WHERE path=?");
+    dirSel.bind(1, currentPath_.toStdString());
+    if (dirSel.step()) dirId = dirSel.columnInt64(0);
+
+    FileOpsWorker::DeleteRequest req;
+    req.id = ++fileOpCounter_;
+    QStringList names;
+    for (int r : rows) {
+        QModelIndex idx = gridModel_->index(r);
+        QString name = idx.data(Qt::DisplayRole).toString();
+
+        FileOpsWorker::DeleteItem item;
+        item.path = joinPathQ(currentPath_, name);
+        item.fileId = idx.data(ThumbGridModel::FileIdRole).toLongLong();
+        item.dirId = dirId;
+        req.items << item;
+        names << name;
+    }
+
+#ifdef Q_OS_MACOS
+    const QString trashWord = QStringLiteral("Trash");
+#else
+    const QString trashWord = QStringLiteral("Recycle Bin");
+#endif
+    QString question = names.size() == 1
+                            ? QStringLiteral("Move \"%1\" to the %2?").arg(names.first(), trashWord)
+                            : QStringLiteral("Move %1 items to the %2?").arg(names.size()).arg(trashWord);
+    auto choice = QMessageBox::question(this, QStringLiteral("Delete"), question, QMessageBox::Yes | QMessageBox::No,
+                                         QMessageBox::No);
+    if (choice != QMessageBox::Yes) return;
+
+    emit requestFileDelete(req);
+}
+
+void MainWindow::onEditRename() {
+    if (focusedLineEdit()) return;
+    // Bulk rename is out of scope - see updateEditActionsEnabled()'s comment.
+    if (grid_->selectionCount() != 1) return;
+
+    QModelIndex idx = gridModel_->index(grid_->currentRow());
+    if (!idx.isValid()) return;
+
+    QString oldName = idx.data(Qt::DisplayRole).toString();
+    QString newName = promptRename(oldName);
+    if (newName.isEmpty() || newName == oldName) return;
+
+    int64_t dirId = 0;
+    auto dirSel = db_->prepare("SELECT id FROM dirs WHERE path=?");
+    dirSel.bind(1, currentPath_.toStdString());
+    if (dirSel.step()) dirId = dirSel.columnInt64(0);
+
+    FileOpsWorker::Request req;
+    req.id = ++fileOpCounter_;
+    req.move = true;
+    req.dstDirPath = currentPath_;
+
+    FileOpsWorker::Item item;
+    item.srcPath = joinPathQ(currentPath_, oldName);
+    item.dstName = newName;
+    item.srcFileId = idx.data(ThumbGridModel::FileIdRole).toLongLong();
+    item.srcDirId = dirId;
+    req.items << item;
+
+    // Same preflight -> CollisionDialog -> execute pipeline as Paste/drag-in - a
+    // rename onto a name that already exists in this folder gets exactly the same
+    // Replace/Skip/Keep Both treatment, rather than a separate rename-specific
+    // collision path.
+    emit requestFileOpPreflight(req);
+}
+
+QString MainWindow::promptRename(const QString &currentName) {
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("Rename"));
+
+    auto *layout = new QVBoxLayout(&dlg);
+    layout->addWidget(new QLabel(QStringLiteral("New name:"), &dlg));
+
+    auto *lineEdit = new QLineEdit(currentName, &dlg);
+    // Pre-select just the stem (before the last '.'), matching Explorer's own rename
+    // UX - typing immediately replaces the name but leaves the extension alone unless
+    // the user selects further. A leading-dot dotfile with no other '.' has no
+    // extension to preserve, so the whole name is selected instead.
+    int dot = currentName.lastIndexOf(QLatin1Char('.'));
+    int stemLen = dot > 0 ? dot : currentName.size();
+    lineEdit->setSelection(0, stemLen);
+    layout->addWidget(lineEdit);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QPushButton *okButton = buttons->button(QDialogButtonBox::Ok);
+    okButton->setEnabled(!currentName.trimmed().isEmpty());
+    connect(lineEdit, &QLineEdit::textChanged, okButton,
+            [okButton](const QString &text) { okButton->setEnabled(!text.trimmed().isEmpty()); });
+    connect(lineEdit, &QLineEdit::returnPressed, &dlg, [&dlg, okButton]() {
+        if (okButton->isEnabled()) dlg.accept();
+    });
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    lineEdit->setFocus();
+    if (dlg.exec() != QDialog::Accepted) return QString();
+    return lineEdit->text().trimmed();
 }
 
 void MainWindow::onToggleSidePanel() {
@@ -1995,6 +2140,11 @@ void MainWindow::updateEditActionsEnabled() {
     cutAction_->setEnabled(hasSelection);
     copyAction_->setEnabled(hasSelection);
     pasteAction_->setEnabled(!currentPath_.isEmpty());
+    deleteAction_->setEnabled(hasSelection);
+    // Bulk rename (Windows 11's rename-all-selected-with-a-numbered-suffix) is a
+    // distinct, much bigger feature nobody's asked for - Rename only ever targets
+    // exactly one file.
+    renameAction_->setEnabled(grid_->selectionCount() == 1);
 }
 
 void MainWindow::restoreWindowState() {

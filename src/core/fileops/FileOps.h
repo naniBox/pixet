@@ -94,5 +94,25 @@ Report execute(Database &db, const Plan &plan, const std::string &owner,
                const std::function<void(const Progress &)> &onProgress = nullptr,
                const std::atomic_bool *cancel = nullptr);
 
+// One file to send to the Recycle Bin/Trash (see util/FileMove.h's moveToTrash()) and
+// drop from the index. Unlike PlannedItem, there's no destination - a delete has
+// nothing to collide with.
+struct DeleteItem {
+    std::string path;   // absolute, normalizePath()'d, UTF-8
+    int64_t fileId = 0; // 0 = not a row pixet's index knows about (shouldn't normally
+                         // happen from the UI, which always deletes from a loaded grid row)
+    int64_t dirId = 0;  // 0 = unknown/not indexed
+};
+
+// Same per-item independence/never-throws/best-effort-claims contract as execute()
+// above, reusing its Report/Progress types - see that doc comment for the parts this
+// doesn't repeat. Each item: moveToTrash() first, and only on success does the `files`
+// row (and its orphaned thumbnail blob, outside the row's own transaction - see the
+// .cpp file comment on why) get removed. A failed trash operation leaves both the file
+// and its index row untouched, exactly like a failed move/copy leaves the source alone.
+Report executeDelete(Database &db, const std::vector<DeleteItem> &items, const std::string &owner,
+                      const std::function<void(const Progress &)> &onProgress = nullptr,
+                      const std::atomic_bool *cancel = nullptr);
+
 } // namespace fileops
 } // namespace pixet

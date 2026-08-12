@@ -106,6 +106,32 @@ PIXET_TEST(RemoveFileDeletesAndReportsAlreadyMissing) {
     PIXET_CHECK(removeFile(path) == FsResult::SourceMissing);
 }
 
+PIXET_TEST(MoveToTrashRemovesTheFileFromItsOriginalPath) {
+    std::string path = testTempPath("filemove_trash.bin");
+    writeTestFile(path, {1, 2, 3});
+
+    // Only checking it's gone from here, not that it's recoverable from the actual
+    // Recycle Bin/Trash - there's no portable way to verify that from a test, and this
+    // suite already doesn't try to (see cross-volume moveFile()'s note up top). A real
+    // hard delete would also make this assertion pass, so this test alone can't catch
+    // moveToTrash() silently becoming a permanent delete - that's a code-review
+    // property (see util/FileMove.h's own doc comment), not something to chase here.
+    PIXET_CHECK(moveToTrash(path) == FsResult::Ok);
+    PIXET_CHECK(!fileExists(path));
+}
+
+PIXET_TEST(MoveToTrashFailsCleanlyOnMissingSource) {
+    // Not asserting the exact FsResult, unlike moveFile/copyFile's equivalent tests:
+    // on Windows, moveToTrash() goes through the legacy SHFileOperationW rather than
+    // the modern MoveFileExW/CopyFileExW every other primitive uses, and its older
+    // path parser treats nonexistentPath()'s deliberately-POSIX-style
+    // "/no-such-dir/nope.bin" (portable so this same test file also works unmodified
+    // on macOS) as a malformed path (NameInvalid) rather than a missing one
+    // (SourceMissing) - both are "fails cleanly, never fabricates success", which is
+    // the actual property this test exists to verify.
+    PIXET_CHECK(moveToTrash(nonexistentPath("bin")) != FsResult::Ok);
+}
+
 PIXET_TEST(StatFileRoundTripsSizeAndAPositiveMtime) {
     std::string path = testTempPath("filemove_stat.bin");
     writeTestFile(path, {1, 2, 3, 4, 5});

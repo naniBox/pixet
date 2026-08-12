@@ -284,6 +284,78 @@ PIXET_TEST(MoveWithinSameDirToSameNameIsANoOp) {
     PIXET_CHECK((FileState)sel.columnInt64(1) == FileState::Done);
 }
 
+// --------------------------------------------------------------- fileops::executeDelete
+
+PIXET_TEST(ExecuteDeleteRemovesFileRowAndThumbBlob) {
+    FileOpsFixture fx("fileops_delete");
+    int64_t thumbId = 0;
+    int64_t fileId = insertTestFile(fx.db, fx.srcDirId, fx.srcDir, "h.jpg", {1, 2, 3}, FileState::Done, thumbId);
+    PIXET_CHECK(thumbId != 0);
+    PIXET_CHECK(fileExists(joinPath(fx.srcDir, "h.jpg")));
+
+    std::vector<DeleteItem> items{DeleteItem{joinPath(fx.srcDir, "h.jpg"), fileId, fx.srcDirId}};
+    Report report = executeDelete(fx.db, items, "test-owner");
+    PIXET_CHECK(report.succeeded == 1);
+    PIXET_CHECK(report.failed == 0);
+    PIXET_CHECK(report.outcomes[0].ok);
+
+    // moveToTrash() actually sends it to the real Recycle Bin/Trash, not a hard
+    // delete - either way it's gone from its original path, which is what the DB
+    // row's absence needs to agree with.
+    PIXET_CHECK(!fileExists(joinPath(fx.srcDir, "h.jpg")));
+
+    auto sel = fx.db.prepare("SELECT count(*) FROM files WHERE id=?");
+    sel.bind(1, fileId);
+    PIXET_CHECK(sel.step());
+    PIXET_CHECK(sel.columnInt64(0) == 0);
+
+    auto thumbSel = fx.db.prepare("SELECT count(*) FROM thumbs.thumbs WHERE id=?");
+    thumbSel.bind(1, thumbId);
+    PIXET_CHECK(thumbSel.step());
+    PIXET_CHECK(thumbSel.columnInt64(0) == 0);
+}
+
+PIXET_TEST(ExecuteDeleteOfRowWithoutThumbIdSucceeds) {
+    FileOpsFixture fx("fileops_delete_nothumb");
+    int64_t thumbId = 0;
+    // FileState::New - never got as far as a thumbnail, so thumb_id is NULL.
+    int64_t fileId = insertTestFile(fx.db, fx.srcDirId, fx.srcDir, "i.jpg", {1}, FileState::New, thumbId);
+    PIXET_CHECK(thumbId == 0);
+
+    std::vector<DeleteItem> items{DeleteItem{joinPath(fx.srcDir, "i.jpg"), fileId, fx.srcDirId}};
+    Report report = executeDelete(fx.db, items, "test-owner");
+    PIXET_CHECK(report.succeeded == 1);
+    PIXET_CHECK(!fileExists(joinPath(fx.srcDir, "i.jpg")));
+
+    auto sel = fx.db.prepare("SELECT count(*) FROM files WHERE id=?");
+    sel.bind(1, fileId);
+    PIXET_CHECK(sel.step());
+    PIXET_CHECK(sel.columnInt64(0) == 0);
+}
+
+PIXET_TEST(ExecuteDeleteFailsGracefullyOnMissingFileWithoutAbortingBatch) {
+    FileOpsFixture fx("fileops_delete_missing");
+    int64_t thumbId = 0;
+    int64_t survivorId = insertTestFile(fx.db, fx.srcDirId, fx.srcDir, "j.jpg", {1}, FileState::Done, thumbId);
+
+    std::vector<DeleteItem> items{
+        DeleteItem{joinPath(fx.srcDir, "does-not-exist.jpg"), 999999, fx.srcDirId},
+        DeleteItem{joinPath(fx.srcDir, "j.jpg"), survivorId, fx.srcDirId},
+    };
+    Report report = executeDelete(fx.db, items, "test-owner");
+    PIXET_CHECK(report.succeeded == 1);
+    PIXET_CHECK(report.failed == 1);
+    PIXET_CHECK(!report.outcomes[0].ok);
+    PIXET_CHECK(report.outcomes[1].ok);
+
+    // The batch's second, valid item still went through despite the first failing.
+    PIXET_CHECK(!fileExists(joinPath(fx.srcDir, "j.jpg")));
+    auto sel = fx.db.prepare("SELECT count(*) FROM files WHERE id=?");
+    sel.bind(1, survivorId);
+    PIXET_CHECK(sel.step());
+    PIXET_CHECK(sel.columnInt64(0) == 0);
+}
+
 // --------------------------------------------------------- fileops::uniqueNameFor
 
 PIXET_TEST(UniqueNameForAppendsAnIncrementingSuffix) {

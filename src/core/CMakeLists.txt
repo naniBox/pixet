@@ -89,15 +89,18 @@ elseif(APPLE)
         util/Unicode.h
         util/Unicode_mac.cpp
         util/FileIO_mac.cpp
-        util/FileMove_mac.cpp
+        util/FileMove_mac.mm
         util/PathUtil_mac.cpp
         util/AppPaths_mac.cpp
         scan/DirWalker_mac.cpp
     )
     # CoreFoundation is needed by util/Unicode_mac.cpp alone (CFStringNormalize), in
     # preference to taking on an ICU dependency for the one Unicode operation this
-    # codebase performs.
-    target_link_libraries(pixet_core PUBLIC "-framework CoreFoundation")
+    # codebase performs. Foundation is separate (the Objective-C framework, not just its
+    # C-level subset) - needed by util/FileMove_mac.mm's moveToTrash(), the one place
+    # this codebase calls into Objective-C (NSFileManager) rather than plain POSIX/Darwin
+    # C, since there's no POSIX API for the real per-volume Trash.
+    target_link_libraries(pixet_core PUBLIC "-framework CoreFoundation" "-framework Foundation")
 else()
     message(FATAL_ERROR
         "pixet_core has no implementation for this platform yet: "

@@ -1,6 +1,7 @@
 #include "FileMove.h"
 
 #include <Windows.h>
+#include <shellapi.h>
 
 #include <chrono>
 #include <thread>
@@ -127,6 +128,41 @@ FsResult removeFile(const std::string &pathUtf8) {
     return withSharingRetry([&]() -> FsResult {
         if (DeleteFileW(wide.c_str())) return FsResult::Ok;
         return mapLastError(GetLastError());
+    });
+}
+
+FsResult moveToTrash(const std::string &pathUtf8) {
+    // SHFileOperationW's pFrom requires a double-null-terminated path list, even for a
+    // single path - toUtf16() only null-terminates once (the implicit one from c_str()),
+    // so this appends the extra terminator explicitly rather than reusing that buffer
+    // as-is.
+    std::wstring doubleNulled = toUtf16(pathUtf8);
+    doubleNulled.push_back(L'\0');
+
+    return withSharingRetry([&]() -> FsResult {
+        SHFILEOPSTRUCTW op{};
+        op.wFunc = FO_DELETE;
+        op.pFrom = doubleNulled.c_str();
+        // ALLOWUNDO: Recycle Bin, not a permanent delete - the whole point of this
+        // primitive. NOCONFIRMATION/SILENT/NOERRORUI: pixet owns its own confirmation
+        // dialog and progress/error reporting, so none of the shell's own UI should
+        // ever show up underneath this call.
+        op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+
+        int result = SHFileOperationW(&op);
+        if (result == 0 && !op.fAnyOperationsAborted) return FsResult::Ok;
+        // SHFileOperationW's return value is a legacy mix of old CopyEngine DE_* pseudo-
+        // codes and ordinary Win32 error codes - confirmed empirically, not assumed: a
+        // syntactically well-formed but missing path (e.g. "C:\nope\gone.bin") comes
+        // back as plain ERROR_FILE_NOT_FOUND (2), which mapLastError() already handles,
+        // but a path this parser considers malformed (no drive letter - the shared
+        // cross-platform test fixture's deliberately POSIX-style
+        // "/no-such-dir/nope.bin" triggered this) comes back as 0x7C (DE_INVALIDFILES),
+        // a code space mapLastError() doesn't cover. Handled explicitly here rather
+        // than folded into mapLastError(), which only promises to cover real
+        // GetLastError() values.
+        if (result == 0x7C) return FsResult::NameInvalid;
+        return mapLastError((DWORD)result);
     });
 }
 

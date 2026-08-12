@@ -61,9 +61,27 @@ public:
         QList<Item> items;
     };
 
+    // A file to send to the Recycle Bin/Trash - unlike Item, there's no destination,
+    // hence no preflight/collision stage (see deleteFiles() below - single-stage,
+    // unlike preflight()/execute()).
+    struct DeleteItem {
+        QString path;      // absolute
+        qint64 fileId = 0; // 0 = not a row pixet's index knows about
+        qint64 dirId = 0;
+    };
+
+    struct DeleteRequest {
+        quint64 id = 0;
+        QList<DeleteItem> items;
+    };
+
 public slots:
     void preflight(FileOpsWorker::Request req);
     void execute(FileOpsWorker::Request req);
+    // Single-stage, unlike preflight()/execute() - a delete has nothing to collide
+    // with, so there's no dialog to run before committing. MainWindow's own
+    // confirmation dialog happens before this is ever emitted.
+    void deleteFiles(FileOpsWorker::DeleteRequest req);
 
 public:
     // Not a slot: std::atomic_bool::store() is thread-safe to call directly from the
@@ -83,6 +101,9 @@ signals:
     // model insert into the currently-displayed folder if that's dstDirPath.
     void finished(quint64 id, QString dstDirPath, QList<qint64> srcFileIds, QStringList addedNames, int succeeded,
                   int failed, QStringList errors);
+    // removedFileIds: rows to drop from a currently-displayed folder, same
+    // safe-even-if-not-loaded contract as finished()'s srcFileIds.
+    void deleteFinished(quint64 id, QList<qint64> removedFileIds, int succeeded, int failed, QStringList errors);
 
 private:
     pixet::Database &db();
@@ -92,12 +113,14 @@ private:
     std::atomic_bool cancel_{false};
 };
 
-// Request (which nests Collision/Item inside its QList<Item> member) is the only one
-// of these that ever crosses a queued signal/slot boundary directly - its own copy
-// constructor (compiler-generated) transitively copies everything nested inside it via
-// ordinary C++ semantics, so Item/Collision don't need their own metatype
-// registration. Registered explicitly in FileOpsWorker's constructor (see the .cpp) -
-// this project has one prior documented case of a silent, stderr-invisible failure
-// from a WIN32-subsystem app skipping exactly this kind of setup (moveToThread on a
-// parented object), so this isn't left to moc's best-effort auto-registration.
+// Request (which nests Collision/Item inside its QList<Item> member) and DeleteRequest
+// (nesting DeleteItem) are the only types here that ever cross a queued signal/slot
+// boundary directly - their own copy constructors (compiler-generated) transitively
+// copy everything nested inside via ordinary C++ semantics, so Item/Collision/
+// DeleteItem don't need their own metatype registration. Registered explicitly in
+// FileOpsWorker's constructor (see the .cpp) - this project has one prior documented
+// case of a silent, stderr-invisible failure from a WIN32-subsystem app skipping
+// exactly this kind of setup (moveToThread on a parented object), so this isn't left
+// to moc's best-effort auto-registration.
 Q_DECLARE_METATYPE(FileOpsWorker::Request)
+Q_DECLARE_METATYPE(FileOpsWorker::DeleteRequest)

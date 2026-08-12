@@ -9,12 +9,19 @@
 #include <thread>
 #include <chrono>
 
+#import <Foundation/Foundation.h>
+
 // Best-effort from the Windows machine this feature was built on, following the same
 // pattern as util/FileIO_mac.cpp/util/PathUtil_mac.cpp: written against documented
 // POSIX/Darwin behavior, not yet run. See devlog's P5 entries for the precedent - this
 // needs an actual pass on the Mac (renamex_np/RENAME_EXCL availability against the real
 // deployment target, copyfile() flag behavior, EXDEV handling across an external
-// volume) before being trusted the way the Windows implementation already is.
+// volume, and - the one Objective-C++ addition here - NSFileManager's trashItem:
+// behavior/error codes) before being trusted the way the Windows implementation
+// already is. This file is .mm (Objective-C++) rather than .cpp purely for
+// moveToTrash() - there's no POSIX trash API, NSFileManager is the only correct way to
+// reach the real per-volume Trash - every other function here is unchanged plain
+// POSIX/Darwin C++ and compiles identically under either extension.
 namespace pixet {
 
 namespace {
@@ -137,6 +144,35 @@ FsResult renameWithinDir(const std::string &fromUtf8, const std::string &toUtf8)
 FsResult removeFile(const std::string &pathUtf8) {
     if (::unlink(pathUtf8.c_str()) == 0) return FsResult::Ok;
     return mapErrno(errno);
+}
+
+FsResult moveToTrash(const std::string &pathUtf8) {
+    return withRetry([&]() -> FsResult {
+        @autoreleasepool {
+            NSString *path = [NSString stringWithUTF8String:pathUtf8.c_str()];
+            if (!path) return FsResult::NameInvalid; // shouldn't happen - paths are normalized UTF-8 throughout
+            NSURL *url = [NSURL fileURLWithPath:path];
+
+            NSError *error = nil;
+            if ([[NSFileManager defaultManager] trashItem:url resultingItemURL:nil error:&error]) return FsResult::Ok;
+            if (!error) return FsResult::Unknown;
+
+            // NSFileManager surfaces the underlying POSIX errno (when there is one) via
+            // NSUnderlyingErrorKey under NSCocoaErrorDomain - prefer that over trying to
+            // enumerate every Cocoa-specific NSFileManager error code by hand.
+            NSError *underlying = error.userInfo[NSUnderlyingErrorKey];
+            if (underlying && [underlying.domain isEqualToString:NSPOSIXErrorDomain]) {
+                return mapErrno((int)underlying.code);
+            }
+            if ([error.domain isEqualToString:NSCocoaErrorDomain]) {
+                if (error.code == NSFileNoSuchFileError) return FsResult::SourceMissing;
+                if (error.code == NSFileWriteNoPermissionError || error.code == NSFileReadNoPermissionError) {
+                    return FsResult::PermissionDenied;
+                }
+            }
+            return FsResult::Unknown;
+        }
+    });
 }
 
 bool fileExists(const std::string &pathUtf8) {

@@ -33,6 +33,7 @@ FileOpsWorker::FileOpsWorker(QObject *parent) : QObject(parent) {
     // console this WIN32-subsystem build doesn't have, exactly the invisible-failure
     // class the devlog already documents for moveToThread on a parented object.
     qRegisterMetaType<FileOpsWorker::Request>("FileOpsWorker::Request");
+    qRegisterMetaType<FileOpsWorker::DeleteRequest>("FileOpsWorker::DeleteRequest");
     qRegisterMetaType<QList<qint64>>("QList<qint64>");
 
     moveToThread(&thread_);
@@ -155,14 +156,56 @@ void FileOpsWorker::execute(FileOpsWorker::Request req) {
             continue;
         }
         addedNames << QString::fromStdString(outcome.dstName);
-        // Only a genuine cross-directory move actually vacates a row from wherever
-        // the source used to be - a same-directory move (rename-in-place) and a Copy
-        // both leave the source's original folder untouched.
-        if (plan.kind == pixet::fileops::OpKind::Move && outcome.srcFileId != 0 && (int)i < keptItems.size() &&
-            dirNameOfQ(keptItems[(int)i].srcPath) != req.dstDirPath) {
-            srcFileIds << outcome.srcFileId;
+        // A Copy always leaves the source's original folder untouched. A Move vacates
+        // the row from wherever it used to live at unless neither the directory nor the
+        // name actually changed (a genuine no-op, e.g. Cut then Paste right back where
+        // it came from) - a same-directory *rename* (different name, same dir) still
+        // needs the old-named row removed here, or insertOrUpdateFileByName() below
+        // inserts a second, ghost row for the same underlying file instead of updating
+        // the existing one in place.
+        if (plan.kind == pixet::fileops::OpKind::Move && outcome.srcFileId != 0 && (int)i < keptItems.size()) {
+            const QString &srcPath = keptItems[(int)i].srcPath;
+            bool locationChanged =
+                dirNameOfQ(srcPath) != req.dstDirPath || baseNameOfQ(srcPath) != QString::fromStdString(outcome.dstName);
+            if (locationChanged) srcFileIds << outcome.srcFileId;
         }
     }
 
     emit finished(req.id, req.dstDirPath, srcFileIds, addedNames, (int)report.succeeded, (int)report.failed, errors);
+}
+
+void FileOpsWorker::deleteFiles(FileOpsWorker::DeleteRequest req) {
+    cancel_.store(false);
+
+    std::vector<pixet::fileops::DeleteItem> items;
+    items.reserve(req.items.size());
+    for (const DeleteItem &item : req.items) {
+        pixet::fileops::DeleteItem planned;
+        planned.path = item.path.toStdString();
+        planned.fileId = item.fileId;
+        planned.dirId = item.dirId;
+        items.push_back(std::move(planned));
+    }
+
+    std::string owner = "gui:fileops:pid:" + std::to_string(pixet::currentProcessId());
+
+    pixet::fileops::Report report = pixet::fileops::executeDelete(
+        db(), items, owner,
+        [this, id = req.id](const pixet::fileops::Progress &p) {
+            emit progress(id, (int)p.done, (int)p.total, QString::fromStdString(p.currentName));
+        },
+        &cancel_);
+
+    QList<qint64> removedFileIds;
+    QStringList errors;
+    for (const auto &outcome : report.outcomes) {
+        if (!outcome.ok) {
+            errors << QStringLiteral("%1: %2").arg(QString::fromStdString(outcome.srcPath),
+                                                     QString::fromStdString(outcome.error));
+            continue;
+        }
+        if (outcome.srcFileId != 0) removedFileIds << outcome.srcFileId;
+    }
+
+    emit deleteFinished(req.id, removedFileIds, (int)report.succeeded, (int)report.failed, errors);
 }

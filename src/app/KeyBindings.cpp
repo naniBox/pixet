@@ -34,6 +34,11 @@ QList<ActionInfo> buildActionList() {
          QKeySequence(QStringLiteral("Ctrl+B"))},
         {Action::FocusAddressBar, QStringLiteral("focusAddressBar"), QStringLiteral("Focus address bar"),
          QKeySequence(QStringLiteral("Ctrl+D"))},
+        // F2 on both platforms, not just Windows (where it's Explorer's own
+        // convention) - macOS Finder's rename key is Return, but this app's Return is
+        // already ActivateFullscreen (above), so F2 avoids that clash rather than
+        // fighting over a key that's already spoken for.
+        {Action::Rename, QStringLiteral("rename"), QStringLiteral("Rename selected file"), QKeySequence(Qt::Key_F2)},
         {Action::ActivateFullscreen, QStringLiteral("activateFullscreen"),
          QStringLiteral("Open / close fullscreen viewer"), QKeySequence(Qt::Key_Return)},
         {Action::FullscreenToggleTrueFullscreen, QStringLiteral("fullscreenTrueFullscreen"),
@@ -70,7 +75,7 @@ QList<QKeySequence> buildReservedList() {
     // covers each platform's extra aliases (e.g. Windows' Ctrl+Insert/Shift+Insert/
     // Shift+Delete for Copy/Paste/Cut).
     for (QKeySequence::StandardKey sk :
-         {QKeySequence::SelectAll, QKeySequence::Copy, QKeySequence::Cut, QKeySequence::Paste}) {
+         {QKeySequence::SelectAll, QKeySequence::Copy, QKeySequence::Cut, QKeySequence::Paste, QKeySequence::Delete}) {
         list += QKeySequence::keyBindings(sk);
     }
     return list;

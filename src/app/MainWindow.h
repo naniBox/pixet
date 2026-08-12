@@ -64,6 +64,11 @@ signals:
     // onFilesDroppedOnGrid()/onFileOpPreflightReady() for the two-stage protocol.
     void requestFileOpPreflight(FileOpsWorker::Request req);
     void requestFileOpExecute(FileOpsWorker::Request req);
+    // Connected (queued, cross-thread) to FileOpsWorker::deleteFiles - single-stage,
+    // unlike the pair above (see FileOpsWorker::deleteFiles's own doc comment). Only
+    // ever emitted after MainWindow's own confirmation dialog has already been
+    // accepted.
+    void requestFileDelete(FileOpsWorker::DeleteRequest req);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -105,6 +110,16 @@ private slots:
     void onEditCut();
     void onEditCopy();
     void onEditPaste();
+    // Sends the current selection to the Recycle Bin/Trash (see util/FileMove.h's
+    // moveToTrash()) after a confirmation dialog - guarded by focusedLineEdit() the
+    // same way Cut/Copy/Paste are, so Delete removes a character while the path bar
+    // has focus rather than deleting files.
+    void onEditDelete();
+    // F2 by default (see KeyBindings.cpp) - renames the single selected item via
+    // promptRename() and the same preflight/CollisionDialog/execute pipeline every
+    // other file op already goes through. No-ops (and the action is disabled - see
+    // updateEditActionsEnabled()) unless exactly one item is selected.
+    void onEditRename();
     void updateEditActionsEnabled();
     // Adds `row`'s cached info (ThumbGridView::cachedInfoText) plus, for a JPEG, a
     // synchronous on-demand EXIF read (see hoverinfo::readExifDetailsSync) as
@@ -198,6 +213,10 @@ private slots:
     // scroll position/selection the way a reset would.
     void onFileOpFinished(quint64 id, QString dstDirPath, QList<qint64> srcFileIds, QStringList addedNames,
                           int succeeded, int failed, QStringList errors);
+    // The delete batch is done - drops removedFileIds from the grid model if this is
+    // the folder currently on screen, same incremental-not-full-reload reasoning as
+    // onFileOpFinished().
+    void onFileDeleteFinished(quint64 id, QList<qint64> removedFileIds, int succeeded, int failed, QStringList errors);
     // A drag past the OS threshold started on the grid (see
     // ThumbGridView::dragOutRequested) - builds and exec()s the actual QDrag with
     // the selected files' real paths. pixet does not perform the physical move
@@ -275,6 +294,14 @@ private:
     QAction *cutAction_;
     QAction *copyAction_;
     QAction *pasteAction_;
+    // Delete is a fixed QKeySequence::StandardKey action too - same category as the
+    // four above (a standard, expected-everywhere Edit shortcut), not the configurable
+    // keybindings:: system. Rename is the opposite: F2 isn't a StandardKey, and it's
+    // exactly the kind of single-key-trigger action keybindings:: exists for (see
+    // KeyBindings.cpp), so its shortcut comes from applyKeyBindingShortcuts() like
+    // addBookmarkAction_/focusAddressBarAction_.
+    QAction *deleteAction_;
+    QAction *renameAction_;
     // Status bar: separate labels (capped, not fixed, width - see makeStatusLabel()
     // in the constructor) rather than one joined string, so browsing (arrow keys,
     // clicking through images) doesn't visually jitter as filenames/values change
@@ -471,6 +498,13 @@ private:
     // cut()/paste() instead - otherwise Ctrl+A while editing the path bar would
     // select grid thumbnails instead of the path text.
     QLineEdit *focusedLineEdit() const;
+
+    // A small QDialog (not QInputDialog, which can't pre-select text) prompting for a
+    // new name - pre-fills `currentName` and pre-selects just the stem (before the
+    // extension), matching Explorer's own rename UX. Returns the new name, or an empty
+    // string if cancelled/unchanged (onEditRename() treats both the same way - nothing
+    // to do).
+    QString promptRename(const QString &currentName);
 
     // Window position/size and splitter layout persistence (QSettings) - see
     // restoreWindowState()'s doc comment in the .cpp for the off-screen/reset behavior.
