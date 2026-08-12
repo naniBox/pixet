@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QImage>
 #include <QMainWindow>
 
@@ -128,6 +129,9 @@ private slots:
     // QFileSystemModel populates directory contents asynchronously in the background;
     // an ancestor directory finishing its listing shifts every row below it. Reapplies
     // the tree top-positioning as that settles - see navigateTo()/repositionTreeToTop().
+    // Only acts within navSettleTimer_'s window after the most recent navigateTo() -
+    // see that member's doc comment for why this can't just run unconditionally for
+    // the rest of the session.
     void onTreeDirectoryLoaded(const QString &path);
     // Ctrl+arrow from the grid (see ThumbGridView::navigateFolderRequested) - up/down
     // to the previous/next sibling folder, left to the parent, right into the first
@@ -209,6 +213,16 @@ private:
     QStringList navHistory_;
     int navHistoryIndex_ = -1; // navHistory_[navHistoryIndex_] == currentPath_, whenever the stack is non-empty
     bool navigatingViaHistory_ = false;
+    // Restarted at the top of every navigateTo(). onTreeDirectoryLoaded() only
+    // repositions the tree to currentPath_'s row while this is within
+    // kTreeSettleWindowMs of that restart - without an expiry, it fires for *every*
+    // directory the tree ever finishes listing, for the rest of the session, and
+    // currentIndex() staying pinned to currentPath_ (clicking a branch's expand arrow
+    // elsewhere doesn't change it) meant expanding some unrelated folder minutes
+    // later would silently snap the view back to whatever's currently browsed - a
+    // real reported bug, not a hypothetical.
+    QElapsedTimer navSettleTimer_;
+    static constexpr int kTreeSettleWindowMs = 4000; // just past the last fixed retry delay (3000ms) in navigateTo()
     // Shortcuts are user-configurable (see KeyBindings.h) - kept as members so
     // applyKeyBindingShortcuts() can re-apply them after the Preferences dialog's
     // keybindings editor closes.

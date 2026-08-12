@@ -538,6 +538,7 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
     // must not later resurrect a stale one.
     pendingSelectFileName_.clear();
     currentPath_ = normalized;
+    navSettleTimer_.restart(); // bounds how long onTreeDirectoryLoaded() keeps chasing this row - see its member comment
     // Directory only, never a file path - `normalized` is always a resolved folder
     // here (navigateToInput() resolves a file path to its parent before ever
     // calling this), which is what keeps a pasted/typed file path out of history.
@@ -644,8 +645,14 @@ void MainWindow::onTreeDirectoryLoaded(const QString &) {
     // Fires for every directory the tree has ever listed, not just ones relevant to
     // the current navigation - cheap to just recheck unconditionally each time. Only
     // reposition while the tree's own selection still agrees with where we navigated
-    // to, so this doesn't fight a selection the user has since changed manually.
+    // to (so this doesn't fight a selection the user has since changed manually) *and*
+    // we're still within the post-navigation settle window - see navSettleTimer_'s
+    // doc comment. Without that second check, expanding some unrelated folder (whose
+    // currentIndex() never became the browsed one - clicking a branch's expand arrow
+    // doesn't select the row) would still snap the view back to currentPath_ every
+    // time, indefinitely.
     if (currentPath_.isEmpty()) return;
+    if (!navSettleTimer_.isValid() || navSettleTimer_.elapsed() > kTreeSettleWindowMs) return;
     QModelIndex idx = fsModel_->index(currentPath_);
     if (idx.isValid() && tree_->currentIndex() == idx) repositionTreeToTop(idx);
 }
