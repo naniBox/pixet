@@ -253,6 +253,11 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // receives keyboard focus (and therefore FocusIn) for an editable QComboBox, not
     // the QComboBox widget itself.
     pathBar_->lineEdit()->installEventFilter(this);
+    // Application-wide, for the mouse's back/forward buttons (see eventFilter()). It has to
+    // be this broad: the grid, the tree and the preview pane all accept mouse presses
+    // themselves, so an override on this window would only ever see events none of them
+    // wanted - which is never, over the areas the user is actually clicking.
+    QCoreApplication::instance()->installEventFilter(this);
 
     // --- back/forward: plain in-memory navigateTo() stack, see navHistory_'s doc
     // comment. Fixed (non-configurable) shortcuts on the QAction itself, same
@@ -1701,6 +1706,22 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    // Mouse back/forward buttons -> folder history, matching Alt+Left / Alt+Right. The type
+    // check is first and cheap because this filter is installed application-wide.
+    if (event->type() == QEvent::MouseButtonPress) {
+        Qt::MouseButton button = static_cast<QMouseEvent *>(event)->button();
+        if (button == Qt::BackButton || button == Qt::ForwardButton) {
+            // Not while the fullscreen viewer is up: there, "back" reads as the previous
+            // image, and silently changing folders underneath it would be worse than doing
+            // nothing. Left unhandled rather than repurposed - image navigation already has
+            // the arrow keys and the wheel.
+            if (fullscreenViewer_ && fullscreenViewer_->isVisible()) return false;
+            if (button == Qt::BackButton) onNavigateBack();
+            else onNavigateForward();
+            return true;
+        }
+    }
+
     if (watched == pathBar_->lineEdit() && event->type() == QEvent::FocusIn) {
         // A plain selectAll() here gets immediately undone by the mouse-press event
         // that triggered this focus-in (it repositions the cursor to the click point,
