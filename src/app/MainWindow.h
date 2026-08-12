@@ -11,6 +11,7 @@
 class QAction;
 class QCloseEvent;
 class QComboBox;
+class QToolButton;
 class QFileSystemModel;
 class QFileSystemWatcher;
 class QLabel;
@@ -116,6 +117,14 @@ private slots:
     // shortcuts have in browsers.
     void onFocusAddressBar();
     void onForceRethumbnail();
+    // Status bar thumbnail-size drop-down. Writes the preference, relayouts the grid, and
+    // re-thumbnails the current folder only when the stored blobs can't satisfy the new
+    // size - so shrinking, or any increase still covered by what's on disk, is instant.
+    void onThumbSizeChanged();
+    // The freshness dot next to it. Red means this folder has undersized thumbnails; green
+    // means it doesn't. Clickable either way - on green it's a deliberate force-regenerate,
+    // the same action otherwise buried in the grid's right-click menu.
+    void onThumbStatusClicked();
     void onPreferences();
     // File > Choose Folder... - until now there was no folder picker anywhere in the app;
     // roots came only from the tree, the path bar, bookmarks and the startup fallback. That
@@ -271,6 +280,16 @@ private:
     StatusLabel *dateLabel_;
     StatusLabel *durationLabel_;
 
+    // Thumbnail size control at the far right of the status bar, plus a freshness dot for
+    // the folder on screen. Deliberately not StatusBarRow cells: that widget exists to
+    // hand-position fixed-width *text* so long values truncate rather than overlap (see its
+    // class comment), a problem these two don't have.
+    QComboBox *thumbSizeCombo_ = nullptr;
+    QToolButton *thumbStatusButton_ = nullptr;
+    // Last folder "auto rethumb" fired for, so it fires once per folder rather than every
+    // time the freshness check re-runs - see updateThumbStatusIndicator().
+    QString autoRethumbPath_;
+
     // splitter_: left column (tree+bookmarks+preview) vs. the thumbnail grid, 40/60.
     // topSplitter_: within the left column's top area, tree vs. bookmarks, 70/30.
     // leftSplitter_: within the left column, top area vs. preview pane (vertical) -
@@ -378,6 +397,34 @@ private:
     // about the change a targeted insertOrUpdateFileByName()/removeFileById() call
     // could describe more precisely (see ThumbGridModel).
     void reloadGridPreservingSelection();
+
+    // --- thumbnail size + freshness (status bar, far right) ---
+
+    // Rebuilds the size drop-down's entries and selects prefs::thumbnailIconSize(),
+    // inserting that value as an extra entry if it isn't one of the presets (the
+    // Preferences spinbox allows any value in 80..400). Signal-blocked, so a programmatic
+    // sync can't be mistaken for the user picking something.
+    void syncThumbSizeCombo();
+
+    // Applies whatever prefs::thumbnailIconSize() currently is to the live grid, and
+    // re-thumbnails the current folder *only if* its stored blobs are too small for it.
+    // Shared by the drop-down and the Preferences spinbox so the two can't diverge.
+    void applyThumbnailSizeToGrid();
+
+    // Number of thumbnails in `dirPath` too small to display sharply at the current size.
+    // 0 means the folder is up to date. See the implementation for why this is judged
+    // against the display requirement rather than prefs::thumbnailTargetLongEdge().
+    int countStaleThumbnails(const QString &dirPath) const;
+
+    // Long edge, in real device pixels, a thumbnail needs to fill a grid cell without being
+    // upscaled.
+    int displayThumbLongEdge() const;
+
+    // Repaints the freshness dot (green = nothing to do, red = some thumbnails are
+    // undersized here) and its tooltip. Folder-level, so it's called on folder-level events
+    // only - not from updateSelectionStatus(), which runs on every selection change and
+    // would turn this into a DB query per arrow-key press.
+    void updateThumbStatusIndicator();
     void updateSelectionStatus();
     void repositionTreeToTop(const QModelIndex &idx);
     void loadBookmarks();

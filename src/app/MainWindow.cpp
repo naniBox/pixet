@@ -5,6 +5,8 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
+
+#include <algorithm>
 #include <QDateTime>
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -42,6 +44,7 @@
 #include "BackgroundReconciler.h"
 #include "ClipboardOps.h"
 #include "CollisionDialog.h"
+#include "DatabaseStatsDialog.h"
 #include "FileOpsWorker.h"
 #include "FolderIndexer.h"
 #include "FolderTreeView.h"
@@ -525,6 +528,24 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     dateLabel_ = statusRow->addLabel(115);
     durationLabel_ = statusRow->addLabel(45);
     statusBar()->addPermanentWidget(statusRow);
+
+    // Thumbnail size, at the far right where it's always reachable - the same setting also
+    // lives in Preferences (as a free-form spinbox), and both funnel through
+    // applyThumbnailSizeToGrid() so they can't drift apart.
+    thumbSizeCombo_ = new QComboBox(this);
+    thumbSizeCombo_->setToolTip(QStringLiteral("Thumbnail size"));
+    thumbSizeCombo_->setFocusPolicy(Qt::NoFocus); // must not steal the grid's arrow keys
+    syncThumbSizeCombo();
+    connect(thumbSizeCombo_, &QComboBox::currentIndexChanged, this, &MainWindow::onThumbSizeChanged);
+    statusBar()->addPermanentWidget(thumbSizeCombo_);
+
+    thumbStatusButton_ = new QToolButton(this);
+    thumbStatusButton_->setAutoRaise(true);
+    thumbStatusButton_->setFocusPolicy(Qt::NoFocus);
+    thumbStatusButton_->setText(QStringLiteral("●"));
+    connect(thumbStatusButton_, &QToolButton::clicked, this, &MainWindow::onThumbStatusClicked);
+    statusBar()->addPermanentWidget(thumbStatusButton_);
+    updateThumbStatusIndicator();
 
     loadBookmarks();
     restoreLastDirectory();
@@ -1163,16 +1184,133 @@ void MainWindow::onForceRethumbnail() {
     if (!currentPath_.isEmpty()) navigateTo(currentPath_, /*forceReindex=*/true, /*forceRethumbnail=*/true);
 }
 
+void MainWindow::syncThumbSizeCombo() {
+    if (!thumbSizeCombo_) return;
+    const int current = prefs::thumbnailIconSize();
+
+    // Shared with the Preferences dialog's own size list - see prefs::thumbnailSizeChoices().
+    const QList<int> sizes = prefs::thumbnailSizeChoices(current);
+
+    // Rebuilding fires currentIndexChanged, which would look exactly like the user picking
+    // an entry and trigger a re-thumbnail.
+    QSignalBlocker blocker(thumbSizeCombo_);
+    thumbSizeCombo_->clear();
+    for (int px : sizes) thumbSizeCombo_->addItem(QStringLiteral("%1 px").arg(px), px);
+    thumbSizeCombo_->setCurrentIndex((int)sizes.indexOf(current));
+}
+
+int MainWindow::displayThumbLongEdge() const {
+    return qMax(1, qRound(prefs::thumbnailIconSize() * devicePixelRatioF()));
+}
+
+int MainWindow::countStaleThumbnails(const QString &dirPath) const {
+    if (!db_ || dirPath.isEmpty()) return 0;
+
+    auto dirSel = db_->prepare("SELECT id FROM dirs WHERE path=?");
+    dirSel.bind(1, dirPath.toStdString());
+    if (!dirSel.step()) return 0; // folder not indexed yet - nothing to be stale
+    int64_t dirId = dirSel.columnInt64(0);
+
+    // Judged against what the *display* needs, not against prefs::thumbnailTargetLongEdge()
+    // (which is deliberately ~2x for headroom). Using the generation target would light this
+    // red whenever a folder happened to be indexed under a smaller setting, even when its
+    // blobs are perfectly adequate for what's on screen - blobs stored at 320 shown at 240
+    // look fine and shouldn't nag.
+    //
+    // MIN(needed, original long edge) is what stops a legitimately small photo from counting
+    // as stale forever: a 200px original can never produce a 480px thumbnail, so it isn't
+    // behind - it's already as good as it will ever get. files.width/height are the
+    // ORIGINAL dimensions (thumbs.thumbs.w/h are the thumbnail's), which is exactly the
+    // distinction this relies on.
+    auto sel = db_->prepare(
+        "SELECT COUNT(*) FROM files f JOIN thumbs.thumbs t ON t.id = f.thumb_id "
+        "WHERE f.dir_id = ? AND MAX(t.w, t.h) < MIN(?, MAX(f.width, f.height))");
+    sel.bind(1, dirId);
+    sel.bind(2, (int64_t)displayThumbLongEdge());
+    if (!sel.step()) return 0;
+    return (int)sel.columnInt64(0);
+}
+
+void MainWindow::updateThumbStatusIndicator() {
+    if (!thumbStatusButton_) return;
+
+    const int stale = countStaleThumbnails(currentPath_);
+    const bool upToDate = (stale == 0);
+
+    // "Auto rethumb" (Preferences > Maintenance): regenerate on arrival instead of waiting
+    // to be clicked. Guarded on the path so it fires once per folder - the re-thumbnail
+    // navigates back to this same folder, whose completion calls straight back into here,
+    // and without the guard a folder that somehow stayed stale would loop forever.
+    if (!upToDate && prefs::autoRethumbnail() && autoRethumbPath_ != currentPath_) {
+        autoRethumbPath_ = currentPath_;
+        onForceRethumbnail();
+        return; // the indicator gets refreshed again when that pass reports back
+    }
+    // Colour via stylesheet on a text bullet rather than an icon, matching the "×" reset
+    // buttons in PreferencesDialog - it scales with the UI font instead of needing a pixmap
+    // per device pixel ratio.
+    thumbStatusButton_->setStyleSheet(upToDate ? QStringLiteral("QToolButton { color: #3fb950; }")
+                                                : QStringLiteral("QToolButton { color: #f85149; }"));
+    thumbStatusButton_->setToolTip(
+        upToDate ? QStringLiteral("Thumbnails here are up to date for this size.\nClick to regenerate anyway.")
+                  : QStringLiteral("%1 thumbnail(s) here were made for a smaller size and will look soft.\n"
+                                    "Click to regenerate this folder.")
+                        .arg(stale));
+}
+
+void MainWindow::applyThumbnailSizeToGrid() {
+    const int size = prefs::thumbnailIconSize();
+    grid_->setIconSize(QSize(size, size)); // recomputes the grid layout itself
+
+    if (currentPath_.isEmpty()) {
+        updateThumbStatusIndicator();
+        return;
+    }
+
+    // Only pay for a re-thumbnail when the blobs on disk genuinely can't satisfy the new
+    // size. Shrinking never needs one (the stored thumbnails are already larger), and nor
+    // does an increase still covered by what's stored - both stay instant, and the reload
+    // below is enough because already-decoded pixmaps in the model were sized for the *old*
+    // icon size and have to be re-requested from ThumbLoader regardless.
+    if (countStaleThumbnails(currentPath_) > 0) {
+        navigateTo(currentPath_, /*forceReindex=*/true, /*forceRethumbnail=*/true);
+    } else {
+        reloadGridPreservingSelection();
+    }
+    updateThumbStatusIndicator();
+}
+
+void MainWindow::onThumbSizeChanged() {
+    if (!thumbSizeCombo_) return;
+    const int size = thumbSizeCombo_->currentData().toInt();
+    if (size <= 0 || size == prefs::thumbnailIconSize()) return;
+    prefs::setThumbnailIconSize(size);
+    applyThumbnailSizeToGrid();
+}
+
+void MainWindow::onThumbStatusClicked() {
+    // Deliberately works when green too: that's a force-regenerate, the same action as the
+    // grid context menu's "Force Re-thumbnail This Folder", in the place the dot has just
+    // drawn attention to.
+    onForceRethumbnail();
+}
+
 void MainWindow::onPreferences() {
     PreferencesDialog dlg(this);
     connect(&dlg, &PreferencesDialog::reindexRequested, this, [this]() { emit requestFullReindex(); });
     connect(&dlg, &PreferencesDialog::thumbnailSizeChanged, this, [this]() {
-        int size = prefs::thumbnailIconSize();
-        grid_->setIconSize(QSize(size, size)); // recomputes the grid layout itself now
-        // Already-decoded pixmaps in the model are sized for the *old* icon size -
-        // reloading re-requests every visible thumbnail fresh from ThumbLoader, which
-        // now decodes to the new size (see ThumbLoader::processOne()).
-        if (!currentPath_.isEmpty()) gridModel_->setDirectory(currentPath_);
+        // Same path the status-bar drop-down takes, so the two controls can't behave
+        // differently for the same setting - including the "only re-thumbnail when the
+        // stored blobs are actually too small" rule.
+        syncThumbSizeCombo();
+        applyThumbnailSizeToGrid();
+    });
+    connect(&dlg, &PreferencesDialog::databaseStatsRequested, this, [this, &dlg]() {
+        // Parented to the Preferences dialog it was opened from, so it centres on that
+        // rather than on the main window behind it. Safe to capture &dlg: this connection
+        // only ever fires while dlg.exec() below is running.
+        DatabaseStatsDialog stats(*db_, &dlg);
+        stats.exec();
     });
     connect(&dlg, &PreferencesDialog::nukeDatabaseRequested, this, &MainWindow::nukeDatabase);
     dlg.exec();
@@ -1414,6 +1552,7 @@ void MainWindow::onFilesListed(QString path) {
     if (path != currentPath_) return;
     reloadGridPreservingSelection();
     updateSelectionStatus(); // folder aggregates changed (this is often the first real file list)
+    updateThumbStatusIndicator(); // the file list is final, so the freshness count is meaningful now
     trySelectPendingFile(); // this folder may not have had rows loaded until just now
 }
 
@@ -1440,6 +1579,9 @@ void MainWindow::onIndexerFinished(QString path) {
     // hypothetical. updateSelectionStatus() here instead keeps rawStatusLabel_ (RAW
     // rendered/preview counts) fresh too, which this handler previously didn't touch.
     updateSelectionStatus();
+    // Thumbnails have settled, so a folder that was red because it was mid-generation can
+    // now legitimately go green.
+    updateThumbStatusIndicator();
     // Clears onIndexerStarted()'s "Indexing <folder>..." message, which has no
     // timeout of its own (indexing can take anywhere from milliseconds to well over
     // a minute) - without this call, removing the old showMessage() here (above)
