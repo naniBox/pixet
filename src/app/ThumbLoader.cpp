@@ -40,11 +40,34 @@ QImage decodeThumb(qint64 thumbId, int deviceW, int deviceH) {
     if (!db) db = std::make_unique<pixet::Database>(pixet::indexDbPath(), pixet::thumbsDbPath(), true);
     thread_local pixet::Statement stmt = db->prepare("SELECT bytes FROM thumbs.thumbs WHERE id=?");
 
-    QImage image;
+    // Copy the blob out and reset immediately - before decoding, and before returning.
+    //
+    // This statement is thread_local, so it outlives the call, and a stepped statement that
+    // hasn't been reset is an OPEN READ TRANSACTION holding a SHARED lock on thumbs.db. The
+    // old code reset at the *start* of the next call instead of the end of this one, which
+    // meant every idle ThumbLoader pool thread sat on a SHARED lock indefinitely once the user
+    // had browsed a folder with thumbnails.
+    //
+    // thumbs.db is in WAL mode now, which makes that harmless (readers never block writers),
+    // but it was not, and the consequence was severe: a writer's COMMIT has to promote
+    // RESERVED -> EXCLUSIVE on a rollback-journal database, EXCLUSIVE cannot be taken while
+    // any SHARED lock exists, so every commit touching thumbs.db waited out the 10s
+    // busy_timeout and then failed with "database is locked" at COMMIT. That killed the whole
+    // application via an unguarded QThread slot - see BackgroundReconciler::sweepNext(). Both
+    // that lock and the journal mode are fixed; this ordering is the actual bug.
+    //
+    // Resetting before the decode rather than after also matters on its own terms: decodeJpeg
+    // plus the rescale below is the expensive part, and there is no reason to hold a read
+    // transaction open across it. columnBlob() returns an owning copy, so nothing here still
+    // points into SQLite's memory after the reset.
+    std::vector<uint8_t> bytes;
     stmt.reset();
     stmt.bind(1, thumbId);
-    if (stmt.step()) {
-        std::vector<uint8_t> bytes = stmt.columnBlob(0);
+    if (stmt.step()) bytes = stmt.columnBlob(0);
+    stmt.reset();
+
+    QImage image;
+    if (!bytes.empty()) {
         pixet::RgbImage img;
         if (pixet::decodeJpeg(bytes.data(), bytes.size(), qMax(deviceW, deviceH), img)) {
             image = rgbImageToQImage(img);
