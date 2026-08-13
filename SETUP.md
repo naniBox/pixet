@@ -269,6 +269,35 @@ out, Qt frameworks embedded by `macdeployqt`, ad-hoc signed, drag-to-Application
 codec libraries are statically linked (see `triplets/arm64-osx-pixet.cmake`), so Qt is the
 only thing that needs embedding.
 
+The script also trims the bundle, which `macdeployqt` alone does not do — 91 MB down to 68 MB
+(33 MB compressed), all of it verified by launching the result with `~/Qt` moved aside:
+
+| Step | Saves | Why it's safe |
+|---|---|---|
+| Drop the `imageformats` + `iconengines` plugins and `QtSvg` | 2.7 MB | Every decode is pixet's own codec via `rgbImageToQImage` — the app never asks Qt to read an image file. `QtSvg` is derived as dead, not hardcoded, so the check keeps working if the plugin set changes. |
+| Thin universal Qt binaries to `arm64` | 23 MB | Qt's official macOS binaries are universal; ours aren't (the vcpkg triplet is `arm64-osx`), so the x86_64 halves could never execute. Skipped automatically if `CMAKE_OSX_ARCHITECTURES` is ever widened. |
+| `strip -x` both executables | 3 MB | Distribution-only, so local builds stay debuggable in lldb. |
+
+`QtDBus` looks unused and is not — `QtGui` links it directly in the official macOS build.
+`Qt6::Sql` and `Qt6::Concurrent` *were* genuinely unused and have been removed from the link
+line, which is what stops `macdeployqt` deploying the Postgres and Mimer SQL driver plugins to
+users of a local photo viewer.
+
+**`pixet-index` ships inside the bundle** at `Contents/MacOS/pixet-index`, signed with it, so
+drag-installing carries it along and it can't get separated from the GUI it shares a database
+format with. It links only system frameworks — no Qt, no rpath, no bundle — so it runs from
+anywhere. To use it by name:
+
+```bash
+sudo ln -sf /Applications/pixet.app/Contents/MacOS/pixet-index /usr/local/bin/pixet-index
+pixet-index --help
+pixet-index ~/Pictures/some-folder --no-recurse
+```
+
+It shares `~/Library/Application Support/pixet/{index.db,thumbs.db}` with the GUI, so a
+whole-tree pre-warm from the command line is immediately visible in the app. Both can run at
+once — directory-level claims keep them off each other's work.
+
 **What the recipient experiences, and why.** An ad-hoc-signed app is fine to run locally but
 a downloaded DMG picks up the `com.apple.quarantine` attribute, and Gatekeeper refuses
 anything that isn't Developer-ID-signed *and* notarized. So they must:

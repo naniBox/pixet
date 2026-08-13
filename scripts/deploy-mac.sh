@@ -85,6 +85,106 @@ echo "==> Running macdeployqt (embedding Qt frameworks + the Cocoa plugin)"
 # app inside it has to be signed first.
 "$MACDEPLOYQT" "$APP" -always-overwrite
 
+echo "==> Pruning Qt plugins this app never loads"
+# macdeployqt deploys the default plugin set for the linked modules, which is the right
+# default and wrong for this app: every image decoder is pixet's own (see QtInterop.h and
+# main.cpp - avoiding a runtime dependency on Qt's image plugins is a deliberate design
+# choice, not an accident), so the imageformats and iconengines plugins are loaded at startup
+# and then never used for anything.
+#
+# An allowlist rather than a list of things to delete, so a future Qt version adding new
+# default plugins doesn't silently re-inflate the bundle. Verified with QT_DEBUG_PLUGINS=1:
+# libqcocoa (the platform plugin - without it the app cannot start) and libqmacstyle (the
+# native look) are the only two that matter.
+KEEP_PLUGIN_DIRS=(platforms styles)
+for dir in "$APP"/Contents/PlugIns/*/; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$dir")"
+    keep=0
+    for k in "${KEEP_PLUGIN_DIRS[@]}"; do [ "$name" = "$k" ] && keep=1; done
+    if [ "$keep" -eq 0 ]; then
+        echo "    dropping PlugIns/$name ($(du -sh "$dir" | cut -f1))"
+        rm -rf "$dir"
+    fi
+done
+
+# Then drop any framework nothing left in the bundle actually links against. Derived rather
+# than hardcoded, because the answer changes as plugins come and go: QtSvg is here only to
+# serve the two SVG plugins removed just above, so it becomes dead as a *consequence* of that
+# and a hardcoded list would rot the moment the plugin set changed. Looped because removing
+# one framework can orphan another. Note QtDBus correctly survives this - QtGui links it
+# directly in the official macOS Qt build, so it isn't optional however unused it looks.
+while :; do
+    dropped=0
+    for fw in "$APP"/Contents/Frameworks/*.framework; do
+        [ -d "$fw" ] || continue
+        name="$(basename "$fw" .framework)"
+        users=0
+        while IFS= read -r macho; do
+            # Skip the framework's own binary: otool -L reports a library's own install name
+            # (LC_ID_DYLIB), so every framework "references" itself and nothing would ever
+            # look unused.
+            case "$macho" in "$fw"/*) continue ;; esac
+            if otool -L "$macho" 2>/dev/null | tail -n +2 | grep -q "${name}\.framework"; then
+                users=1
+                break
+            fi
+        done < <(find "$APP/Contents/MacOS" "$APP/Contents/PlugIns" "$APP/Contents/Frameworks" \
+                      -type f \( -perm -u+x -o -name "*.dylib" \) 2>/dev/null)
+        if [ "$users" -eq 0 ]; then
+            echo "    dropping Frameworks/$name.framework ($(du -sh "$fw" | cut -f1))"
+            rm -rf "$fw"
+            dropped=1
+        fi
+    done
+    [ "$dropped" -eq 0 ] && break
+done
+
+echo "==> Thinning universal Qt binaries to this app's architecture"
+# Qt's official macOS binaries are universal (x86_64 + arm64). Our own binaries are not: the
+# vcpkg triplet is arm64-osx, so the app cannot run on Intel at all - which makes the embedded
+# x86_64 halves of Qt 23MB of code that can never execute. Roughly a quarter of the bundle.
+#
+# Derived from the app binary rather than hardcoded to arm64, and skipped entirely if the app
+# is itself universal, so this stays correct if CMAKE_OSX_ARCHITECTURES is ever widened to
+# build for Intel too (see the root CMakeLists - it defaults to the host precisely to keep that
+# a one-line change). Must happen before signing: lipo rewrites the binary and invalidates any
+# signature already on it.
+APP_ARCHS="$(lipo -archs "$APP/Contents/MacOS/pixet")"
+if [ "$(echo "$APP_ARCHS" | wc -w)" -eq 1 ]; then
+    while IFS= read -r macho; do
+        [ "$(lipo -archs "$macho" 2>/dev/null | wc -w)" -gt 1 ] || continue
+        lipo -thin "$APP_ARCHS" "$macho" -output "$macho.thin" 2>/dev/null || continue
+        mv "$macho.thin" "$macho"
+    done < <(find "$APP/Contents/Frameworks" "$APP/Contents/PlugIns" \
+                  -type f \( -perm -u+x -o -name "*.dylib" \) 2>/dev/null)
+    echo "    thinned to $APP_ARCHS"
+else
+    echo "    app is universal ($APP_ARCHS) - leaving Qt as-is"
+fi
+
+echo "==> Adding pixet-index to the bundle"
+# Shipped inside Contents/MacOS rather than loose next to the .app in the DMG, for two
+# reasons: it travels with the app (drag-installing to /Applications takes it along, and it
+# can't get separated from the GUI it shares a database format with), and it sits inside the
+# code signature rather than beside it, which is what a future notarized build will require.
+#
+# It needs nothing else to run - the vcpkg triplet is static, so unlike the GUI this binary
+# links only system frameworks and libc++. No Qt, no rpath, no bundle: it works from any
+# directory, which is the whole point of the symlink suggested at the end of this script.
+INDEX_BIN="$REPO_ROOT/build/$PRESET/src/index/pixet-index"
+if [ ! -x "$INDEX_BIN" ]; then
+    echo "error: $INDEX_BIN was not produced by the build" >&2
+    exit 1
+fi
+cp "$INDEX_BIN" "$APP/Contents/MacOS/pixet-index"
+
+# -x drops local symbols and keeps the global/dynamic ones, which is all a release binary
+# needs. Worth 3MB on pixet-index alone. Deliberately here and not in the CMake release
+# flags, so local builds stay debuggable in lldb - stripping is a distribution concern.
+strip -x "$APP/Contents/MacOS/pixet"
+strip -x "$APP/Contents/MacOS/pixet-index"
+
 echo "==> Signing (identity: $IDENTITY)"
 # --options runtime and --timestamp only apply to a real identity: see the header comment for
 # why the hardened runtime breaks an ad-hoc-signed bundle outright, and --timestamp needs a
@@ -104,6 +204,10 @@ for fw in "$APP"/Contents/Frameworks/*.framework; do
     [ -d "$fw" ] || continue
     codesign "${SIGN_OPTS[@]}" --sign "$IDENTITY" "$fw"
 done
+# Signed explicitly, before the bundle. Signing the .app seals Contents/MacOS as part of the
+# bundle, but a nested Mach-O executable needs its own signature to satisfy notarization -
+# codesign --verify --deep --strict below is what would otherwise catch this later.
+codesign "${SIGN_OPTS[@]}" --sign "$IDENTITY" "$APP/Contents/MacOS/pixet-index"
 codesign "${SIGN_OPTS[@]}" --sign "$IDENTITY" "$APP"
 
 echo "==> Verifying signature"
@@ -197,7 +301,11 @@ fi
 
 echo
 echo "==> Done: $DMG"
-echo "    Size: $(du -h "$DMG" | cut -f1)"
+echo "    Size: $(du -h "$DMG" | cut -f1)  (app bundle: $(du -sh "$APP" | cut -f1))"
+echo
+echo "pixet-index ships inside the bundle and needs nothing alongside it. To run it by name:"
+echo "    sudo ln -sf /Applications/pixet.app/Contents/MacOS/pixet-index /usr/local/bin/pixet-index"
+echo "    pixet-index --help"
 echo
 echo "Worth actually testing before sending it anywhere - a bundle that works only because"
 echo "your own ~/Qt exists is the classic failure here:"
