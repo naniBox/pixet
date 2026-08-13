@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Widgets Sql Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 # Qt 6.8.3 on the macOS 26 SDK: drop a link to a framework the SDK no longer ships.
 #
@@ -145,9 +145,15 @@ if(PIXET_DEBUG_MENU)
     target_compile_definitions(pixet PRIVATE PIXET_DEBUG_MENU)
 endif()
 
+# Widgets only. Qt6::Sql and Qt6::Concurrent used to be here and were never used by a single
+# line of code - the database layer talks to the sqlite3 C API directly (see
+# core/db/Database.h) and the thread pools are std::thread (see util/ThreadPool.h). They cost
+# 4.8MB in the deployed bundle, because macdeployqt correctly follows the linkage: QtSql.framework,
+# QtConcurrent.framework, and all four SQL driver plugins - including libqsqlpsql and
+# libqsqlmimer, i.e. Postgres and Mimer client drivers, shipped to users of a local photo
+# viewer. Confirmed dead before removing: zero source references, and QT_DEBUG_PLUGINS=1
+# showed the sqldrivers plugins were never loaded at runtime.
 target_link_libraries(pixet PRIVATE
     pixet_core
     Qt6::Widgets
-    Qt6::Sql
-    Qt6::Concurrent
 )
