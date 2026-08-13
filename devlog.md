@@ -93,20 +93,51 @@ time the crash report was read, the unified log had rolled and the string was go
 logs it via `qWarning()` - the first logging in the codebase - and `pixet-index` prints it.
 **A recurrence will name itself.**
 
-### Open, needs a decision - `thumbs.db` is not in WAL mode
+### Decided: `thumbs.db` stays on the rollback journal - measured, not assumed
 
-Found while chasing this and deliberately not changed: the constructor's
-`PRAGMA journal_mode=WAL` is **unqualified**, so it only ever applied to `main`. Confirmed on
-a fresh DB - `index.db` reports `wal`, `thumbs.db` reports `delete`. So a 96MB blob database
-that three GUI threads all write thumbnails into is on a rollback journal, where writers block
-readers outright.
+Found while chasing the above: the constructor's `PRAGMA journal_mode=WAL` and
+`PRAGMA synchronous=NORMAL` are **unqualified**, *and* they run before the `ATTACH`, so they
+only ever applied to `main`. Confirmed on a fresh DB - `index.db` is `wal`/NORMAL, `thumbs.db`
+is `delete`/FULL. Two lines down, `PRAGMA thumbs.cache_size` *is* qualified, so this began as
+an oversight rather than a choice.
 
-Not a silent fix, because the obvious change doesn't do what it looks like: SQLite documents
-that a transaction spanning multiple ATTACHed databases is atomic per-database but **not**
-across them as a set *when any one of them is in WAL mode* - which `index.db` already
-triggers. Pass A's transaction spans both. So putting `thumbs.db` in WAL improves its
-concurrency but doesn't buy cross-database atomicity, and getting that would mean taking
-`index.db` *out* of WAL. That's a storage design decision, not a port fix.
+I expected to recommend putting `thumbs.db` in WAL and **the measurements talked me out of
+it.** Both directions of the argument turned out to be noise, on a 400-file re-thumbnail:
+
+| | re-thumbnail 400 files | on-disk size | concurrent blob reads |
+|---|---|---|---|
+| `thumbs.db=delete` (as shipped) | 4.22s | 6.56 MB | 11 of 282,000 over 10ms, worst 10.2ms |
+| `thumbs.db=wal` | 4.18s | 6.56 MB | 0 over 10ms, worst 7.6ms |
+
+1% on write throughput is inside run-to-run noise, and the read-latency win is real but
+invisible - 11 slow reads in 282,000 is not a scroll hitch. **My "writers block readers
+outright" framing was wrong in practice**, and the reason is structural rather than luck: Pass
+B commits every `kBatchSize=64` files and `thumbs.db` has a 64MB page cache, so a write
+transaction never spills the cache - which is the only case where a rollback-journal writer
+holds EXCLUSIVE across a whole transaction rather than briefly at commit. The
+write-amplification counter-argument (WAL writes every blob twice, and blobs are this DB's
+entire workload) died the same way: thumbnailing is CPU-bound on JPEG decode, so the storage
+layer isn't the constraint either way.
+
+Nor is cross-database atomicity a reason to change it. SQLite documents that a transaction
+spanning ATTACHed databases is atomic per-database but **not** across them as a set *when any
+one is in WAL mode* - `index.db` already forfeits it, and matching the modes wouldn't win it
+back. Recovering it would mean taking `index.db` *out* of WAL, to protect an invariant whose
+violation is a regenerable thumbnail: either a `files.thumb_id` pointing at a missing blob
+(re-thumbnailed next scan) or an orphaned blob (reclaimed by compaction). `thumbs.db` is a
+cache. Not worth the trade.
+
+The two settings are also correctly paired as they stand, which is the real trap here:
+`synchronous=NORMAL` is crash-safe under WAL but risks corruption on power loss under a
+rollback journal. `index.db` gets NORMAL *because* it's WAL; `thumbs.db` keeping FULL is what
+makes leaving it on the rollback journal safe. **Changing one without the other is the
+mistake.**
+
+So: no behaviour change, and the pragmas are now written `main.journal_mode` /
+`main.synchronous` with the measurements recorded in the comment. Verified the modes are
+byte-for-byte what they were. The only actual cost this ever had was to me - the unqualified
+pragma read as "the storage layer is WAL" and sent me chasing a `thumbs.db` locking hypothesis
+that the journal mode had already ruled out.
 
 ### Windows note
 
