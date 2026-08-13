@@ -39,6 +39,12 @@ signals:
     // often than filesListed; the receiver should do an incremental update; a full
     // model reset here would wipe already-displayed thumbnails and cause flicker.
     void thumbsProgress(QString path);
+    // Indexing this folder hit a database error and gave up on some or all of it. Separate
+    // from finished(), which still fires afterwards - the folder is done either way, just
+    // incompletely. Worth surfacing rather than swallowing: the user asked for this folder
+    // and is looking at a grid that may be missing thumbnails, with nothing on screen
+    // distinguishing that from "still working".
+    void indexFailed(QString path, QString message);
     void finished(QString path);
 
 private:

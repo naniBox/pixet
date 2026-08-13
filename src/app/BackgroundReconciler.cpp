@@ -1,5 +1,6 @@
 #include "BackgroundReconciler.h"
 
+#include <QDebug>
 #include <QTimer>
 
 #include "Preferences.h"
@@ -94,7 +95,37 @@ void BackgroundReconciler::sweepNext() {
 
     pixet::Indexer indexer(*db_, opts);
     pixet::IndexStats stats;
-    indexer.run(dirPath, stats, {});
+
+    // Nothing may escape this slot. It runs on its own QThread with no handler anywhere
+    // above it, so an exception here doesn't merely abandon the sweep - it reaches
+    // std::terminate() and takes the entire application down with it. That is exactly what
+    // happened in the field: a failed COMMIT deep inside Indexer killed pixet while the user
+    // was doing nothing but browsing photos, brought down by background hygiene work nobody
+    // had asked for. Indexer::run() now absorbs per-directory failures itself; this is the
+    // outer backstop for the parts of it that sit outside that loop.
+    bool failed = false;
+    try {
+        indexer.run(dirPath, stats, {});
+    } catch (const std::exception &e) {
+        failed = true;
+        qWarning() << "pixet: background sweep failed on" << QString::fromStdString(dirPath) << "-" << e.what();
+    }
+    if (stats.dirsFailed > 0) {
+        failed = true;
+        // The message is the whole point of printing this: a crash report shows a throw site
+        // but never the string, and without it there's no way to tell which SQLite error
+        // actually occurred.
+        qWarning() << "pixet: background sweep skipped" << stats.dirsFailed << "directory(ies) under"
+                   << QString::fromStdString(dirPath) << "-" << QString::fromStdString(stats.firstFailure);
+    }
+    if (failed) {
+        // Back off to the long delay rather than the 1.5s one. If the database is broken
+        // rather than momentarily busy, the per-directory cadence would otherwise emit a
+        // warning every second and a half indefinitely, and retrying a wedged DB that fast
+        // helps nobody. A transient failure just costs one delayed sweep.
+        timer_->start(kFullCycleRestDelayMs);
+        return;
+    }
 
     bool changed = stats.filesRemoved > 0 || stats.thumbsEmbedded > 0 || stats.thumbsDecoded > 0 ||
                    stats.thumbsUnsupported > 0 || stats.thumbsFailed > 0;

@@ -1,5 +1,6 @@
 #include "RawRenderer.h"
 
+#include <QDebug>
 #include <QTimer>
 
 #include "Preferences.h"
@@ -117,7 +118,26 @@ void RawRenderer::renderNext() {
     pixet::IndexCallbacks callbacks;
     callbacks.onProgress = [this, &dirPathQt](const pixet::IndexStats &) { emit directoryChanged(dirPathQt); };
 
-    indexer.run(dirPath, stats, callbacks);
+    // See BackgroundReconciler::sweepNext() for why this is guarded: same situation, same
+    // consequence - an exception on this QThread reaches std::terminate() and kills the
+    // application, and the timer restart below would be skipped, silently ending RAW
+    // rendering for the rest of the session even if it didn't.
+    bool failed = false;
+    try {
+        indexer.run(dirPath, stats, callbacks);
+    } catch (const std::exception &e) {
+        failed = true;
+        qWarning() << "pixet: RAW render failed on" << QString::fromStdString(dirPath) << "-" << e.what();
+    }
+    if (stats.dirsFailed > 0) {
+        failed = true;
+        qWarning() << "pixet: RAW render skipped" << QString::fromStdString(dirPath) << "-"
+                   << QString::fromStdString(stats.firstFailure);
+    }
 
-    timer_->start(kPerDirectoryDelayMs);
+    // A failed directory keeps its files at DoneNeedsRender, so the query at the top of the
+    // next round selects this same directory again. Wait out the idle delay rather than the
+    // per-directory one, otherwise a permanently unrenderable folder becomes a tight retry
+    // loop that starves every other pending RAW.
+    timer_->start(failed ? kIdleRetryDelayMs : kPerDirectoryDelayMs);
 }

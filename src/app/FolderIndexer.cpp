@@ -40,7 +40,18 @@ void FolderIndexer::indexFolder(QString path, bool force, bool forceRethumbnail)
     callbacks.onFilesListed = [this, path](int64_t, const std::string &) { emit filesListed(path); };
     callbacks.onProgress = [this, path](const pixet::IndexStats &) { emit thumbsProgress(path); };
 
-    indexer.run(path.toStdString(), stats, callbacks);
+    // Guarded for the same reason as BackgroundReconciler::sweepNext() - an exception on this
+    // QThread has no handler above it and reaches std::terminate() - plus one specific to
+    // this path: finished() must be emitted no matter what. MainWindow::onIndexerStarted()
+    // posts "Indexing <folder>..." with no timeout and relies solely on onIndexerFinished()
+    // to clear it, so an early return would leave that message up for the rest of the
+    // session, over a grid that had quietly stopped filling in.
+    try {
+        indexer.run(path.toStdString(), stats, callbacks);
+    } catch (const std::exception &e) {
+        emit indexFailed(path, QString::fromUtf8(e.what()));
+    }
+    if (stats.dirsFailed > 0) emit indexFailed(path, QString::fromStdString(stats.firstFailure));
 
     emit finished(path);
 }

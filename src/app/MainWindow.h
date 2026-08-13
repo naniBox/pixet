@@ -176,6 +176,7 @@ private slots:
     void onNavThumbReady(qint64 fileId, QPixmap pixmap);
     void onThumbsProgress(QString path);
     void onIndexerFinished(QString path);
+    void onIndexFailed(QString path, QString message);
     void onPreviewReady(qint64 requestId, QImage image);
     void triggerPreviewRequest();
     // QFileSystemModel populates directory contents asynchronously in the background;
@@ -401,6 +402,9 @@ private:
     QTimer *folderWatchDebounce_;
     QTimer *previewDebounce_;
     QString currentPath_;
+    // Set by onIndexFailed(), shown by onIndexerFinished() - see the comment there on why it
+    // can't just be shown when it arrives.
+    QString pendingIndexError_;
     QString pendingPreviewPath_;
     int pendingPreviewFmt_ = 0;
     qint64 previewRequestCounter_ = 0;

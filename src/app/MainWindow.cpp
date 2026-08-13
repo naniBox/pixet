@@ -15,6 +15,7 @@
 #include <QDir>
 #include <QDrag>
 #include <QFileDialog>
+#include <QDebug>
 #include <QFileInfo>
 #include <QFileSystemModel>
 #include <QFileSystemWatcher>
@@ -387,6 +388,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(folderIndexer_.get(), &FolderIndexer::started, this, &MainWindow::onIndexerStarted);
     connect(folderIndexer_.get(), &FolderIndexer::filesListed, this, &MainWindow::onFilesListed);
     connect(folderIndexer_.get(), &FolderIndexer::thumbsProgress, this, &MainWindow::onThumbsProgress);
+    connect(folderIndexer_.get(), &FolderIndexer::indexFailed, this, &MainWindow::onIndexFailed);
     connect(folderIndexer_.get(), &FolderIndexer::finished, this, &MainWindow::onIndexerFinished);
 
     backgroundReconciler_ = std::make_unique<BackgroundReconciler>();
@@ -1845,6 +1847,27 @@ void MainWindow::onIndexerFinished(QString path) {
     // left nothing to ever replace/clear it, so it silently lingered forever. A real
     // reported regression from that first fix, not hypothetical either.
     statusBar()->clearMessage();
+    // Posted here rather than in onIndexFailed(), because that handler necessarily runs
+    // *before* this one (both signals are queued from the same worker thread, in emission
+    // order) and the clearMessage() just above would wipe the message a moment after it
+    // appeared. A long timeout, not a permanent message: it's information, not a state.
+    if (!pendingIndexError_.isEmpty()) {
+        statusBar()->showMessage(pendingIndexError_, 15000);
+        pendingIndexError_.clear();
+    }
+}
+
+void MainWindow::onIndexFailed(QString path, QString message) {
+    // Logged unconditionally, before the current-folder check below can discard it. The
+    // status bar is best-effort - the user may well have navigated elsewhere by now - but a
+    // database error should never vanish just because nobody was looking at the right folder
+    // when it happened. This message is the only thing identifying which error occurred.
+    qWarning() << "pixet: indexing failed on" << path << "-" << message;
+    if (path != currentPath_) return;
+
+    QString label = QFileInfo(path).fileName();
+    if (label.isEmpty()) label = path;
+    pendingIndexError_ = QStringLiteral("Indexing %1 failed: %2").arg(label, message);
 }
 
 void MainWindow::onBackgroundDirectoryChanged(QString path) {
