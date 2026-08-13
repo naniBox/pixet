@@ -1,6 +1,9 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
+#include <thread>
 
 #include "db/Database.h"
 #include "scan/Indexer.h"
@@ -30,15 +33,25 @@ void printStats(const IndexStats &s, double elapsedSec) {
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         std::printf("pixet-index %s\n", pixet::version());
-        std::printf("usage: pixet-index <root-path> [--force] [--no-recurse] [--render-raws]\n");
-        std::printf("  --force        ignore the per-folder freshness cache, rescan everything\n");
-        std::printf("  --no-recurse   index only the given folder, not its subfolders\n");
         std::printf(
-            "  --render-raws  replace every RAW file's fast embedded-preview thumbnail with a full\n"
-            "                 demosaic render of the actual sensor data. Much slower (this is exactly\n"
-            "                 the expensive decode normal indexing avoids by default) - meant to be run\n"
-            "                 as a separate, deliberate pass after a normal (fast) index, not routinely.\n"
-            "                 Safe to re-run: only RAW files still on the fast preview are touched.\n");
+            "usage: pixet-index <root-path> [--force] [--force-rethumbnail] [--no-recurse] [--render-raws] [-j N]\n");
+        std::printf("  --force             ignore the per-folder freshness cache, rescan everything\n");
+        std::printf(
+            "  --force-rethumbnail unconditionally re-thumbnail every file, even ones whose (mtime, size)\n"
+            "                      haven't changed since the last scan - the CLI equivalent of the GUI's\n"
+            "                      \"Force Re-thumbnail This Folder\". Implies --force.\n");
+        std::printf("  --no-recurse        index only the given folder, not its subfolders\n");
+        std::printf(
+            "  --render-raws       replace every RAW file's fast embedded-preview thumbnail with a full\n"
+            "                      demosaic render of the actual sensor data. Much slower (this is exactly\n"
+            "                      the expensive decode normal indexing avoids by default) - meant to be run\n"
+            "                      as a separate, deliberate pass after a normal (fast) index, not routinely.\n"
+            "                      Safe to re-run: only RAW files still on the fast preview are touched.\n");
+        std::printf(
+            "  -j N, --jobs N      how many files to thumbnail concurrently (default: 0, auto-detect from\n"
+            "                      the machine's core count). Directory walking/DB writes stay\n"
+            "                      single-threaded regardless - only the actual image decode work (the slow\n"
+            "                      part, especially for RAW/HEIC) is spread across threads.\n");
         return 1;
     }
 
@@ -48,16 +61,25 @@ int main(int argc, char *argv[]) {
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--force") opts.forceRescan = true;
-        if (arg == "--no-recurse") opts.recursive = false;
-        if (arg == "--render-raws") opts.renderRaws = true;
+        // Bypasses the freshness check on its own (see IndexOptions::forceRethumbnail
+        // and Indexer.cpp's freshEnough check) - --force isn't also required.
+        else if (arg == "--force-rethumbnail") opts.forceRethumbnail = true;
+        else if (arg == "--no-recurse") opts.recursive = false;
+        else if (arg == "--render-raws") opts.renderRaws = true;
+        else if ((arg == "-j" || arg == "--jobs") && i + 1 < argc) opts.threadCount = std::atoi(argv[++i]);
     }
 
     std::string rootPath = normalizePath(rootArg);
     std::printf("pixet-index %s\n", pixet::version());
     std::printf("root:    %s\n", rootArg.c_str());
     std::printf("cache:   %s\n", appDataDir().c_str());
-    std::printf("options: recursive=%s force=%s render-raws=%s\n\n", opts.recursive ? "yes" : "no",
-                 opts.forceRescan ? "yes" : "no", opts.renderRaws ? "yes" : "no");
+    // opts.threadCount itself stays 0 (auto) if -j wasn't passed - Indexer resolves
+    // that internally, but this banner's whole purpose is to say exactly what a run
+    // is about to do, so it resolves the same way here just for the printout.
+    unsigned resolvedThreads =
+        opts.threadCount > 0 ? (unsigned)opts.threadCount : std::max(1u, std::thread::hardware_concurrency());
+    std::printf("options: recursive=%s force=%s render-raws=%s jobs=%u\n\n", opts.recursive ? "yes" : "no",
+                 opts.forceRescan ? "yes" : "no", opts.renderRaws ? "yes" : "no", resolvedThreads);
 
     Database db(indexDbPath(), thumbsDbPath());
     Indexer indexer(db, opts);

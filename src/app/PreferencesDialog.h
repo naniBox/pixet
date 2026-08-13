@@ -12,6 +12,7 @@ class QPushButton;
 class QRadioButton;
 class QLabel;
 class QKeySequenceEdit;
+class QSpinBox;
 
 // Preferences dialog: default video player (system default, or a custom override -
 // see MainWindow::onGridItemActivated() for where this is actually consumed), grid
@@ -57,6 +58,10 @@ private:
     QPushButton *browseButton_;
     QComboBox *thumbnailSizeCombo_;
     QCheckBox *autoRethumbCheck_;
+    // 0 = auto-detect (prefs::indexerThreadCount()) - see IndexOptions::threadCount.
+    // Only affects on-demand navigation (FolderIndexer) and pixet-index's default;
+    // BackgroundReconciler/RawRenderer stay pinned to 1 regardless of this setting.
+    QSpinBox *indexerThreadsSpin_;
     QLabel *reindexStatusLabel_;
     QLabel *nukeStatusLabel_;
     QMap<keybindings::Action, QKeySequenceEdit *> keyBindingEdits_;

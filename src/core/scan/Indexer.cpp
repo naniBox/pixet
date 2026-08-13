@@ -1,5 +1,7 @@
 #include "Indexer.h"
 
+#include <future>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -23,6 +25,15 @@ constexpr size_t kBatchSize = 64;
 // the same budget HoverInfoWorker uses for its own on-demand read.
 constexpr size_t kExifPrefixBytes = 64 * 1024;
 
+// 0 (the IndexOptions default) means "auto" - hardware_concurrency() can itself return 0
+// when the platform can't determine a core count, which floor(..., 1) turns into "run
+// sequentially" rather than a ThreadPool of zero workers hanging on the first submit().
+size_t resolveThreadCount(int requested) {
+    if (requested > 0) return (size_t)requested;
+    unsigned hw = std::thread::hardware_concurrency();
+    return hw > 0 ? (size_t)hw : 1;
+}
+
 struct ExistingFile {
     int64_t id;
     int64_t mtime;
@@ -42,7 +53,8 @@ struct PendingThumb {
 
 } // namespace
 
-Indexer::Indexer(Database &db, IndexOptions opts) : db_(db), opts_(std::move(opts)), claims_(db) {}
+Indexer::Indexer(Database &db, IndexOptions opts)
+    : db_(db), opts_(std::move(opts)), claims_(db), pool_(resolveThreadCount(opts_.threadCount)) {}
 
 void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
                                  std::vector<std::pair<int64_t, std::string>> &subdirsOut, IndexStats &stats,
@@ -298,22 +310,48 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
         if (callbacks.onProgress) callbacks.onProgress(stats);
     };
 
-    for (auto &[fileId, name, existingThumbId] : pending) {
-        Format fmt = classifyFormat(name);
-        // Also forces a fresh (state=New) RAW file straight to a full render during a
-        // --render-raws run - see IndexOptions::renderRaws.
-        bool forceFullRender = opts_.renderRaws && fmt == Format::Raw;
-        ThumbResult result =
-            generateThumb(joinPath(dirPath, name), fmt, opts_.targetLongEdge, opts_.quality, forceFullRender);
-        batch.push_back({fileId, fmt, existingThumbId, std::move(result)});
-        // A forced full RAW render is slow enough (real demosaic decode, not a cheap
-        // embedded-preview extraction) that batching it in with up to 63 more before
-        // the caller hears about it would defeat the point of wanting to *watch*
-        // progress on a large RAW folder rather than wait for it in one lump - flush
-        // every such item immediately instead of only at the usual batch size.
-        if (batch.size() >= kBatchSize || forceFullRender) flushBatch();
+    // Each chunk's generateThumb() calls are submitted to pool_ concurrently and
+    // collected before this directory's usual flushBatch()/progress/heartbeat cadence
+    // runs - see ThreadPool.h. Chunk size is kBatchSize normally (unchanged from
+    // before), or capped to the pool's own thread count for a --render-raws run: a
+    // forced full RAW render used to flush immediately after every single one, since a
+    // real demosaic decode is slow enough that batching 63 more in before reporting
+    // progress would defeat wanting to *watch* a large RAW folder render rather than
+    // wait for it in one lump. A "wave" the size of the pool is the parallel
+    // equivalent - everything in it finishes at roughly the same time anyway. Applied
+    // to the whole chunk once renderRaws is set, not per-item file format (a
+    // --render-raws run's pending list can still include ordinary new JPEGs) - a
+    // little extra, still-cheap transaction overhead on those beats reasoning about
+    // per-item chunk boundaries under concurrent dispatch.
+    size_t chunkCap =
+        opts_.renderRaws ? std::max<size_t>(1, std::min(kBatchSize, resolveThreadCount(opts_.threadCount))) : kBatchSize;
+
+    for (size_t chunkStart = 0; chunkStart < pending.size(); chunkStart += chunkCap) {
+        size_t chunkEnd = std::min(pending.size(), chunkStart + chunkCap);
+
+        std::vector<std::future<ThumbResult>> futures;
+        futures.reserve(chunkEnd - chunkStart);
+        for (size_t j = chunkStart; j < chunkEnd; ++j) {
+            const auto &name = std::get<1>(pending[j]);
+            Format fmt = classifyFormat(name);
+            // Also forces a fresh (state=New) RAW file straight to a full render
+            // during a --render-raws run - see IndexOptions::renderRaws.
+            bool forceFullRender = opts_.renderRaws && fmt == Format::Raw;
+            std::string filePath = joinPath(dirPath, name);
+            int targetLongEdge = opts_.targetLongEdge;
+            int quality = opts_.quality;
+            futures.push_back(pool_.submit([filePath, fmt, targetLongEdge, quality, forceFullRender]() {
+                return generateThumb(filePath, fmt, targetLongEdge, quality, forceFullRender);
+            }));
+        }
+
+        for (size_t j = chunkStart; j < chunkEnd; ++j) {
+            auto &[fileId, name, existingThumbId] = pending[j];
+            Format fmt = classifyFormat(name);
+            batch.push_back({fileId, fmt, existingThumbId, futures[j - chunkStart].get()});
+        }
+        flushBatch();
     }
-    flushBatch();
 
     // After Pass B, so files it just thumbnailed already have GPS written from the bytes
     // that were in memory at the time - this only touches what's genuinely still unchecked.

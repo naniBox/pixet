@@ -99,4 +99,12 @@ bool hoverInfoEnabled() { return settingsStore().value(QStringLiteral("hoverInfo
 
 void setHoverInfoEnabled(bool enabled) { settingsStore().setValue(QStringLiteral("hoverInfoEnabled"), enabled); }
 
+int indexerThreadCount() {
+    return std::max(0, settingsStore().value(QStringLiteral("indexerThreadCount"), 0).toInt());
+}
+
+void setIndexerThreadCount(int count) {
+    settingsStore().setValue(QStringLiteral("indexerThreadCount"), std::max(0, count));
+}
+
 } // namespace prefs

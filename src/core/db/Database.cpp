@@ -119,6 +119,25 @@ Database::Database(const std::string &indexDbPath, const std::string &thumbsDbPa
     }
     exec("ATTACH DATABASE '" + escaped + "' AS thumbs;");
 
+    // SQLite's own page cache defaults to ~2MB regardless of database size, which
+    // barely covers one folder's worth of thumbnail blobs on a large library (measured:
+    // 22MB for one 554-file real-world folder). thumbs.db is the one that actually
+    // grows large (it holds the image bytes; index.db is comparatively tiny metadata),
+    // so it gets the bigger budget. Both cache_size (SQLite's own page cache) and
+    // mmap_size (lets SQLite read pages via the OS's memory-mapped file instead of
+    // explicit read() calls) are per-connection, so every caller that opens a
+    // Database - every worker thread in the app, and pixet-index - gets this for
+    // free rather than needing to remember it individually. mmap_size is virtual
+    // address space, not committed RAM (the OS pages it in on demand and can evict
+    // under pressure), so being generous here on a 64-bit build is low-risk; an
+    // engine built without mmap support just ignores the pragma rather than erroring.
+    exec("PRAGMA cache_size = -8192;");         // 8MB for index.db (small; metadata only)
+    exec("PRAGMA thumbs.cache_size = -65536;"); // 64MB for thumbs.db (measured ~40% faster
+                                                 // on a real 1.1GB thumbs.db: 55ms -> 34ms
+                                                 // reading one 554-file folder's worth of blobs)
+    exec("PRAGMA mmap_size = 268435456;");         // 256MB
+    exec("PRAGMA thumbs.mmap_size = 1073741824;"); // 1GB
+
     if (!readOnly) applySchema();
 }
 

@@ -8,11 +8,21 @@
     during *this* step (configure), not build - so the shared binary cache
     (vcpkg-cache-env.ps1) has to be set up before `cmake --preset` runs here, not just
     before `cmake --build`.
+
+.EXAMPLE
+    ./scripts/configure.ps1 -Preset release -DPIXET_DEBUG_MENU=OFF
+
+    Extra arguments (anything not matching -Preset) pass straight through to
+    `cmake --preset` - the counterpart to configure.sh's `"$@"` forwarding, used by
+    deploy-windows.ps1 to configure a build without the &Debug menu.
 #>
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("debug", "release")]
-    [string]$Preset
+    [string]$Preset,
+
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ExtraArgs
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,7 +43,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 
 Push-Location $repoRoot
 try {
-    cmake --preset $Preset
+    cmake --preset $Preset @ExtraArgs
     exit $LASTEXITCODE
 } finally {
     Pop-Location

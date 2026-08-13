@@ -1,3 +1,4 @@
+find_package(Threads REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(JPEG REQUIRED)
 find_package(PNG REQUIRED)
@@ -21,6 +22,8 @@ add_library(pixet_core STATIC
     util/PathUtil.cpp
     util/ProcessId.h
     util/ProcessId.cpp
+    util/ThreadPool.h
+    util/ThreadPool.cpp
 
     db/Schema.h
     db/Schema.cpp
@@ -134,6 +137,7 @@ target_include_directories(pixet_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${FFMPE
 target_link_directories(pixet_core PUBLIC ${FFMPEG_LIBRARY_DIRS})
 
 target_link_libraries(pixet_core PUBLIC
+    Threads::Threads
     unofficial::sqlite3::sqlite3
     JPEG::JPEG
     PNG::PNG

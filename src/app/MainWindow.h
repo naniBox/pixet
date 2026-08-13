@@ -3,6 +3,8 @@
 #include <QElapsedTimer>
 #include <QImage>
 #include <QMainWindow>
+#include <QPixmap>
+#include <QSet>
 
 #include <memory>
 
@@ -167,6 +169,11 @@ private slots:
     void onToggleHoverInfo(bool enabled);
     void onIndexerStarted(QString path);
     void onFilesListed(QString path);
+    // Feed onCopyGridDebugInfo()'s navigation-timing section - see navThumbTimer_'s
+    // doc comment. Connected alongside the pre-existing gridModel_/thumbLoader_
+    // wiring in the constructor, not in place of it.
+    void onNavThumbRequested(qint64 fileId, qint64 thumbId);
+    void onNavThumbReady(qint64 fileId, QPixmap pixmap);
     void onThumbsProgress(QString path);
     void onIndexerFinished(QString path);
     void onPreviewReady(qint64 requestId, QImage image);
@@ -272,6 +279,21 @@ private:
     // real reported bug, not a hypothetical.
     QElapsedTimer navSettleTimer_;
     static constexpr int kTreeSettleWindowMs = 4000; // just past the last fixed retry delay (3000ms) in navigateTo()
+
+    // Restarted alongside navSettleTimer_ at the top of every navigateTo(). Exists so
+    // onCopyGridDebugInfo() can report real thumbnail-fill timing for whatever
+    // navigation is currently on screen, rather than needing a fresh reproduction
+    // every time a "thumbnails took N seconds" report comes in (see that method's
+    // doc comment on why a fast, always-available path for this matters). Tracks
+    // distinct file ids rather than raw counts so a folder reload mid-navigation
+    // (onFilesListed re-running setDirectory() once Pass A commits) doesn't double-
+    // count the same file as two separate requests.
+    QElapsedTimer navThumbTimer_;
+    QSet<qint64> navThumbsRequested_;
+    QSet<qint64> navThumbsReceived_;
+    qint64 navFirstThumbMs_ = -1;  // elapsed ms from navigateTo() to the first thumbReady, or -1 if none yet
+    qint64 navAllThumbsMs_ = -1;   // elapsed ms at the point requested/received counts last matched, or -1
+
     // Shortcuts are user-configurable (see KeyBindings.h) - kept as members so
     // applyKeyBindingShortcuts() can re-apply them after the Preferences dialog's
     // keybindings editor closes.
@@ -524,6 +546,12 @@ private:
     // the constructor. Exists specifically for the grid column-fit bug: rebuilding
     // this info from a live repro is slow and every past attempt at reproducing it
     // synthetically turned out not to match whatever the user was actually seeing.
+    // Also now reports navThumbTimer_'s navigation-timing numbers (added during a
+    // thumbnail-loading scalability pass - see devlog), for exactly the same reason:
+    // if a slow-thumbnail-fill report ever comes in again, this is the fast path to
+    // real numbers (requested/received counts, time to first thumbnail, time to
+    // catch up) for whatever folder is on screen, instead of another from-scratch
+    // reproduction attempt.
     // Never remove this - keep it around permanently as the fast path for "it
     // happened again, here's the exact state." Deliberately a plain method, not a
     // slot: moc doesn't reliably see the same NDEBUG definition the real compiler

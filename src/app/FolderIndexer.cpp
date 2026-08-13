@@ -27,6 +27,11 @@ void FolderIndexer::indexFolder(QString path, bool force, bool forceRethumbnail)
     opts.forceRethumbnail = forceRethumbnail;
     opts.targetLongEdge = prefs::thumbnailTargetLongEdge();
     opts.owner = "gui:pid:" + std::to_string(pixet::currentProcessId());
+    // On-demand, triggered by the user navigating somewhere and waiting on it - gets
+    // full parallelism (0 = auto-detect, see prefs::indexerThreadCount()). Unlike
+    // BackgroundReconciler/RawRenderer, which stay pinned to threadCount=1 - see their
+    // own comments on why.
+    opts.threadCount = prefs::indexerThreadCount();
 
     pixet::Indexer indexer(*db_, opts);
     pixet::IndexStats stats;

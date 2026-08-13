@@ -96,6 +96,14 @@ void RawRenderer::renderNext() {
     // same directory right now, Indexer's own claim check just skips it for this
     // round rather than contending; the next round tries again.
     opts.owner = "gui:rawrender:pid:" + std::to_string(pixet::currentProcessId());
+    // Deliberately not prefs::indexerThreadCount() - same reasoning as
+    // BackgroundReconciler's own threadCount=1: this is explicitly idle/low-priority
+    // background work (see the class comment above), running concurrently with
+    // FolderIndexer/BackgroundReconciler on their own QThreads, and letting it also
+    // claim a full pool of cores risks oversubscribing past what's on-screen right
+    // now. Also keeps chunkCap at 1 in Indexer's Pass B (see Indexer.cpp), preserving
+    // the per-file progress cadence the comment below relies on.
+    opts.threadCount = 1;
 
     pixet::Indexer indexer(*db_, opts);
     pixet::IndexStats stats;

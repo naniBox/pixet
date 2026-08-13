@@ -111,4 +111,14 @@ constexpr int kMaxPathHistory = 20;
 bool hoverInfoEnabled();
 void setHoverInfoEnabled(bool enabled);
 
+// How many worker threads Indexer spreads Pass B (thumbnail generation) across - see
+// IndexOptions::threadCount, which this feeds directly for on-demand navigation
+// (FolderIndexer) and defaults pixet-index's own -j flag. 0 = auto-detect
+// (std::thread::hardware_concurrency()). Deliberately NOT read by
+// BackgroundReconciler/RawRenderer - those stay pinned to threadCount=1, matching
+// their own "idle/low priority" design, so a user cranking this up doesn't
+// accidentally make the background sweep compete harder for cores too.
+int indexerThreadCount();
+void setIndexerThreadCount(int count);
+
 } // namespace prefs

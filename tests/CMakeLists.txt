@@ -8,6 +8,8 @@ add_executable(pixet_tests
     test_filemove.cpp
     test_fileops.cpp
     test_exif.cpp
+    test_threadpool.cpp
+    test_indexer.cpp
     test_thumbgen.cpp
     test_pngcodec.cpp
     test_rawcodec.cpp

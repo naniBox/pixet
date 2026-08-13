@@ -21,6 +21,7 @@
 #include <QVBoxLayout>
 
 #include <iterator>
+#include <thread>
 
 #include "KeyBindings.h"
 #include "Preferences.h"
@@ -134,6 +135,30 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     indexLayout->addWidget(reindexButton);
     indexLayout->addWidget(reindexHint);
     indexLayout->addWidget(reindexStatusLabel_);
+
+    unsigned detectedCores = std::thread::hardware_concurrency();
+    auto *threadsRow = new QHBoxLayout();
+    auto *threadsLabel = new QLabel(QStringLiteral("Indexing threads:"), indexGroup);
+    indexerThreadsSpin_ = new QSpinBox(indexGroup);
+    // 0 = auto; upper bound is generous rather than exactly detectedCores - a user who
+    // deliberately wants to oversubscribe (e.g. testing, or cores that aren't equally
+    // fast) can, it's their machine.
+    indexerThreadsSpin_->setRange(0, (int)std::max(1u, detectedCores) * 4);
+    indexerThreadsSpin_->setSpecialValueText(
+        QStringLiteral("Auto (%1 detected)").arg(detectedCores > 0 ? (int)detectedCores : 1));
+    indexerThreadsSpin_->setValue(prefs::indexerThreadCount());
+    threadsRow->addWidget(threadsLabel);
+    threadsRow->addWidget(indexerThreadsSpin_, /*stretch=*/1);
+    indexLayout->addLayout(threadsRow);
+    auto *threadsHint = new QLabel(
+        QStringLiteral("How many files are thumbnailed at once when you navigate to a folder that needs it, or "
+                        "when running pixet-index. Only applies there - the continuous background sweep and RAW "
+                        "render catch-up stay single-threaded regardless, so they don't compete with whatever "
+                        "you're actively waiting on for CPU."),
+        indexGroup);
+    threadsHint->setWordWrap(true);
+    indexLayout->addWidget(threadsHint);
+
     maintenanceLayout->addWidget(indexGroup);
     connect(reindexButton, &QPushButton::clicked, this, &PreferencesDialog::onReindexClicked);
 
@@ -277,6 +302,7 @@ void PreferencesDialog::accept() {
     prefs::setCustomVideoPlayerPath(customPlayerPathEdit_->text());
 
     prefs::setAutoRethumbnail(autoRethumbCheck_->isChecked());
+    prefs::setIndexerThreadCount(indexerThreadsSpin_->value());
 
     int newSize = thumbnailSizeCombo_->currentData().toInt();
     prefs::setThumbnailIconSize(newSize);

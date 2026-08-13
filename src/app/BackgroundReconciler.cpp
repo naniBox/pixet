@@ -84,6 +84,13 @@ void BackgroundReconciler::sweepNext() {
     opts.forceRethumbnail = false; // only re-thumbnail files whose (mtime, size) actually changed
     opts.targetLongEdge = prefs::thumbnailTargetLongEdge();
     opts.owner = "gui:bg:pid:" + std::to_string(pixet::currentProcessId());
+    // Deliberately not prefs::indexerThreadCount() - this sweep already describes
+    // itself as idle/low-priority background work (see the class comment), and it
+    // runs concurrently with FolderIndexer/RawRenderer on their own QThreads. Letting
+    // it *also* claim a full pool of cores would mean up to 3x oversubscription when
+    // they overlap, competing with the on-demand navigation the user is actually
+    // waiting on for the cores that matter most.
+    opts.threadCount = 1;
 
     pixet::Indexer indexer(*db_, opts);
     pixet::IndexStats stats;

@@ -8,6 +8,59 @@
 #include "decode/JpegCodec.h"
 #include "util/AppPaths.h"
 
+namespace {
+
+// One decode: reads the thumbnail blob and decodes+scales it to a display-ready
+// QImage. Runs on one of ThumbLoader::pool_'s worker threads - never on ThumbLoader's
+// own thread_, and never touches stack_/pending_/inFlight_ (those stay confined to
+// thread_ - see ThumbLoader::onDecodeFinished()).
+//
+// Returns a QImage, not a QPixmap, and deliberately so: an earlier version of this
+// function returned QPixmap directly, built via QPixmap::fromImage()/scaled() right
+// here on the pool worker thread - and crashed for real (reproduced live: debug CRT
+// heap-corruption abort, ucrtbased.dll, STATUS_BREAKPOINT) within seconds of
+// navigating to a real folder once more than one worker could be decoding at once.
+// QPixmap's Windows backend isn't safe to construct/scale concurrently from multiple
+// threads, even though a single non-GUI thread doing it serially (thread_, in
+// onDecodeFinished() - or the old one-QThread-only design this replaced) is fine and
+// was proven so for this app's entire history before this rewrite. QImage has no such
+// restriction - each thread's instance here is independent, never shared while being
+// built - so the actual QPixmap construction now happens only in onDecodeFinished(),
+// back on thread_, where it's safe.
+//
+// db/stmt are thread_local rather than passed in or held as ThumbLoader members: each
+// of pool_'s worker threads is reused across many requests over its lifetime (unlike
+// the old one-QThread design, where a single member sufficed), and Database is
+// explicitly documented as one-per-thread, not shareable. Lazily created on first use
+// per thread, then kept alive - a pool worker thread makes its own connection exactly
+// once and reuses it (and its one prepared statement) for every decode it ever
+// handles, rather than re-preparing the same SQL on every single call.
+QImage decodeThumb(qint64 thumbId, int deviceW, int deviceH) {
+    thread_local std::unique_ptr<pixet::Database> db;
+    if (!db) db = std::make_unique<pixet::Database>(pixet::indexDbPath(), pixet::thumbsDbPath(), true);
+    thread_local pixet::Statement stmt = db->prepare("SELECT bytes FROM thumbs.thumbs WHERE id=?");
+
+    QImage image;
+    stmt.reset();
+    stmt.bind(1, thumbId);
+    if (stmt.step()) {
+        std::vector<uint8_t> bytes = stmt.columnBlob(0);
+        pixet::RgbImage img;
+        if (pixet::decodeJpeg(bytes.data(), bytes.size(), qMax(deviceW, deviceH), img)) {
+            image = rgbImageToQImage(img);
+            // decodeJpeg only lands *close* to the target via coarse DCT scale steps -
+            // the grid needs an exact fit or oversized decorations bleed into
+            // neighboring cells.
+            if (image.width() > deviceW || image.height() > deviceH) {
+                image = image.scaled(deviceW, deviceH, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+        }
+    }
+    return image;
+}
+
+} // namespace
+
 ThumbLoader::ThumbLoader(QObject *parent) : QObject(parent) {
     moveToThread(&thread_);
     thread_.start();
@@ -26,28 +79,14 @@ void ThumbLoader::request(qint64 fileId, qint64 thumbId) {
     if (thumbId == 0 || pending_.contains(fileId)) return;
     pending_.insert(fileId);
     stack_.push_back({fileId, thumbId});
-    if (!processing_) {
-        processing_ = true;
-        QMetaObject::invokeMethod(this, "processOne", Qt::QueuedConnection);
-    }
+    dispatchNext();
 }
 
-void ThumbLoader::processOne() {
-    if (stack_.isEmpty()) {
-        processing_ = false;
-        return;
-    }
-    Req req = stack_.takeLast();
-    pending_.remove(req.fileId);
+void ThumbLoader::dispatchNext() {
+    while (inFlight_ < (int)kMaxConcurrentDecodes && !stack_.isEmpty()) {
+        Req req = stack_.takeLast(); // LIFO - most recently requested goes first
+        ++inFlight_;
 
-    if (!db_) db_ = std::make_unique<pixet::Database>(pixet::indexDbPath(), pixet::thumbsDbPath(), true);
-
-    QPixmap pixmap;
-    auto sel = db_->prepare("SELECT bytes FROM thumbs.thumbs WHERE id=?");
-    sel.bind(1, req.thumbId);
-    if (sel.step()) {
-        std::vector<uint8_t> bytes = sel.columnBlob(0);
-        pixet::RgbImage img;
         const qreal dpr = devicePixelRatio_.load(std::memory_order_relaxed);
         // Device pixels, not logical points. prefs::thumbnailIconSize() is the on-screen
         // (logical) cell size, so on a Retina display the grid can show twice that many real
@@ -60,32 +99,32 @@ void ThumbLoader::processOne() {
         // width-sized square and overflows the shorter area it's drawn into.
         const int deviceW = qMax(1, qRound(iconSize * dpr));
         const int deviceH = qMax(1, qRound(prefs::thumbnailImageAreaHeightFor(iconSize) * dpr));
-        // Stored thumbs are generated at prefs::thumbnailTargetLongEdge() (always >=
-        // this); decode straight to display size (cheap scaled-DCT path) rather than
-        // decoding full-size and scaling after. The decode target stays the *wider* of the
-        // two: decodeJpeg only takes a long-edge hint, and aiming at the larger dimension
-        // guarantees enough pixels for either orientation, leaving the exact fit to the
-        // scale below. Aiming at the shorter one would under-resolve landscape shots.
-        if (pixet::decodeJpeg(bytes.data(), bytes.size(), qMax(deviceW, deviceH), img)) {
-            pixmap = QPixmap::fromImage(rgbImageToQImage(img));
-            // decodeJpeg only lands *close* to the target via coarse DCT scale steps -
-            // the grid needs an exact fit or oversized decorations bleed into
-            // neighboring cells.
-            if (pixmap.width() > deviceW || pixmap.height() > deviceH) {
-                pixmap = pixmap.scaled(deviceW, deviceH, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            }
-            // Stamping the ratio is what keeps the grid's geometry in logical units: the
-            // pixmap is now physically 2x on Retina, and ThumbGridView centres it using
-            // deviceIndependentSize() so the cell layout is unchanged.
-            pixmap.setDevicePixelRatio(dpr);
-        }
-    }
 
-    emit thumbReady(req.fileId, pixmap);
-
-    if (!stack_.isEmpty()) {
-        QMetaObject::invokeMethod(this, "processOne", Qt::QueuedConnection);
-    } else {
-        processing_ = false;
+        qint64 fileId = req.fileId;
+        qint64 thumbId = req.thumbId;
+        pool_.submit([this, fileId, thumbId, dpr, deviceW, deviceH]() {
+            QImage image = decodeThumb(thumbId, deviceW, deviceH);
+            // Hops back onto thread_ - the pool worker thread must never touch
+            // stack_/pending_/inFlight_ directly (see the class comment), and must
+            // never build a QPixmap itself (see decodeThumb()'s comment on the crash
+            // that taught us that).
+            QMetaObject::invokeMethod(
+                this, [this, fileId, image, dpr]() { onDecodeFinished(fileId, image, dpr); }, Qt::QueuedConnection);
+        });
     }
+}
+
+void ThumbLoader::onDecodeFinished(qint64 fileId, QImage image, qreal dpr) {
+    --inFlight_;
+    pending_.remove(fileId);
+    QPixmap pixmap;
+    if (!image.isNull()) {
+        pixmap = QPixmap::fromImage(image);
+        // Stamping the ratio is what keeps the grid's geometry in logical units: the
+        // pixmap is now physically 2x on Retina, and ThumbGridView centres it using
+        // deviceIndependentSize() so the cell layout is unchanged.
+        pixmap.setDevicePixelRatio(dpr);
+    }
+    emit thumbReady(fileId, pixmap);
+    dispatchNext(); // the slot this decode just freed may have more work waiting
 }

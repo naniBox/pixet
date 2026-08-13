@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "Claims.h"
+#include "../util/ThreadPool.h"
 
 namespace pixet {
 
@@ -62,6 +63,15 @@ struct IndexOptions {
     int targetLongEdge = 320;
     int quality = 85;
     std::string owner; // claim owner id, e.g. "pid:1234"
+
+    // How many worker threads Pass B (thumbnail generation) spreads across - see
+    // ThreadPool.h and Indexer::indexOneDirectory()'s Pass B. 0 = auto-detect
+    // (std::thread::hardware_concurrency(), floored at 1). Deliberately only Pass B:
+    // Pass A (the directory walk/diff) and every DB write stay on the single thread
+    // that owns the Database connection - see Database.h's own "not thread-safe"
+    // contract - this only parallelizes generateThumb(), which is a pure,
+    // side-effect-free function (see ThumbGenerator.h).
+    int threadCount = 0;
 };
 
 struct IndexCallbacks {
@@ -92,6 +102,10 @@ private:
     Database &db_;
     IndexOptions opts_;
     ClaimManager claims_;
+    // Sized once from opts_.threadCount (resolved in the constructor) and reused across
+    // every directory's Pass B for this run() call - see ThreadPool.h on why persistent
+    // beats spawning fresh threads per directory/batch.
+    ThreadPool pool_;
 
     void indexOneDirectory(int64_t dirId, const std::string &dirPath,
                             std::vector<std::pair<int64_t, std::string>> &subdirsOut, IndexStats &stats,

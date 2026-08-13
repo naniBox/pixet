@@ -364,6 +364,12 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     thumbLoader_->setDevicePixelRatio(devicePixelRatioF());
     connect(gridModel_, &ThumbGridModel::thumbNeeded, thumbLoader_.get(), &ThumbLoader::request);
     connect(thumbLoader_.get(), &ThumbLoader::thumbReady, gridModel_, &ThumbGridModel::setThumbnail);
+    // Additional taps on the same two signals, purely for onCopyGridDebugInfo()'s
+    // navigation-timing section - see navThumbTimer_'s doc comment. Doesn't replace
+    // or reorder the connections above; Qt fires both for a given signal regardless
+    // of connection order.
+    connect(gridModel_, &ThumbGridModel::thumbNeeded, this, &MainWindow::onNavThumbRequested);
+    connect(thumbLoader_.get(), &ThumbLoader::thumbReady, this, &MainWindow::onNavThumbReady);
     // ThumbGridModel::setThumbnail() already emits dataChanged(), and
     // ThumbGridView::setModel() already connects that straight to a viewport
     // repaint - no separate "make sure it actually repainted" connection needed
@@ -590,6 +596,11 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
     pendingSelectFileName_.clear();
     currentPath_ = normalized;
     navSettleTimer_.restart(); // bounds how long onTreeDirectoryLoaded() keeps chasing this row - see its member comment
+    navThumbTimer_.restart(); // see navThumbTimer_'s member comment
+    navThumbsRequested_.clear();
+    navThumbsReceived_.clear();
+    navFirstThumbMs_ = -1;
+    navAllThumbsMs_ = -1;
     // Directory only, never a file path - `normalized` is always a resolved folder
     // here (navigateToInput() resolves a file path to its parent before ever
     // calling this), which is what keeps a pasted/typed file path out of history.
@@ -1691,6 +1702,20 @@ void MainWindow::onToggleHoverInfo(bool enabled) {
     if (!enabled) grid_->hideHoverTooltip();
 }
 
+void MainWindow::onNavThumbRequested(qint64 fileId, qint64 /*thumbId*/) { navThumbsRequested_.insert(fileId); }
+
+void MainWindow::onNavThumbReady(qint64 fileId, QPixmap /*pixmap*/) {
+    navThumbsReceived_.insert(fileId);
+    if (navFirstThumbMs_ < 0) navFirstThumbMs_ = navThumbTimer_.elapsed();
+    // Re-evaluated on every arrival, not just once: a burst can still be growing
+    // (the model keeps discovering more visible rows as onFilesListed's real file
+    // list lands, or the user scrolls) after the first few thumbnails already
+    // arrived, so "caught up" can go true, then false again as more get requested,
+    // then true again later - the last time matters for "how long until the folder
+    // actually looked done", which is what a stale earlier catch-up wouldn't show.
+    if (navThumbsReceived_.size() >= navThumbsRequested_.size()) navAllThumbsMs_ = navThumbTimer_.elapsed();
+}
+
 void MainWindow::onCopyGridDebugInfo() {
     QScreen *scr = screen();
     auto rectStr = [](const QRect &r) { return QStringLiteral("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height()); };
@@ -1745,6 +1770,15 @@ void MainWindow::onCopyGridDebugInfo() {
     lines << QStringLiteral("");
     lines << QStringLiteral("Folder:");
     lines << QStringLiteral("  currentPath: %1").arg(currentPath_);
+    lines << QStringLiteral("");
+    lines << QStringLiteral("Navigation timing (since navigating to currentPath_):");
+    lines << QStringLiteral("  thumbnails requested so far: %1").arg(navThumbsRequested_.size());
+    lines << QStringLiteral("  thumbnails received so far: %1").arg(navThumbsReceived_.size());
+    lines << QStringLiteral("  time to first thumbnail: %1")
+                 .arg(navFirstThumbMs_ >= 0 ? QStringLiteral("%1ms").arg(navFirstThumbMs_) : QStringLiteral("none yet"));
+    lines << QStringLiteral("  time until requested == received (last time this was true): %1")
+                 .arg(navAllThumbsMs_ >= 0 ? QStringLiteral("%1ms").arg(navAllThumbsMs_) : QStringLiteral("not yet caught up"));
+    lines << QStringLiteral("  (requested count includes any further scrolling since navigation started, not just the initial on-screen burst)");
 
     QString text = lines.join(QStringLiteral("\n"));
     QGuiApplication::clipboard()->setText(text);

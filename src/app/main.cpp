@@ -85,6 +85,12 @@ int main(int argc, char *argv[]) {
         QStringLiteral("Ignore saved window position/size and pane layout for this launch, "
                         "and save fresh defaults back on exit."));
     parser.addOption(resetLayoutOption);
+    // Optional, not required for positionalArguments() to work below - only affects
+    // --help's generated usage line (adds a "[file]" hint instead of just "[options]").
+    parser.addPositionalArgument(QStringLiteral("file"),
+                                  QStringLiteral("A file to open, navigating to its folder and selecting it "
+                                                 "(what a double-click via a registered file association sends)."),
+                                  QStringLiteral("[file]"));
     // process() exits on an unrecognised option. Safe for a Finder launch, which passes no
     // arguments at all (Qt strips the legacy -psn_* argument itself), and file opens come
     // through FileOpenForwarder rather than argv.
@@ -98,6 +104,15 @@ int main(int argc, char *argv[]) {
     // delivered once the event loop runs.
     auto *forwarder = new FileOpenForwarder(&window, &app);
     app.installEventFilter(forwarder);
+
+    // Windows (and Linux) pass an "open this file" request as a plain positional
+    // argument rather than the Cocoa FileOpen event macOS uses above - e.g. once file
+    // association is registered (see scripts/pixet.iss), double-clicking a .jpg
+    // launches `pixet.exe "C:\...\photo.jpg"`. Only ever one positional argument in
+    // practice - Explorer hands over a single path per launch - so the rest are
+    // ignored rather than treated as an error.
+    const QStringList positional = parser.positionalArguments();
+    if (!positional.isEmpty()) window.openSystemPath(positional.first());
 
     return app.exec();
 }
