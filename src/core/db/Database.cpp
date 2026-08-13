@@ -105,41 +105,47 @@ Database::Database(const std::string &indexDbPath, const std::string &thumbsDbPa
 
     exec("PRAGMA busy_timeout=10000;");
     exec("PRAGMA foreign_keys=OFF;");
-    // Qualified with `main.` deliberately, and note these run *before* the ATTACH below, so
-    // they apply to index.db and nothing else. thumbs.db keeps SQLite's defaults - rollback
-    // journal, synchronous=FULL - and that is a decision, not an oversight, though it started
-    // as one: these lines read as "the storage layer is WAL" and cost a debugging session
-    // during a crash investigation, chasing a thumbs.db locking hypothesis that the journal
-    // mode had already ruled out. Hence the explicit prefix.
+    // Puts one schema into WAL, tolerating the case where it can't be done right now.
     //
-    // Measured on a 400-file re-thumbnail before deciding to leave it, because the argument
-    // cuts both ways and neither side survived: putting thumbs.db in WAL changed re-thumbnail
-    // time by 1% (4.22s -> 4.18s, inside run-to-run noise) with identical on-disk size, and
-    // moved concurrent blob-read latency from "11 reads over 10ms out of 282,000, 10.2ms
-    // worst case" to zero over 10ms. Real but invisible. The reason rollback-journal
-    // contention never bites is structural rather than lucky: Pass B commits every
-    // kBatchSize=64 files and thumbs.db gets a 64MB page cache below, so a write transaction
-    // never spills the cache - which is the only case where a writer would hold EXCLUSIVE
-    // across the whole transaction and actually block ThumbLoader's reads.
+    // Converting a rollback-journal database to WAL needs a brief EXCLUSIVE lock, so it fails
+    // with SQLITE_BUSY if anything at all is mid-read. That must not be fatal, and finding out
+    // the hard way is what this comment is for: a first version of the thumbs.db conversion
+    // called exec() directly, and with one reader holding an open read transaction the pragma
+    // threw from inside this constructor - which every caller runs at startup and no caller
+    // wraps - turning a recoverable lock conflict into an immediate abort (`libc++abi:
+    // terminating due to uncaught exception ... SQL: PRAGMA thumbs.journal_mode=WAL;`). Worse
+    // than the problem it was added to fix.
     //
-    // Nor is it worth changing for cross-database atomicity, which the indexer's
-    // main+thumbs transactions would seem to want: SQLite documents that a transaction
-    // spanning ATTACHed databases is atomic per-database but *not* across them as a set when
-    // any one is in WAL mode - so index.db being WAL already forfeits that, and matching the
-    // modes wouldn't win it back. Recovering it would mean taking index.db *out* of WAL, for
-    // an invariant whose violation is a regenerable thumbnail: either a files.thumb_id
-    // pointing at a missing blob (re-thumbnailed on the next scan) or an orphaned blob
-    // (reclaimed by compaction). Not worth the trade.
+    // So: skip the work entirely if already WAL (the normal case after the first launch), drop
+    // busy_timeout to 200ms for the attempt so a contended startup isn't a 10-second stall, and
+    // on failure carry on in whatever mode the file is in. The conversion is persisted in the
+    // database header, so any later launch that finds the file quiet converts it permanently.
     //
-    // The two settings are also correctly paired as they stand. synchronous=NORMAL is safe
-    // against a crash under WAL, but under a rollback journal it risks corruption on power
-    // loss - so index.db gets NORMAL because it's WAL, and thumbs.db keeping FULL is what
-    // makes leaving it on the rollback journal safe. Changing one without the other is the
-    // mistake to avoid here.
-    if (!readOnly) {
-        exec("PRAGMA main.journal_mode=WAL;");
-        exec("PRAGMA main.synchronous=NORMAL;");
-    }
+    // synchronous=NORMAL is applied only if WAL actually took: NORMAL is crash-safe under WAL
+    // but risks corruption on power loss under a rollback journal, so the two settings have to
+    // move together or not at all.
+    auto ensureWal = [this](const char *schema) {
+        std::string prefix = std::string("PRAGMA ") + schema + ".";
+        auto currentMode = [&]() {
+            auto q = prepare(prefix + "journal_mode;");
+            return q.step() ? q.columnText(0) : std::string();
+        };
+        std::string mode = currentMode();
+        if (mode != "wal") {
+            exec("PRAGMA busy_timeout=200;");
+            try {
+                exec(prefix + "journal_mode=WAL;");
+            } catch (const std::exception &) {
+                // Something is reading it. Leave the file as it is and try again next launch.
+            }
+            exec("PRAGMA busy_timeout=10000;");
+            mode = currentMode();
+        }
+        if (mode == "wal") exec(prefix + "synchronous=NORMAL;");
+    };
+
+    // main only here - the ATTACH hasn't happened yet, so `thumbs` doesn't exist to be named.
+    if (!readOnly) ensureWal("main");
 
     // ATTACH needs a bound-free literal; escape single quotes defensively.
     std::string escaped;
@@ -149,6 +155,45 @@ Database::Database(const std::string &indexDbPath, const std::string &thumbsDbPa
         escaped += c;
     }
     exec("ATTACH DATABASE '" + escaped + "' AS thumbs;");
+
+    // thumbs.db in WAL too, and this is a correctness fix, not tuning. It used to be left on
+    // SQLite's defaults (rollback journal, synchronous=FULL) purely because the pragmas above
+    // ran before the ATTACH and were unqualified, and I previously argued for leaving it that
+    // way on the strength of a latency benchmark. That benchmark was measuring the wrong thing.
+    //
+    // On a rollback journal, a writer's COMMIT must promote RESERVED -> EXCLUSIVE, and
+    // EXCLUSIVE cannot be acquired while any other connection holds a SHARED lock - i.e. while
+    // anything at all is mid-read. So a *reader* of thumbs.db blocks a *writer's commit*, which
+    // is the one lock interaction WAL exists to eliminate. Reproduced end to end: with one
+    // open read transaction on thumbs.db, `pixet-index --force-rethumbnail` waits out the
+    // full 10s busy_timeout and dies with "exec failed: database is locked / SQL: COMMIT;" -
+    // and, before the exception boundaries went in, took the GUI down with it from a
+    // background sweep. In WAL the identical run succeeds in 1.6s. That is the entire
+    // difference between "the CLI and the GUI can be used at the same time" and not, and the
+    // claims table exists precisely so that they can be.
+    //
+    // Note the failure is at COMMIT, not BEGIN, which is what made it confusing: BEGIN
+    // IMMEDIATE only needs RESERVED, which readers don't block, so a competing *writer* fails
+    // early and visibly while a competing *reader* fails late, at the commit, after a 10s stall.
+    //
+    // synchronous=NORMAL moves with it deliberately: NORMAL is crash-safe under WAL but risks
+    // corruption on power loss under a rollback journal, so the two settings have to change
+    // together. FULL was the correct partner for the old journal mode, NORMAL is the correct
+    // partner for this one.
+    //
+    // Attempted on every open, so an existing thumbs.db converts on the first launch that
+    // finds it uncontended - see ensureWal above for why the attempt is allowed to fail rather
+    // than throw. Read-only connections can't convert it and don't need to; they inherit
+    // whatever mode the file is already in, exactly as they already did for index.db.
+    //
+    // What this does NOT buy is cross-database atomicity for the indexer's main+thumbs
+    // transactions: SQLite gives per-database, not cross-database, atomicity once any database
+    // in the set is in WAL, and index.db already was. A torn commit therefore leaves either a
+    // files.thumb_id pointing at a missing blob (re-thumbnailed on the next scan) or an
+    // orphaned blob (reclaimed by compaction) - both self-healing, because thumbs.db is a
+    // cache. Recovering real atomicity would mean taking index.db out of WAL, which would
+    // reintroduce exactly the reader-blocks-writer failure fixed here.
+    if (!readOnly) ensureWal("thumbs");
 
     // SQLite's own page cache defaults to ~2MB regardless of database size, which
     // barely covers one folder's worth of thumbnail blobs on a large library (measured:
