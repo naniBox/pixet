@@ -5,6 +5,89 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-13 — mac — Trimmed the bundle 91MB → 68MB, and shipped `pixet-index` inside it
+
+Started from a question - does the `.app` contain the source code? **It doesn't**, and never
+did: the bundle is the binary, `Info.plist`, `qt.conf`, `pixet.icns`, Qt frameworks and
+plugins, and nothing else. Verified on the build-tree bundle, the DMG, and the installed copy
+in `/Applications` - zero `.cpp`/`.h`/`.mm`/`.cmake` files in any of them. What's easy to
+mistake for it is **`pixet_autogen/`**, which sits *next to* `pixet.app` in
+`build/mac-release/src/app/` and holds moc-generated `.cpp` - build output, outside the bundle.
+
+But the question was worth asking, because the bundle was carrying plenty that shouldn't have
+been there.
+
+### `Qt6::Sql` and `Qt6::Concurrent` were linked and never used
+
+Not one line of code referenced either. The database layer talks to the sqlite3 C API directly
+(`core/db/Database.h`) and the thread pools are `std::thread` (`util/ThreadPool.h`). Cost:
+**4.8MB**, because `macdeployqt` correctly follows the linkage - `QtSql.framework`,
+`QtConcurrent.framework`, and all four SQL driver plugins. That included `libqsqlpsql` and
+`libqsqlmimer`, i.e. **Postgres and Mimer client drivers, shipped to users of a local photo
+viewer**. Confirmed dead before removing: zero source references, and `QT_DEBUG_PLUGINS=1`
+showed the sqldrivers plugins were never loaded at runtime.
+
+### Qt's macOS binaries are universal; ours are not
+
+`lipo -archs` on every embedded Qt binary: `x86_64 arm64`. On ours: `arm64`. The vcpkg triplet
+is `arm64-osx`, so the app **cannot run on Intel at all** - which made the x86_64 halves of Qt
+**23MB of code that could never execute**, about a quarter of the bundle. Now thinned, deriving
+the target from the app binary rather than hardcoding `arm64` and skipping the step entirely if
+the app is itself universal, so it stays correct if `CMAKE_OSX_ARCHITECTURES` is ever widened.
+Must run before signing - `lipo` rewrites the binary and invalidates any signature on it.
+
+### Plugins the app deliberately doesn't use
+
+`imageformats` (gif/ico/jpeg/svg) and `iconengines` (svgicon) were being loaded at startup and
+then never used: every decode goes through pixet's own codecs into `rgbImageToQImage`, and
+`main.cpp` already documents avoiding a runtime dependency on Qt's image plugins as a design
+choice. Dropped, along with `QtSvg` - which is derived as dead rather than hardcoded, since it
+only exists to serve those two plugins and a fixed list would rot the moment the plugin set
+changed. **2.7MB.** Implemented as an allowlist (`platforms`, `styles`) so a future Qt adding
+new default plugins can't silently re-inflate the bundle.
+
+`QtDBus` looks equally unused and is **not** droppable - `QtGui` links it directly in the
+official macOS build. The framework-pruning loop derives that correctly instead of guessing,
+which is the reason it's a loop over `otool -L` rather than a list.
+
+### `strip -x`: 3MB, and only on the distributed copy
+
+`pixet-index` carried 127,782 symbols. Stripping is in the deploy script rather than the CMake
+release flags so local builds stay debuggable in lldb - it's a distribution concern. (The GUI
+binary was already effectively stripped: same size before and after.)
+
+### `pixet-index` now ships inside the bundle
+
+At `Contents/MacOS/pixet-index`, signed explicitly before the bundle is sealed - a nested
+Mach-O needs its own signature for notarization later. Inside rather than loose in the DMG so
+drag-installing carries it along and it can't get separated from the GUI it shares a database
+format with. It needs nothing alongside it: static triplet, so it links only system frameworks
+and `libc++` - no Qt, no rpath, no bundle. Usable by name with a symlink into
+`/usr/local/bin`, which `deploy-mac.sh` now prints and SETUP.md documents.
+
+Found while testing that: **`pixet-index --help` took `--help` as the root path** and started
+indexing a folder named `--help` (`normalizePath` turns it into `<cwd>/--help`). Harmless and
+baffling, and the first thing anyone types at an unfamiliar command - made worse by the fact
+that I'd just put `pixet-index --help` in the deploy script's own output. Now handled
+explicitly, exiting 0 for an asked-for help and 1 when usage is shown because the invocation
+was wrong.
+
+### Result, and what's left
+
+91MB → **68MB** bundle, 43MB → **33MB** DMG. Verified by launching the pruned, thinned,
+stripped, re-signed bundle with `~/Qt` moved aside: GUI runs, `pixet-index` indexes a
+61-directory tree correctly from inside the bundle, `codesign --verify --deep --strict` passes,
+tests pass.
+
+**The remaining 47MB of 68MB is two static binaries** - `pixet` at 24MB and `pixet-index` at
+23MB - each statically linking the same ffmpeg/libraw/libheif/libjpeg-turbo set. That
+duplication is the only large lever left, and closing it means building `pixet_core` as a
+shared library. Deliberately not done: it's a structural build change that affects the Windows
+build too, for ~20MB on a bundle that already compresses to 33MB. Worth revisiting only if
+bundle size becomes a real complaint.
+
+---
+
 ## 2026-08-13 — mac — A background sweep could kill the app: exception boundaries around indexing
 
 The app died while the user was doing nothing but browsing photos. The crash report was
