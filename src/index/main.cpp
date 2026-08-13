@@ -31,7 +31,16 @@ void printStats(const IndexStats &s, double elapsedSec) {
 } // namespace
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) {
+    // --help/-h explicitly, because argv[1] is otherwise taken as the root path unconditionally:
+    // `pixet-index --help` used to print the banner and then start indexing a folder literally
+    // named "--help", which normalizePath() happily turns into <cwd>/--help. Harmless but
+    // baffling, and the first thing anyone types at an unfamiliar command.
+    bool wantsHelp = false;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") wantsHelp = true;
+    }
+    if (argc < 2 || wantsHelp) {
         std::printf("pixet-index %s\n", pixet::version());
         std::printf(
             "usage: pixet-index <root-path> [--force] [--force-rethumbnail] [--no-recurse] [--render-raws] [-j N]\n");
@@ -52,7 +61,9 @@ int main(int argc, char *argv[]) {
             "                      the machine's core count). Directory walking/DB writes stay\n"
             "                      single-threaded regardless - only the actual image decode work (the slow\n"
             "                      part, especially for RAW/HEIC) is spread across threads.\n");
-        return 1;
+        // 0 when help was asked for, 1 when it's being shown because the invocation was wrong -
+        // the difference matters to anything calling this from a script.
+        return wantsHelp ? 0 : 1;
     }
 
     IndexOptions opts;
