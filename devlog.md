@@ -5,6 +5,47 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-13 — mac — First macOS build of 1.2.0: "Move to Trash" would have crashed on the first use
+
+Built 1.2.0 on the Mac for the first time (ThreadPool, `-j`, and `FileMove_mac.mm` all
+landed from `desktop`). It configures and builds clean from an empty build directory
+following SETUP.md verbatim, 104/104 tests pass, app runs. One real bug fell out, and it's
+the kind that only a macOS build could ever have found.
+
+**`FileMove_mac.mm`'s `moveToTrash()` called a selector that doesn't exist.**
+`trashItem:resultingItemURL:error:` - the actual Foundation API is
+`trashItemAtURL:resultingItemURL:error:`. One missing word.
+
+Objective-C resolves selectors at *runtime*, so this compiles. Clang emits only
+`-Wobjc-method-access` ("instance method not found, return type defaults to `id`") and moves
+on - and since nothing treats that warning as an error, it built silently on this machine
+before anyone noticed. The failure lands on the user: proven with a standalone probe,
+`[NSFileManager instancesRespondToSelector:]` answers NO for the selector in the code and YES
+for `trashItemAtURL:`, and sending the missing one raises
+`NSInvalidArgumentException: unrecognized selector sent to instance`. Uncaught, that aborts
+the process - so the *first* time anyone deleted a file in pixet on macOS, the app would have
+died. On a delete path, which is the worst place for it.
+
+Fixed and verified end to end rather than by the warning disappearing: a scratch file put
+through `moveToTrash()` returns `Ok`, leaves its source directory, and turns up in
+`~/.Trash`.
+
+Two things worth carrying forward from this. **`-Wobjc-method-access` deserves to be an
+error** if more Objective-C arrives here - it is precisely the class of typo that a
+statically-dispatched language would have refused to link, and the only reason it reached a
+user-visible crash is that Objective-C won't. And **a mac-only file cannot be considered
+built until it has been built on a Mac**: this one had been through a Windows session, where
+it isn't compiled at all, so a green build there says nothing about it.
+
+Also noted, deliberately not changed: the root `project()` declares `LANGUAGES CXX` only, no
+`OBJCXX`. The `.mm` still compiles correctly because clang selects Objective-C++ from the
+file extension regardless, so this works today - but it means CMake isn't managing the
+Objective-C++ toolchain, and anything wanting ARC (`-fobjc-arc`) or ObjC-specific flags later
+would need `enable_language(OBJCXX)` inside an `if(APPLE)`, since enabling it unconditionally
+would fail on MSVC.
+
+---
+
 ## 2026-08-12 — mac — The DMG carries the app icon, both places it needs to
 
 Small packaging follow-up to 1.0.0, recorded because the mechanism is unobvious and the
