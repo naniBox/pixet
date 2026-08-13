@@ -65,6 +65,34 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
         return;
     }
 
+    // Everything past the claim runs under this guard. Without it, a throw from any DB call -
+    // the observed case was a failed COMMIT - left two things broken behind it, both worse
+    // than the original error:
+    //
+    //  1. An open transaction on this connection. The connection is reused for every
+    //     subsequent directory, so the *next* BEGIN IMMEDIATE would fail with "cannot start a
+    //     transaction within a transaction" and keep failing - one transient error turning
+    //     into a permanently broken indexer.
+    //  2. A claim row for this directory, which then blocks any indexer from touching it until
+    //     the heartbeat goes stale. Two such rows were left behind by the crash that prompted
+    //     this.
+    //
+    // rollback() is itself allowed to fail (there may be no transaction open, depending on
+    // where the throw happened) and its failure is deliberately ignored - it's cleanup, and
+    // the original exception is the one worth propagating.
+    // Dismissed by every path that returns normally - those already release the claim
+    // themselves, and there's no transaction open to roll back.
+    struct FailureGuard {
+        Indexer *self;
+        int64_t dirId;
+        bool dismissed = false;
+        ~FailureGuard() {
+            if (dismissed) return;
+            try { self->db_.rollback(); } catch (...) {}
+            try { self->claims_.release(dirId, self->opts_.owner); } catch (...) {}
+        }
+    } guard{this, dirId};
+
     // dirMtimeUnix throws if the directory can't be stat'd, and this call used to be bare -
     // which meant one unreadable folder threw straight out through run() (also unguarded),
     // aborting the entire index run *and* leaking the claim row taken just above until its
@@ -76,6 +104,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
     try {
         actualMtime = dirMtimeUnix(dirPath);
     } catch (const std::exception &) {
+        guard.dismissed = true;
         claims_.release(dirId, opts_.owner);
         stats.dirsSkippedUnreadable++;
         return;
@@ -106,6 +135,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
         try {
             entries = listDir(dirPath);
         } catch (const std::exception &) {
+            guard.dismissed = true;
             claims_.release(dirId, opts_.owner);
             stats.dirsSkippedUnreadable++;
             return; // directory vanished / permission denied mid-walk - just skip it
@@ -357,6 +387,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
     // that were in memory at the time - this only touches what's genuinely still unchecked.
     backfillGps(dirId, dirPath, stats);
 
+    guard.dismissed = true;
     claims_.release(dirId, opts_.owner);
 }
 
@@ -438,7 +469,25 @@ void Indexer::run(const std::string &rootPath, IndexStats &stats, const IndexCal
         queue.pop_back();
 
         std::vector<std::pair<int64_t, std::string>> subdirs;
-        indexOneDirectory(dirId, dirPath, subdirs, stats, callbacks);
+        // One bad directory must not end the run, and must never escape to the caller.
+        //
+        // This used to be a bare call, and the consequence was severe out of proportion to
+        // the cause: a single failed COMMIT threw std::runtime_error all the way out through
+        // run(), out of BackgroundReconciler::sweepNext()'s timer slot, and - with no handler
+        // anywhere on that QThread - into std::terminate(), killing the whole application.
+        // Observed in the field on macOS: a background hygiene sweep, which by definition is
+        // doing work nobody asked for, took the app down with it.
+        //
+        // indexOneDirectory() rolls back and releases its claim before rethrowing, so by the
+        // time we get here this directory has left no lock or open transaction behind and the
+        // next one can proceed on the same connection.
+        try {
+            indexOneDirectory(dirId, dirPath, subdirs, stats, callbacks);
+        } catch (const std::exception &e) {
+            stats.dirsFailed++;
+            if (stats.firstFailure.empty()) stats.firstFailure = e.what();
+            subdirs.clear(); // whatever it managed to collect isn't trustworthy
+        }
         stats.dirsVisited++;
         if (callbacks.onProgress) callbacks.onProgress(stats);
 

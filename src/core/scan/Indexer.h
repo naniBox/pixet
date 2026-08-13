@@ -29,6 +29,15 @@ struct IndexStats {
     // only rows that gained coordinates, not every file examined, since that's what
     // actually changes what the UI shows.
     int64_t gpsBackfilled = 0;
+    // Directories abandoned because a database operation threw - a failed COMMIT, a failed
+    // statement. Distinct from dirsSkippedUnreadable (a filesystem problem, entirely
+    // expected) because this one means something went wrong with *our* storage and is worth
+    // looking at rather than shrugging at.
+    int64_t dirsFailed = 0;
+    // what() of the first such failure. Kept because the message is the only thing that
+    // identifies which SQLite error actually occurred, and losing it costs a debugging
+    // session - a crash report shows the throw site but never the string.
+    std::string firstFailure;
     int64_t filesNew = 0;
     int64_t filesRemoved = 0;
     int64_t thumbsEmbedded = 0;   // ThumbTier::EmbeddedPreview

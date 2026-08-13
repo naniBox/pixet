@@ -96,7 +96,18 @@ int main(int argc, char *argv[]) {
             lastPrint = now;
         }
     };
-    indexer.run(rootPath, stats, callbacks);
+    // The GUI's three indexing threads all guard this call because an escaping exception
+    // there reaches std::terminate() and kills the app (see BackgroundReconciler::sweepNext).
+    // Here the stakes are only an ugly abort with a non-obvious exit status, but this is also
+    // the tool you reach for to reproduce a database problem - so print the message plainly
+    // and still show the stats for the work that did land.
+    bool runFailed = false;
+    try {
+        indexer.run(rootPath, stats, callbacks);
+    } catch (const std::exception &e) {
+        runFailed = true;
+        std::fprintf(stderr, "\n\nindexing aborted: %s\n", e.what());
+    }
 
     double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
     printStats(stats, elapsed);
@@ -109,6 +120,13 @@ int main(int argc, char *argv[]) {
     std::printf("thumbnails: %lld embedded-preview, %lld decoded, %lld unsupported-format, %lld failed\n",
                 (long long)stats.thumbsEmbedded, (long long)stats.thumbsDecoded, (long long)stats.thumbsUnsupported,
                 (long long)stats.thumbsFailed);
+    // Deliberately on stderr and only when non-zero, unlike the unconditional lines above:
+    // this one means the *database* misbehaved, not that a folder was unreadable, and it
+    // shouldn't be something you have to notice a zero in a wall of output to spot.
+    if (stats.dirsFailed > 0) {
+        std::fprintf(stderr, "\n%lld directory(ies) failed with a database error; first: %s\n",
+                     (long long)stats.dirsFailed, stats.firstFailure.c_str());
+    }
 
-    return 0;
+    return (runFailed || stats.dirsFailed > 0) ? 1 : 0;
 }
