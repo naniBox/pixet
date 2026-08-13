@@ -5,6 +5,109 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-13 — mac — Root cause found: ThumbLoader held a read lock on `thumbs.db` forever
+
+The crash from earlier today reproduced, from the command line, with the exact error the new
+reporting was added to capture:
+
+```
+$ /Applications/pixet.app/Contents/MacOS/pixet-index ~/data/
+done in 10.4s
+1 directory(ies) failed with a database error; first: exec failed: database is locked
+SQL: COMMIT;
+```
+
+The user had the GUI running. **This is the root cause, and it also proves I got the mechanism
+wrong earlier today.** That entry concluded "lock contention: ruled out - `BEGIN IMMEDIATE`
+acquires write locks on all attached databases up front, so contention fails at `BEGIN`, never
+at `COMMIT`." The demonstration behind it only ever used a competing **writer**. The GUI is a
+competing **reader**, which is a completely different lock path.
+
+### The actual mechanism
+
+`ThumbLoader::decodeThumb()` keeps a `thread_local` prepared `SELECT` on `thumbs.db` and reset
+it at the **start of the next call** rather than the end of this one:
+
+```cpp
+thread_local pixet::Statement stmt = db->prepare("SELECT bytes FROM thumbs.thumbs WHERE id=?");
+stmt.reset();                    // <- start of the *next* call
+stmt.bind(1, thumbId);
+if (stmt.step()) { ...decode... }
+return image;                    // <- returns still stepped, still un-reset
+```
+
+A stepped, un-reset statement **is an open read transaction**. So every idle ThumbLoader pool
+thread held a SHARED lock on `thumbs.db` indefinitely, from the moment the user browsed a
+folder with thumbnails until the thread was next used.
+
+And `thumbs.db` was on a rollback journal, where a writer's `COMMIT` must promote
+RESERVED → EXCLUSIVE, and **EXCLUSIVE cannot be acquired while any SHARED lock exists**. Hence:
+
+- The failure is at `COMMIT`, not `BEGIN` - `BEGIN IMMEDIATE` only needs RESERVED, which
+  readers don't block. A competing writer fails early and obviously; a competing reader fails
+  late, at the commit. That asymmetry is the whole reason this looked so strange.
+- `busy_timeout=10000` didn't save it, it just delayed it - which is precisely the **10.4s**
+  in the report.
+- It only happened with the GUI running, and only after browsing a folder with thumbnails,
+  which is why it looked intermittent.
+
+Reproduced end to end with a single open read transaction against `thumbs.db` while
+`pixet-index --force-rethumbnail` ran: `exit=1, 10.4s, "database is locked / SQL: COMMIT;"` -
+byte-identical to the user's output. Same run with `thumbs.db` in WAL: `exit=0, 1.6s`.
+
+### Both halves fixed
+
+1. **`ThumbLoader` resets as soon as the blob is copied**, before the decode and before
+   returning. `columnBlob()` returns an owning copy, so nothing points into SQLite's memory
+   afterwards. Holding a read transaction across `decodeJpeg` + rescale was wrong regardless of
+   journal mode.
+2. **`thumbs.db` is now WAL**, so readers never block writers and a badly-behaved reader can't
+   stall a commit again. `synchronous` moves with it - NORMAL is crash-safe under WAL but risks
+   corruption on power loss under a rollback journal, so the two have to change together.
+
+**I was wrong to leave `thumbs.db` alone this morning, and wrong for an instructive reason:** the
+benchmark I based it on measured read latency *within one process*, and concluded the effect was
+"real but invisible". It never tested a reader in one process against a writer in another - which
+is not a performance question at all, but whether the two programs can run at the same time. The
+right measurement was one I didn't take.
+
+### A regression I introduced and caught in the same pass
+
+The first version of the WAL conversion called `exec()` directly. Converting a rollback-journal
+database to WAL needs a brief EXCLUSIVE lock, so with a reader active **the pragma itself
+failed - inside the `Database` constructor, which every caller runs at startup and no caller
+wraps**:
+
+```
+libc++abi: terminating due to uncaught exception of type std::runtime_error:
+exec failed: database is locked
+SQL: PRAGMA thumbs.journal_mode=WAL;
+```
+
+`exit=-6`. An immediate abort, strictly worse than the bug being fixed - a recoverable lock
+conflict turned into a startup crash. Now: skip if already WAL, attempt with a 200ms
+`busy_timeout` so a contended startup isn't a 10-second stall, and carry on in the existing mode
+on failure. `journal_mode` is persisted in the file header, so the first quiet launch converts
+permanently. Verified the contended case now degrades to `exit=1` with a message instead of
+aborting.
+
+### Verified on the real database
+
+The user's `thumbs.db` was `delete`; one launch of the fixed app converted it to `wal`. Then,
+with the app running: `pixet-index ~/data --no-recurse --force` → exit 0; a real 53-photo folder
+with `--force-rethumbnail` → 53 thumbnails regenerated, exit 0, 0.3s. Previously 10.4s and a
+failure.
+
+### What this closes
+
+The three entries above now form one chain: the exception boundaries stopped a database error
+from killing the app, the error reporting named it, and this is the error. Both defects behind it
+are gone. Worth noting the boundaries did their job exactly as intended - the failure arrived as
+a one-line message and a non-zero exit instead of a crash report, which is what made it
+diagnosable in minutes rather than another session of guessing.
+
+---
+
 ## 2026-08-13 — mac — Trimmed the bundle 91MB → 68MB, and shipped `pixet-index` inside it
 
 Started from a question - does the `.app` contain the source code? **It doesn't**, and never
