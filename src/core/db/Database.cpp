@@ -105,9 +105,40 @@ Database::Database(const std::string &indexDbPath, const std::string &thumbsDbPa
 
     exec("PRAGMA busy_timeout=10000;");
     exec("PRAGMA foreign_keys=OFF;");
+    // Qualified with `main.` deliberately, and note these run *before* the ATTACH below, so
+    // they apply to index.db and nothing else. thumbs.db keeps SQLite's defaults - rollback
+    // journal, synchronous=FULL - and that is a decision, not an oversight, though it started
+    // as one: these lines read as "the storage layer is WAL" and cost a debugging session
+    // during a crash investigation, chasing a thumbs.db locking hypothesis that the journal
+    // mode had already ruled out. Hence the explicit prefix.
+    //
+    // Measured on a 400-file re-thumbnail before deciding to leave it, because the argument
+    // cuts both ways and neither side survived: putting thumbs.db in WAL changed re-thumbnail
+    // time by 1% (4.22s -> 4.18s, inside run-to-run noise) with identical on-disk size, and
+    // moved concurrent blob-read latency from "11 reads over 10ms out of 282,000, 10.2ms
+    // worst case" to zero over 10ms. Real but invisible. The reason rollback-journal
+    // contention never bites is structural rather than lucky: Pass B commits every
+    // kBatchSize=64 files and thumbs.db gets a 64MB page cache below, so a write transaction
+    // never spills the cache - which is the only case where a writer would hold EXCLUSIVE
+    // across the whole transaction and actually block ThumbLoader's reads.
+    //
+    // Nor is it worth changing for cross-database atomicity, which the indexer's
+    // main+thumbs transactions would seem to want: SQLite documents that a transaction
+    // spanning ATTACHed databases is atomic per-database but *not* across them as a set when
+    // any one is in WAL mode - so index.db being WAL already forfeits that, and matching the
+    // modes wouldn't win it back. Recovering it would mean taking index.db *out* of WAL, for
+    // an invariant whose violation is a regenerable thumbnail: either a files.thumb_id
+    // pointing at a missing blob (re-thumbnailed on the next scan) or an orphaned blob
+    // (reclaimed by compaction). Not worth the trade.
+    //
+    // The two settings are also correctly paired as they stand. synchronous=NORMAL is safe
+    // against a crash under WAL, but under a rollback journal it risks corruption on power
+    // loss - so index.db gets NORMAL because it's WAL, and thumbs.db keeping FULL is what
+    // makes leaving it on the rollback journal safe. Changing one without the other is the
+    // mistake to avoid here.
     if (!readOnly) {
-        exec("PRAGMA journal_mode=WAL;");
-        exec("PRAGMA synchronous=NORMAL;");
+        exec("PRAGMA main.journal_mode=WAL;");
+        exec("PRAGMA main.synchronous=NORMAL;");
     }
 
     // ATTACH needs a bound-free literal; escape single quotes defensively.
