@@ -5,6 +5,118 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-13 — mac — A background sweep could kill the app: exception boundaries around indexing
+
+The app died while the user was doing nothing but browsing photos. The crash report was
+unambiguous about the mechanism and silent about the cause:
+
+```
+Database::exec("COMMIT;")        Database.cpp:233
+Database::commit()              Database.cpp:240
+Indexer::indexOneDirectory()    Indexer.cpp:198   <- Pass A's commit
+Indexer::run()                  Indexer.cpp:441
+BackgroundReconciler::sweepNext()  BackgroundReconciler.cpp:97
+__cxa_throw -> std::__terminate -> abort
+```
+
+So: `COMMIT` threw `std::runtime_error`, and **nothing anywhere caught it**. Confirmed by
+grep - none of the three threads that call `Indexer::run()` had a handler
+(`BackgroundReconciler.cpp:97`, `RawRenderer.cpp:120`, `FolderIndexer.cpp:43`), and
+`Indexer::run()` called `indexOneDirectory()` bare. An exception in a slot on a `QThread` with
+no handler above it goes straight to `std::terminate()`. **Idle background hygiene work nobody
+asked for was able to abort the whole application.** That is the actual defect, independent of
+whatever made `COMMIT` fail.
+
+**Two things were also left behind on the throw**, each worse than the original error:
+
+1. **An open transaction on the connection**, which is reused for every subsequent directory.
+   The next `BEGIN IMMEDIATE` would fail with "cannot start a transaction within a
+   transaction" and keep failing - one transient error becoming a permanently broken indexer.
+2. **A leaked claim row**, blocking any indexer from that directory until the heartbeat went
+   stale. Two such rows were sitting in the DB afterwards, alongside a leftover 4MB
+   `index.db-wal` - the fingerprint of a mid-transaction death.
+
+### The fix
+
+A scope guard in `indexOneDirectory()` rolls back and releases the claim before the exception
+propagates (`rollback()` is allowed to fail and its failure ignored - the throw can happen
+*before* `BEGIN`, and the original exception is the one worth keeping). `run()` catches per
+directory. All three threads now have an outer boundary, and `pixet-index` reports and exits
+non-zero.
+
+Two things beyond the bare try/catch, both from reading what the old code did on the failure
+path rather than from the crash itself:
+
+- **The timer restart sat *after* the `run()` call** in both `BackgroundReconciler` and
+  `RawRenderer`, so even a *handled* exception would have silently ended that sweep for the
+  rest of the session. Both now always reschedule, and back off to their long delay on failure
+  - the 1.5s per-directory cadence would otherwise retry a wedged database endlessly, and
+  `RawRenderer` re-selects the same unrenderable directory every round, starving every other
+  pending RAW.
+- **`FolderIndexer` must emit `finished()` unconditionally.** `onIndexerStarted()` posts
+  "Indexing <folder>..." with no timeout and relies solely on `onIndexerFinished()` to clear
+  it, so an early return leaves that message up permanently over a grid that had quietly
+  stopped filling in.
+
+### Verified by forcing the real failure, not by inspection
+
+An external process holding `BEGIN EXCLUSIVE` past the 10s `busy_timeout` while `pixet-index`
+ran `--force-rethumbnail` over a 61-directory tree, in an isolated `HOME` so the real library
+was never touched. Result: **exactly 1 directory failed, all 61 were visited, 59 of 60
+thumbnails regenerated on the same connection afterwards, 0 claim rows leaked, exit code 1
+with the message on stderr.** The single-failure count is the load-bearing number - a broken
+rollback would have failed every directory after the first.
+
+### The cause of the COMMIT failure is still unidentified - and three hypotheses are now dead
+
+Worth recording precisely, so the next session doesn't re-walk them:
+
+- **Lock contention: ruled out.** `BEGIN IMMEDIATE` acquires write locks on *all* attached
+  databases up front, so contention fails at `BEGIN`, never at `COMMIT`. Demonstrated both
+  ways - locking `index.db` *and* locking the ATTACHed `thumbs.db` each produced
+  `exec failed: database is locked / SQL: BEGIN IMMEDIATE;`, never a `COMMIT` failure. A
+  4-connection x 150-cross-DB-transaction harness also ran 600/600 clean.
+- **An open statement at commit time: ruled out.** SQLite fails a `COMMIT` with "SQL
+  statements in progress" if a statement has been stepped to `SQLITE_ROW` and not
+  reset/finalized. Every statement in Pass A is a tight-scoped local, `~Statement()`
+  finalizes, and all are destroyed before `db_.commit()`.
+- **Disk full: ruled out.** A WAL commit grows the WAL file, so `SQLITE_FULL` fits the
+  signature perfectly - but there is 35GB free (93% used, which is what I'd mis-registered as
+  the smoking gun). Not it.
+
+That leaves a transient `SQLITE_IOERR` as the leading remaining candidate, which is not
+something the code can prevent. **The reason it stayed unidentified is the real lesson: there
+was nowhere for the message to go.** `Database::exec()` already builds a good one
+(`"exec failed: <sqlite error>\nSQL: <sql>"`) and it was thrown into a `terminate()`. By the
+time the crash report was read, the unified log had rolled and the string was gone for good.
+`IndexStats` now carries `dirsFailed` + `firstFailure`, the GUI shows it in the status bar and
+logs it via `qWarning()` - the first logging in the codebase - and `pixet-index` prints it.
+**A recurrence will name itself.**
+
+### Open, needs a decision - `thumbs.db` is not in WAL mode
+
+Found while chasing this and deliberately not changed: the constructor's
+`PRAGMA journal_mode=WAL` is **unqualified**, so it only ever applied to `main`. Confirmed on
+a fresh DB - `index.db` reports `wal`, `thumbs.db` reports `delete`. So a 96MB blob database
+that three GUI threads all write thumbnails into is on a rollback journal, where writers block
+readers outright.
+
+Not a silent fix, because the obvious change doesn't do what it looks like: SQLite documents
+that a transaction spanning multiple ATTACHed databases is atomic per-database but **not**
+across them as a set *when any one of them is in WAL mode* - which `index.db` already
+triggers. Pass A's transaction spans both. So putting `thumbs.db` in WAL improves its
+concurrency but doesn't buy cross-database atomicity, and getting that would mean taking
+`index.db` *out* of WAL. That's a storage design decision, not a port fix.
+
+### Windows note
+
+`Indexer.{h,cpp}` and `index/main.cpp` are shared code - the guard, the new `IndexStats`
+fields and the CLI's exit code all apply to the Windows build and want re-verification there.
+The three thread boundaries are `src/app` and equally shared. Nothing here is
+`#ifdef`-ed.
+
+---
+
 ## 2026-08-13 — mac — First macOS build of 1.2.0: "Move to Trash" would have crashed on the first use
 
 Built 1.2.0 on the Mac for the first time (ThreadPool, `-j`, and `FileMove_mac.mm` all
