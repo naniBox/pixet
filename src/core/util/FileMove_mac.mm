@@ -154,7 +154,16 @@ FsResult moveToTrash(const std::string &pathUtf8) {
             NSURL *url = [NSURL fileURLWithPath:path];
 
             NSError *error = nil;
-            if ([[NSFileManager defaultManager] trashItem:url resultingItemURL:nil error:&error]) return FsResult::Ok;
+            // trashItemAtURL:, not trashItem: - the latter doesn't exist. Objective-C resolves
+            // selectors at runtime, so a typo here compiles (clang only warns that the method
+            // wasn't found and assumes it returns id) and then raises
+            // NSInvalidArgumentException "unrecognized selector sent to instance" the first
+            // time a user actually deletes something, which aborts the process. Worth treating
+            // -Wobjc-method-access as an error rather than a warning if more Objective-C
+            // arrives here.
+            if ([[NSFileManager defaultManager] trashItemAtURL:url resultingItemURL:nil error:&error]) {
+                return FsResult::Ok;
+            }
             if (!error) return FsResult::Unknown;
 
             // NSFileManager surfaces the underlying POSIX errno (when there is one) via
