@@ -107,4 +107,18 @@ void setIndexerThreadCount(int count) {
     settingsStore().setValue(QStringLiteral("indexerThreadCount"), std::max(0, count));
 }
 
+SortKey gridSortKey() {
+    int v = settingsStore().value(QStringLiteral("gridSortKey"), (int)SortKey::Name).toInt();
+    if (v < (int)SortKey::Name || v > (int)SortKey::Size) v = (int)SortKey::Name;
+    return (SortKey)v;
+}
+
+void setGridSortKey(SortKey key) { settingsStore().setValue(QStringLiteral("gridSortKey"), (int)key); }
+
+bool gridSortDescending() { return settingsStore().value(QStringLiteral("gridSortDescending"), false).toBool(); }
+
+void setGridSortDescending(bool descending) {
+    settingsStore().setValue(QStringLiteral("gridSortDescending"), descending);
+}
+
 } // namespace prefs

@@ -167,6 +167,13 @@ private slots:
     // prefs::hoverInfoEnabled()). Hides any tooltip already on screen immediately
     // when turned off, rather than waiting for the next mouse move to notice.
     void onToggleHoverInfo(bool enabled);
+    // Any of the 4 exclusive sort-key actions, or the reverse-order toggle - all wired
+    // to this one slot (see the constructor) since it just re-reads which of them is
+    // currently checked rather than needing to know which one fired. Shared by the
+    // View > Sort By submenu and the sort button bar next to the path bar - both sets
+    // of QToolButtons/QActions are the same QAction objects, so the two can't drift
+    // out of sync with each other.
+    void onSortOrderChanged();
     void onIndexerStarted(QString path);
     void onFilesListed(QString path);
     // Feed onCopyGridDebugInfo()'s navigation-timing section - see navThumbTimer_'s
@@ -309,6 +316,15 @@ private:
     QAction *toggleSidePanelAction_;
     QAction *hoverInfoAction_;
     QAction *addBookmarkAction_;
+    // Sort By: 4 mutually-exclusive (QActionGroup) key actions plus one independent
+    // reverse-order toggle - see onSortOrderChanged(). Not part of the
+    // applyKeyBindingShortcuts()/KeyBindings.h system (no default shortcuts assigned),
+    // unlike refreshAction_ and friends above.
+    QAction *sortByNameAction_;
+    QAction *sortByFileDateAction_;
+    QAction *sortByTakenDateAction_;
+    QAction *sortBySizeAction_;
+    QAction *sortReverseAction_;
     // Edit menu: Select All/Cut/Copy/Paste are fixed (non-remappable)
     // QKeySequence::StandardKey actions, wired directly rather than through
     // KeyBindings - see KeyBindings.h's class comment on why standard Edit

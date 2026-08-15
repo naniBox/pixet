@@ -1,6 +1,12 @@
 #include "ThumbGridModel.h"
 
+#include <algorithm>
+
 #include "db/Database.h"
+
+namespace {
+int cmpInt64(qint64 a, qint64 b) { return (a > b) - (a < b); }
+} // namespace
 
 ThumbGridModel::ThumbGridModel(pixet::Database &db, QObject *parent) : QAbstractListModel(parent), db_(db) {}
 
@@ -20,13 +26,17 @@ ThumbGridModel::Row ThumbGridModel::rowFromStatement(pixet::Statement &sel) {
     // not to painting - an unchecked file simply has no marker yet, same as one with no
     // coordinates.
     row.hasGps = !sel.columnIsNull(10);
+    // Appended after gps_lat rather than inserted earlier in the list, so every
+    // existing positional index above stays correct - see the column-list comment on
+    // setDirectory()'s query.
+    row.mtime = sel.columnInt64(11);
     return row;
 }
 
 bool ThumbGridModel::loadRow(const QString &name, Row &out) const {
     if (dirId_ == 0) return false;
     auto sel = db_.prepare("SELECT id, name, fmt, state, thumb_id, size, width, height, taken_at, "
-                            "duration_ms, gps_lat FROM files WHERE dir_id=? AND name=?");
+                            "duration_ms, gps_lat, mtime FROM files WHERE dir_id=? AND name=?");
     sel.bind(1, dirId_);
     sel.bind(2, name.toStdString());
     if (!sel.step()) return false;
@@ -53,6 +63,57 @@ void ThumbGridModel::reindexLookups() {
     }
 }
 
+QString ThumbGridModel::orderByClause() const {
+    const QString dir = sortDescending_ ? QStringLiteral("DESC") : QStringLiteral("ASC");
+    switch (sortKey_) {
+        case prefs::SortKey::FileDate:
+            return QStringLiteral("mtime %1, name ASC").arg(dir);
+        case prefs::SortKey::TakenDate:
+            // The IS NULL term is always ASC on its own, regardless of `dir` - files
+            // with no known taken date (0/NULL) sort after every file that has one
+            // either way; only the real values within each group flip with direction.
+            return QStringLiteral("(taken_at IS NULL) ASC, taken_at %1, name ASC").arg(dir);
+        case prefs::SortKey::Size:
+            return QStringLiteral("size %1, name ASC").arg(dir);
+        case prefs::SortKey::Name:
+        default:
+            return QStringLiteral("name %1").arg(dir);
+    }
+}
+
+bool ThumbGridModel::isRowBefore(const Row &a, const Row &b) const {
+    if (sortKey_ == prefs::SortKey::Name) {
+        // No tiebreak needed - UNIQUE(dir_id, name) means two rows never share a name.
+        return sortDescending_ ? a.name.toUtf8() > b.name.toUtf8() : a.name.toUtf8() < b.name.toUtf8();
+    }
+
+    int cmp = 0;
+    if (sortKey_ == prefs::SortKey::TakenDate) {
+        bool aNull = a.takenAt == 0, bNull = b.takenAt == 0;
+        if (aNull != bNull) return bNull; // the non-null one always sorts first
+        cmp = aNull ? 0 : cmpInt64(a.takenAt, b.takenAt);
+    } else if (sortKey_ == prefs::SortKey::FileDate) {
+        cmp = cmpInt64(a.mtime, b.mtime);
+    } else { // Size
+        cmp = cmpInt64(a.size, b.size);
+    }
+    if (sortDescending_) cmp = -cmp;
+    if (cmp != 0) return cmp < 0;
+    return a.name.toUtf8() < b.name.toUtf8(); // tiebreak, always ascending - matches orderByClause()
+}
+
+void ThumbGridModel::setSortOrder(prefs::SortKey key, bool descending) {
+    if (key == sortKey_ && descending == sortDescending_) return;
+    sortKey_ = key;
+    sortDescending_ = descending;
+    if (rows_.isEmpty()) return; // nothing to reorder yet - the next setDirectory() will use the new order
+
+    beginResetModel();
+    std::sort(rows_.begin(), rows_.end(), [this](const Row &a, const Row &b) { return isRowBefore(a, b); });
+    reindexLookups();
+    endResetModel();
+}
+
 void ThumbGridModel::setDirectory(const QString &path) {
     beginResetModel();
     rows_.clear();
@@ -73,7 +134,8 @@ void ThumbGridModel::setDirectory(const QString &path) {
         // Column list must stay in step with loadRow()'s and with rowFromStatement(), which
         // reads them positionally.
         auto sel = db_.prepare("SELECT id, name, fmt, state, thumb_id, size, width, height, taken_at, "
-                                "duration_ms, gps_lat FROM files WHERE dir_id=? ORDER BY name");
+                                "duration_ms, gps_lat, mtime FROM files WHERE dir_id=? ORDER BY " +
+                                orderByClause().toStdString());
         sel.bind(1, dirId_);
         while (sel.step()) {
             Row row = rowFromStatement(sel);
@@ -110,12 +172,11 @@ int ThumbGridModel::insertOrUpdateFileByName(const QString &name) {
         return r;
     }
 
-    // Sorted insertion position using SQLite's default BINARY (UTF-8 byte order)
-    // comparator - not QString::operator< (UTF-16 code-unit order), which disagrees
-    // with it on non-ASCII names. Matching it keeps this path and a full
-    // setDirectory() reload in the same row order.
+    // Sorted insertion position under the current sort order - see isRowBefore()'s
+    // doc comment for why this has to stay logically equivalent to orderByClause()'s
+    // SQL (what a full setDirectory() reload would produce).
     int insertAt = 0;
-    while (insertAt < rows_.size() && rows_[insertAt].name.toUtf8() < row.name.toUtf8()) ++insertAt;
+    while (insertAt < rows_.size() && isRowBefore(rows_[insertAt], row)) ++insertAt;
 
     beginInsertRows(QModelIndex(), insertAt, insertAt);
     accumulate(row, +1);

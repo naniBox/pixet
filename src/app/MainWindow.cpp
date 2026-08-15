@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
@@ -61,6 +62,7 @@
 #include "PreviewDecoder.h"
 #include "PreviewPane.h"
 #include "RawRenderer.h"
+#include "SortIcons.h"
 #include "StatusBarRow.h"
 #include "StatusLabel.h"
 #include "ThumbGridModel.h"
@@ -289,6 +291,58 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     forwardButton->setDefaultAction(forwardAction_);
     forwardButton->setAutoRaise(true);
 
+    // --- Sort By: created here, before navRowLayout below (which needs valid QAction
+    // pointers for the toolbar buttons) rather than down in the View menu setup, which
+    // runs much later in this constructor. The View > Sort By submenu (further down)
+    // adds these same QAction objects rather than creating its own, so the menu and
+    // the toolbar can't drift out of sync with each other - same idea as
+    // backAction_/forwardAction_ above, just shared with a menu too. ---
+    // Icon color follows the current palette rather than a hardcoded black/white, so
+    // the flat outline icons drawn by sorticons::make() read correctly against both a
+    // light and a dark OS theme without needing separate asset variants - see that
+    // header's own comment. Snapshotted once here (matching this app's existing level
+    // of theming support - nothing else re-derives colors on a live theme change
+    // either), not re-read per icon.
+    const QColor iconColor = palette().color(QPalette::ButtonText);
+    auto *sortKeyGroup = new QActionGroup(this); // exclusive by default
+    auto addSortKeyAction = [&](const QString &text, const QString &tooltip, sorticons::Kind icon) {
+        QAction *a = new QAction(sorticons::make(icon, iconColor), text, this);
+        a->setToolTip(tooltip);
+        a->setCheckable(true);
+        connect(a, &QAction::triggered, this, &MainWindow::onSortOrderChanged);
+        sortKeyGroup->addAction(a);
+        return a;
+    };
+    // Short labels rather than e.g. "Date Modified" - text still shows in the View >
+    // Sort By submenu, but the toolbar buttons below go icon-only the moment an icon
+    // is set (QToolButton's default style), so the tooltip is what actually explains
+    // each one there.
+    sortByNameAction_ =
+        addSortKeyAction(QStringLiteral("Name"), QStringLiteral("Sort by name"), sorticons::Kind::Name);
+    sortByFileDateAction_ = addSortKeyAction(QStringLiteral("Modified"), QStringLiteral("Sort by file modified date"),
+                                              sorticons::Kind::FileDate);
+    sortByTakenDateAction_ =
+        addSortKeyAction(QStringLiteral("Taken"), QStringLiteral("Sort by photo/video taken date (EXIF)"),
+                          sorticons::Kind::TakenDate);
+    sortBySizeAction_ =
+        addSortKeyAction(QStringLiteral("Size"), QStringLiteral("Sort by file size"), sorticons::Kind::Size);
+    switch (prefs::gridSortKey()) {
+        case prefs::SortKey::FileDate: sortByFileDateAction_->setChecked(true); break;
+        case prefs::SortKey::TakenDate: sortByTakenDateAction_->setChecked(true); break;
+        case prefs::SortKey::Size: sortBySizeAction_->setChecked(true); break;
+        case prefs::SortKey::Name:
+        default: sortByNameAction_->setChecked(true); break;
+    }
+    sortReverseAction_ = new QAction(sorticons::make(sorticons::Kind::Reverse, iconColor), QStringLiteral("Reverse"), this);
+    sortReverseAction_->setToolTip(QStringLiteral("Reverse sort order"));
+    sortReverseAction_->setCheckable(true);
+    sortReverseAction_->setChecked(prefs::gridSortDescending());
+    connect(sortReverseAction_, &QAction::triggered, this, &MainWindow::onSortOrderChanged);
+    // Pushes the persisted order in before the very first setDirectory() call
+    // (restoreLastDirectory(), further down this constructor) - safe to call with
+    // rows_ still empty, see ThumbGridModel::setSortOrder()'s doc comment.
+    gridModel_->setSortOrder(prefs::gridSortKey(), prefs::gridSortDescending());
+
     // --- top-level: back/forward + path bar above, left column (40%) vs. thumbnail grid (60%) below ---
     splitter_ = new QSplitter(this);
     splitter_->addWidget(leftPanel_);
@@ -306,6 +360,21 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     navRowLayout->addWidget(backButton);
     navRowLayout->addWidget(forwardButton);
     navRowLayout->addWidget(pathBar_, /*stretch=*/1);
+    // Sort button bar, right of the path bar (nothing after it has stretch, so these
+    // stay pinned to the right edge). Same QAction objects as the View > Sort By
+    // submenu - see that block's comment. Icon-only (see addSortKeyAction() above),
+    // with a plain "Sort:" label ahead of them since there's no text left on the
+    // buttons themselves to say what the row is.
+    auto *sortLabel = new QLabel(QStringLiteral("Sort:"), this);
+    sortLabel->setContentsMargins(4, 0, 2, 0);
+    navRowLayout->addWidget(sortLabel);
+    for (QAction *a : {sortByNameAction_, sortByFileDateAction_, sortByTakenDateAction_, sortBySizeAction_,
+                        sortReverseAction_}) {
+        auto *button = new QToolButton(this);
+        button->setDefaultAction(a);
+        button->setAutoRaise(true);
+        navRowLayout->addWidget(button);
+    }
     centralLayout->addLayout(navRowLayout);
     centralLayout->addWidget(splitter_, /*stretch=*/1);
     setCentralWidget(central);
@@ -477,6 +546,19 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     hoverInfoAction_ = viewMenu->addAction(QStringLiteral("Show Hover Info"), this, &MainWindow::onToggleHoverInfo);
     hoverInfoAction_->setCheckable(true);
     hoverInfoAction_->setChecked(prefs::hoverInfoEnabled());
+
+    // --- Sort By: the QActions themselves were created earlier (see the comment by
+    // sortKeyGroup's construction, above) - this just places the same objects into a
+    // menu too, via addAction(QAction*) rather than the addAction(text, receiver,
+    // slot) overload that would create new ones. ---
+    viewMenu->addSeparator();
+    auto *sortMenu = viewMenu->addMenu(QStringLiteral("Sort By"));
+    sortMenu->addAction(sortByNameAction_);
+    sortMenu->addAction(sortByFileDateAction_);
+    sortMenu->addAction(sortByTakenDateAction_);
+    sortMenu->addAction(sortBySizeAction_);
+    sortMenu->addSeparator();
+    sortMenu->addAction(sortReverseAction_);
 
     // Not in any menu - see the member's own doc comment - just registered on the
     // window so its shortcut is live.
@@ -1702,6 +1784,48 @@ void MainWindow::onToggleSidePanel() {
 void MainWindow::onToggleHoverInfo(bool enabled) {
     prefs::setHoverInfoEnabled(enabled);
     if (!enabled) grid_->hideHoverTooltip();
+}
+
+void MainWindow::onSortOrderChanged() {
+    // Re-reads which of the exclusive group is checked rather than being told, since
+    // this one slot is shared by all 5 actions (see the constructor and this method's
+    // own doc comment in the header) - by the time triggered() fires, the
+    // QActionGroup has already updated which one is checked.
+    prefs::SortKey key = prefs::SortKey::Name;
+    if (sortByFileDateAction_->isChecked()) key = prefs::SortKey::FileDate;
+    else if (sortByTakenDateAction_->isChecked()) key = prefs::SortKey::TakenDate;
+    else if (sortBySizeAction_->isChecked()) key = prefs::SortKey::Size;
+    const bool descending = sortReverseAction_->isChecked();
+
+    prefs::setGridSortKey(key);
+    prefs::setGridSortDescending(descending);
+
+    // Same selection-by-file-id preservation as reloadGridPreservingSelection(), but
+    // reordering in place (ThumbGridModel::setSortOrder()) instead of a full
+    // setDirectory() reload - a sort change doesn't need a DB round trip and
+    // shouldn't throw away every already-decoded thumbnail pixmap just to show them
+    // in a different order.
+    QList<qint64> selectedIds;
+    for (int r : grid_->selectedRows()) {
+        qint64 id = gridModel_->index(r).data(ThumbGridModel::FileIdRole).toLongLong();
+        if (id != 0) selectedIds << id;
+    }
+    qint64 currentId = gridModel_->index(grid_->currentRow()).data(ThumbGridModel::FileIdRole).toLongLong();
+
+    gridModel_->setSortOrder(key, descending);
+
+    QList<int> rows;
+    for (qint64 id : selectedIds) {
+        int r = gridModel_->rowForFileId(id);
+        if (r >= 0) rows << r;
+    }
+    int newCurrent = gridModel_->rowForFileId(currentId);
+    grid_->setSelection(rows, newCurrent);
+    // The old scroll position doesn't correspond to anything meaningful once the row
+    // order has changed - land on whatever's still selected if there is one, or the
+    // top of the new order otherwise (matching Explorer/Finder re-sorting a folder).
+    if (newCurrent >= 0) grid_->scrollToRow(newCurrent, /*center=*/true);
+    else grid_->verticalScrollBar()->setValue(0);
 }
 
 void MainWindow::onNavThumbRequested(qint64 fileId, qint64 /*thumbId*/) { navThumbsRequested_.insert(fileId); }

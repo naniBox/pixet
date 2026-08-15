@@ -30,7 +30,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS version suppo
 # reads it via the PIXET_VERSION compile definition (see src/core/CMakeLists.txt), and the
 # .app bundle's CFBundleShortVersionString comes from the same place. Previously it was
 # hardcoded in version.cpp alone, which the bundle metadata had no way to reach.
-project(pixet VERSION 1.2.0 LANGUAGES CXX)
+project(pixet VERSION 1.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -102,6 +102,9 @@ add_executable(pixet ${PIXET_APP_TYPE}
     HoverInfoWorker.h
     HoverInfoWorker.cpp
 
+    SortIcons.h
+    SortIcons.cpp
+
     icons.qrc
 )
 

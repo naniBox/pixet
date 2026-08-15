@@ -121,4 +121,19 @@ void setHoverInfoEnabled(bool enabled);
 int indexerThreadCount();
 void setIndexerThreadCount(int count);
 
+// Which field the thumbnail grid is sorted by, and whether reversed - see the View >
+// Sort By menu and the sort button bar next to the path bar (MainWindow). Persisted
+// as an int; an out-of-range stored value (an older/newer build using a different
+// enum) falls back to Name rather than crashing on an invalid cast.
+//
+// TakenDate has no per-file value for a video, or a photo the EXIF pass hasn't
+// reached yet - ThumbGridModel sorts those after every file that does have one,
+// regardless of ascending/descending, rather than clumping them at whichever end
+// "smallest unix timestamp" would put a 0.
+enum class SortKey { Name, FileDate, TakenDate, Size };
+SortKey gridSortKey();
+void setGridSortKey(SortKey key);
+bool gridSortDescending();
+void setGridSortDescending(bool descending);
+
 } // namespace prefs

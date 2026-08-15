@@ -1,6 +1,6 @@
 {
   "name": "pixet",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "builtin-baseline": "c4d9956c0c10a4742840a5e7d93efa2e0015c865",
   "dependencies": [
     "sqlite3",

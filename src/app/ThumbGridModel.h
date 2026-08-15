@@ -5,6 +5,7 @@
 #include <QPixmap>
 #include <QVector>
 
+#include "Preferences.h"
 #include "db/Schema.h"
 
 namespace pixet {
@@ -43,6 +44,17 @@ public:
     // or right after Pass A lists files for a folder). Existing cached thumbnail
     // pixmaps are discarded, so calling this repeatedly during Pass B would flicker.
     void setDirectory(const QString &path);
+
+    // Changes sort key/direction and, if a folder is already loaded, reorders rows_ in
+    // place (an in-memory std::sort + model reset) rather than re-querying - a sort
+    // change doesn't touch which files exist or their data, only the order they're
+    // shown in, so re-running setDirectory() would cost a DB round trip and throw away
+    // every already-decoded thumbnail pixmap just to redraw them in a different order.
+    // No-op (doesn't even reset the model) if `key`/`descending` already match the
+    // current order. Safe to call before any folder is loaded (rows_ empty) - just
+    // updates the settings so the next setDirectory() picks them up; MainWindow uses
+    // this to push the persisted sort order in before the first real navigation.
+    void setSortOrder(prefs::SortKey key, bool descending);
 
     // Re-checks thumb_id/state for the *currently loaded* rows without resetting the
     // model, so already-displayed thumbnails aren't touched - only rows whose
@@ -125,6 +137,7 @@ private:
         pixet::FileState state = pixet::FileState::New;
         qint64 thumbId = 0;
         qint64 size = 0;
+        qint64 mtime = 0;
         int width = 0;
         int height = 0;
         qint64 takenAt = 0;
@@ -151,9 +164,23 @@ private:
     // (cheap: a folder's worth of rows, not the whole library) is simpler and less
     // bug-prone than shifting each index in place.
     void reindexLookups();
+    // The ORDER BY clause (no leading "ORDER BY") for the current sortKey_/
+    // sortDescending_ - shared by setDirectory()'s bulk query and (indirectly, via
+    // isRowBefore() mirroring the same logic in C++) insertOrUpdateFileByName()'s
+    // in-memory insertion point, so the two can't disagree about row order.
+    QString orderByClause() const;
+    // True if `a` sorts before `b` under the current sortKey_/sortDescending_ - the
+    // in-memory equivalent of orderByClause(), used to find an insertion point for a
+    // single new row (insertOrUpdateFileByName()) and to reorder rows_ in place
+    // (setSortOrder()) without a DB round trip. Must stay logically equivalent to
+    // orderByClause()'s SQL, term for term - see setSortOrder()'s doc comment for why
+    // that agreement matters.
+    bool isRowBefore(const Row &a, const Row &b) const;
 
     pixet::Database &db_;
     int64_t dirId_ = 0;
+    prefs::SortKey sortKey_ = prefs::SortKey::Name;
+    bool sortDescending_ = false;
     QVector<Row> rows_;
     QHash<qint64, int> rowByFileId_;
     QHash<QString, int> rowByName_;
