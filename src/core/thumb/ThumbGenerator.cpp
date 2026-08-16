@@ -13,6 +13,8 @@
 #include "../meta/JpegExif.h"
 #include "../util/FileIO.h"
 
+#include "../util/Profile.h"
+
 namespace pixet {
 
 namespace {
@@ -20,7 +22,12 @@ namespace {
 ThumbResult generateJpegThumb(const std::vector<uint8_t> &fileBytes, int targetLongEdge, int quality) {
     ThumbResult result;
 
-    ExifInfo exif = parseJpegExif(fileBytes.data(), fileBytes.size());
+    PIXET_PROF_SCOPE("gen.jpeg.total");
+    ExifInfo exif;
+    {
+        PIXET_PROF_SCOPE("gen.jpeg.exifParse");
+        exif = parseJpegExif(fileBytes.data(), fileBytes.size());
+    }
     result.orientation = exif.orientation;
 
     // Always read the *original* file's header for its true native dimensions -
@@ -38,6 +45,7 @@ ThumbResult generateJpegThumb(const std::vector<uint8_t> &fileBytes, int targetL
     // on demand - and doing it here costs a second IFD walk on a buffer we already hold,
     // against re-reading every original later just to answer the same question.
     {
+        PIXET_PROF_SCOPE("gen.jpeg.exifDetails");
         ExifDetails details = parseJpegExifDetails(fileBytes.data(), fileBytes.size());
         result.gpsChecked = true;
         result.hasGps = details.hasGps;
@@ -68,6 +76,8 @@ ThumbResult generateJpegThumb(const std::vector<uint8_t> &fileBytes, int targetL
         }
     }
     if (!decoded) {
+        PIXET_PROF_SCOPE("gen.jpeg.fullDecode");
+        PIXET_PROF_COUNT("gen.jpeg.fullDecodeBytes", fileBytes.size());
         decoded = decodeJpeg(fileBytes.data(), fileBytes.size(), targetLongEdge, img);
         if (decoded) result.tier = ThumbTier::Decoded;
     }
@@ -83,11 +93,19 @@ ThumbResult generateJpegThumb(const std::vector<uint8_t> &fileBytes, int targetL
         return result;
     }
 
-    applyOrientation(img, exif.orientation);
+    {
+        PIXET_PROF_SCOPE("gen.jpeg.applyOrientation");
+        applyOrientation(img, exif.orientation);
+    }
+    PIXET_PROF_COUNT("gen.jpeg.decodedPixels", (int64_t)img.w * img.h);
 
     RgbImage resized;
-    resizeBoxDownscale(img, targetLongEdge, resized);
+    {
+        PIXET_PROF_SCOPE("gen.jpeg.resize");
+        resizeBoxDownscale(img, targetLongEdge, resized);
+    }
 
+    PIXET_PROF_SCOPE("gen.jpeg.encode");
     if (!encodeJpeg(resized, quality, result.jpegBytes)) {
         result.tier = ThumbTier::Failed;
         return result;
@@ -352,7 +370,13 @@ ThumbResult generateThumb(const std::string &filePath, Format fmt, int targetLon
     }
 
     std::vector<uint8_t> fileBytes;
-    if (!readWholeFile(filePath, fileBytes)) {
+    bool readOk;
+    {
+        PIXET_PROF_SCOPE("gen.readWholeFile");
+        readOk = readWholeFile(filePath, fileBytes);
+    }
+    PIXET_PROF_COUNT("gen.readBytes", fileBytes.size());
+    if (!readOk) {
         ThumbResult result;
         result.tier = ThumbTier::Failed;
         return result;

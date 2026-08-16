@@ -5,6 +5,7 @@
 #include "scan/Indexer.h"
 #include "util/AppPaths.h"
 #include "util/ProcessId.h"
+#include "util/Profile.h"
 
 FolderIndexer::FolderIndexer(QObject *parent) : QObject(parent) {
     moveToThread(&thread_);
@@ -47,6 +48,7 @@ void FolderIndexer::indexFolder(QString path, bool force, bool forceRethumbnail)
     // to clear it, so an early return would leave that message up for the rest of the
     // session, over a grid that had quietly stopped filling in.
     try {
+        PIXET_PROF_SCOPE("folderIndexer.run");
         indexer.run(path.toStdString(), stats, callbacks);
     } catch (const std::exception &e) {
         emit indexFailed(path, QString::fromUtf8(e.what()));

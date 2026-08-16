@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "db/Database.h"
+#include "util/Profile.h"
 
 namespace {
 int cmpInt64(qint64 a, qint64 b) { return (a > b) - (a < b); }
@@ -115,6 +116,8 @@ void ThumbGridModel::setSortOrder(prefs::SortKey key, bool descending) {
 }
 
 void ThumbGridModel::setDirectory(const QString &path) {
+    PIXET_PROF_SCOPE("model.setDirectory");
+    PIXET_PROF_MARK("model.setDirectory");
     beginResetModel();
     rows_.clear();
     rowByFileId_.clear();
@@ -137,11 +140,16 @@ void ThumbGridModel::setDirectory(const QString &path) {
                                 "duration_ms, gps_lat, mtime FROM files WHERE dir_id=? ORDER BY " +
                                 orderByClause().toStdString());
         sel.bind(1, dirId_);
-        while (sel.step()) {
-            Row row = rowFromStatement(sel);
-            accumulate(row, +1);
-            rows_.push_back(std::move(row));
+        {
+            PIXET_PROF_SCOPE("model.rowSelect");
+            while (sel.step()) {
+                Row row = rowFromStatement(sel);
+                accumulate(row, +1);
+                rows_.push_back(std::move(row));
+            }
         }
+        PIXET_PROF_COUNT("model.rowsLoaded", rows_.size());
+        PIXET_PROF_SCOPE("model.reindexLookups");
         reindexLookups();
     }
 

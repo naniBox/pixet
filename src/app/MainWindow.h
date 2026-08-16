@@ -583,4 +583,8 @@ private:
     // syntax used to wire up the menu action doesn't require its target to be a
     // registered slot either.
     void onCopyGridDebugInfo();
+    // Debug > Copy Profile Report. Only present when built -DPIXET_PROFILE=ON (see
+    // util/Profile.h); copies the scope/counter/timeline dump for the navigation just
+    // performed, since navigateTo() resets the profiler on every folder change.
+    void onCopyProfileReport();
 };

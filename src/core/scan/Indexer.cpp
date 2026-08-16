@@ -1,5 +1,7 @@
 #include "Indexer.h"
 
+#include "../util/Profile.h"
+
 #include <future>
 #include <thread>
 #include <tuple>
@@ -102,6 +104,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
     // listDir failure below already was: release the claim, count it, skip the folder.
     int64_t actualMtime = 0;
     try {
+        PIXET_PROF_SCOPE("idx.dirMtime");
         actualMtime = dirMtimeUnix(dirPath);
     } catch (const std::exception &) {
         guard.dismissed = true;
@@ -133,6 +136,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
     } else {
         std::vector<DirEntry> entries;
         try {
+            PIXET_PROF_SCOPE("idx.listDir");
             entries = listDir(dirPath);
         } catch (const std::exception &) {
             guard.dismissed = true;
@@ -156,6 +160,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
             }
         }
 
+        PIXET_PROF_SCOPE("idx.passA");
         db_.beginTransaction();
 
         for (const auto &entry : entries) {
@@ -243,6 +248,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
     if (opts_.renderRaws) pendingSql += " OR state=" + std::to_string((int64_t)FileState::DoneNeedsRender);
     pendingSql += ")";
 
+    PIXET_PROF_SCOPE("idx.passB");
     std::vector<std::tuple<int64_t, std::string, int64_t>> pending; // (fileId, name, existingThumbId)
     {
         auto sel = db_.prepare(pendingSql);
@@ -371,6 +377,7 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
             int targetLongEdge = opts_.targetLongEdge;
             int quality = opts_.quality;
             futures.push_back(pool_.submit([filePath, fmt, targetLongEdge, quality, forceFullRender]() {
+                PIXET_PROF_SCOPE("idx.generateThumb");
                 return generateThumb(filePath, fmt, targetLongEdge, quality, forceFullRender);
             }));
         }
@@ -380,12 +387,18 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
             Format fmt = classifyFormat(name);
             batch.push_back({fileId, fmt, existingThumbId, futures[j - chunkStart].get()});
         }
-        flushBatch();
+        {
+            PIXET_PROF_SCOPE("idx.passB.flushBatch");
+            flushBatch();
+        }
     }
 
     // After Pass B, so files it just thumbnailed already have GPS written from the bytes
     // that were in memory at the time - this only touches what's genuinely still unchecked.
-    backfillGps(dirId, dirPath, stats);
+    {
+        PIXET_PROF_SCOPE("idx.backfillGps");
+        backfillGps(dirId, dirPath, stats);
+    }
 
     guard.dismissed = true;
     claims_.release(dirId, opts_.owner);

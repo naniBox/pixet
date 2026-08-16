@@ -71,6 +71,7 @@
 #include "db/Database.h"
 #include "db/Schema.h"
 #include "util/AppPaths.h"
+#include "util/Profile.h"
 #include "util/FileMove.h"
 #include "util/PathUtil.h"
 #include "version.h"
@@ -612,6 +613,12 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
 #ifdef PIXET_DEBUG_MENU
     auto *debugMenu = menuBar()->addMenu(QStringLiteral("&Debug"));
     debugMenu->addAction(QStringLiteral("Copy Grid Debug Info"), this, &MainWindow::onCopyGridDebugInfo);
+    // Only offered when there's something to show. util/Profile.h compiles to nothing unless
+    // the build was configured -DPIXET_PROFILE=ON, so on a normal build this action would
+    // report an empty table and just raise questions.
+    if (pixet::profile::enabled()) {
+        debugMenu->addAction(QStringLiteral("Copy Profile Report"), this, &MainWindow::onCopyProfileReport);
+    }
 #endif
 
     // Insurance for window/layout persistence. Everything used to be saved only from
@@ -673,6 +680,27 @@ MainWindow::~MainWindow() = default;
 void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRethumbnail) {
     QString normalized = normalizeForDb(path);
     if (normalized.isEmpty()) return;
+
+    // Scoped to one navigation deliberately. A session-long accumulation buries the thing
+    // being investigated ("opening this folder is slow") under every folder visited before it,
+    // and the timeline marks are only readable relative to a known t=0.
+    PIXET_PROF_RESET();
+    PIXET_PROF_MARK("nav.begin");
+#ifdef PIXET_PROFILE
+    // PIXET_PROFILE_DUMP_MS=<n> dumps the report to stderr n milliseconds after each
+    // navigation starts, so a measurement run needs no human to click a menu item:
+    //   PIXET_PROFILE_DUMP_MS=15000 pixet /some/big/folder 2>prof.txt
+    // Without this the only way out is a graceful quit, and a killed process runs no atexit
+    // handler - which is how the first attempt at measuring this produced an empty file.
+    // Held in a named QByteArray on purpose: qgetenv() returns a temporary, and binding a
+    // const char* to its .constData() in an if-init-statement leaves the pointer dangling by
+    // the time the condition runs. Which is exactly what happened - the first version of this
+    // silently never fired and produced an empty measurement file.
+    const QByteArray dumpMs = qgetenv("PIXET_PROFILE_DUMP_MS");
+    if (!dumpMs.isEmpty()) {
+        QTimer::singleShot(dumpMs.toInt(), this, [] { PIXET_PROF_DUMP(); });
+    }
+#endif
 
     // A pending "select this file" (from navigateToInput()) only applies to the
     // navigation that requested it - a plain directory change (tree click, bookmark)
@@ -1249,6 +1277,8 @@ void MainWindow::onPathBarReturnPressed() { navigateToInput(pathBar_->currentTex
 void MainWindow::onPathBarHistoryActivated() { navigateToInput(pathBar_->currentText()); }
 
 void MainWindow::onGridSelectionChanged() {
+    PIXET_PROF_SCOPE("ui.onGridSelectionChanged");
+    PIXET_PROF_MARK("ui.selectionChanged");
     currentPreviewBpp_ = 0; // stale from whatever was selected before - cleared until this item's preview lands
     updateSelectionStatus();
     // Same class of unreliable-partial-repaint issue as thumbnail loading (see the
@@ -1401,6 +1431,7 @@ int MainWindow::displayThumbLongEdge() const {
 }
 
 int MainWindow::countStaleThumbnails(const QString &dirPath) const {
+    PIXET_PROF_SCOPE("ui.countStaleThumbnails");
     if (!db_ || dirPath.isEmpty()) return 0;
 
     auto dirSel = db_->prepare("SELECT id FROM dirs WHERE path=?");
@@ -1429,6 +1460,7 @@ int MainWindow::countStaleThumbnails(const QString &dirPath) const {
 }
 
 void MainWindow::updateThumbStatusIndicator() {
+    PIXET_PROF_SCOPE("ui.updateThumbStatusIndicator");
     if (!thumbStatusButton_) return;
 
     const int stale = countStaleThumbnails(currentPath_);
@@ -1842,6 +1874,16 @@ void MainWindow::onNavThumbReady(qint64 fileId, QPixmap /*pixmap*/) {
     if (navThumbsReceived_.size() >= navThumbsRequested_.size()) navAllThumbsMs_ = navThumbTimer_.elapsed();
 }
 
+void MainWindow::onCopyProfileReport() {
+    // Also written to stderr, because the interesting runs are usually launched from a
+    // terminal and having it only on the clipboard means alt-tabbing to paste it somewhere.
+    PIXET_PROF_DUMP();
+    QString text = QString::fromStdString(PIXET_PROF_REPORT());
+    QGuiApplication::clipboard()->setText(text);
+    statusBar()->showMessage(QStringLiteral("Profile report copied (%1 lines)").arg(text.count(QLatin1Char('\n'))),
+                             4000);
+}
+
 void MainWindow::onCopyGridDebugInfo() {
     QScreen *scr = screen();
     auto rectStr = [](const QRect &r) { return QStringLiteral("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height()); };
@@ -1913,6 +1955,7 @@ void MainWindow::onCopyGridDebugInfo() {
 
 void MainWindow::onIndexerStarted(QString path) {
     if (path != currentPath_) return;
+    PIXET_PROF_MARK("nav.indexerStarted");
     // Folder name only, not the full path (see addBookmark() for the same
     // drive-root fallback) - a long full path was the same class of collision-with-
     // the-permanent-widget-row bug as onIndexerFinished's old message (see that
@@ -1933,6 +1976,8 @@ void MainWindow::onFilesListed(QString path) {
     // reloadGridPreservingSelection() carries the user's selection/scroll position
     // across that case instead of dropping them on every Refresh.
     if (path != currentPath_) return;
+    PIXET_PROF_MARK("nav.filesListed");
+    PIXET_PROF_SCOPE("nav.onFilesListed");
     reloadGridPreservingSelection();
     updateSelectionStatus(); // folder aggregates changed (this is often the first real file list)
     updateThumbStatusIndicator(); // the file list is final, so the freshness count is meaningful now
@@ -1943,6 +1988,7 @@ void MainWindow::onThumbsProgress(QString path) {
     // A Pass B batch just landed - pull in the newly-ready thumbnails without
     // resetting the model, so already-displayed ones don't flicker.
     if (path != currentPath_) return;
+    PIXET_PROF_SCOPE("nav.onThumbsProgress");
     gridModel_->refreshThumbStates();
     grid_->viewport()->update(); // see the comment on the thumbReady connection above
     updateSelectionStatus();     // dimensions/taken-at/duration only land at decode time
@@ -1950,6 +1996,7 @@ void MainWindow::onThumbsProgress(QString path) {
 
 void MainWindow::onIndexerFinished(QString path) {
     if (path != currentPath_) return;
+    PIXET_PROF_MARK("nav.indexerFinished");
     gridModel_->refreshThumbStates(); // catch any trailing batch
     grid_->viewport()->update();
     // Used to also post a transient statusBar()->showMessage("<path> - N items", ...)
@@ -2222,6 +2269,7 @@ void MainWindow::reloadGridPreservingSelection() {
 }
 
 void MainWindow::updateSelectionStatus() {
+    PIXET_PROF_SCOPE("ui.updateSelectionStatus");
     // Folder-level aggregates - always shown when a folder is loaded, regardless of
     // whether anything is selected.
     int imageCount = gridModel_->imageCount();

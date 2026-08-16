@@ -7,6 +7,7 @@
 #include "db/Database.h"
 #include "decode/JpegCodec.h"
 #include "util/AppPaths.h"
+#include "util/Profile.h"
 
 namespace {
 
@@ -61,20 +62,31 @@ QImage decodeThumb(qint64 thumbId, int deviceW, int deviceH) {
     // transaction open across it. columnBlob() returns an owning copy, so nothing here still
     // points into SQLite's memory after the reset.
     std::vector<uint8_t> bytes;
-    stmt.reset();
-    stmt.bind(1, thumbId);
-    if (stmt.step()) bytes = stmt.columnBlob(0);
-    stmt.reset();
+    {
+        PIXET_PROF_SCOPE("thumb.blobRead");
+        stmt.reset();
+        stmt.bind(1, thumbId);
+        if (stmt.step()) bytes = stmt.columnBlob(0);
+        stmt.reset();
+    }
+    PIXET_PROF_COUNT("thumb.blobBytes", bytes.size());
 
     QImage image;
     if (!bytes.empty()) {
         pixet::RgbImage img;
-        if (pixet::decodeJpeg(bytes.data(), bytes.size(), qMax(deviceW, deviceH), img)) {
+        bool ok;
+        {
+            PIXET_PROF_SCOPE("thumb.jpegDecode");
+            ok = pixet::decodeJpeg(bytes.data(), bytes.size(), qMax(deviceW, deviceH), img);
+        }
+        if (ok) {
+            PIXET_PROF_SCOPE("thumb.toQImage+scale");
             image = rgbImageToQImage(img);
             // decodeJpeg only lands *close* to the target via coarse DCT scale steps -
             // the grid needs an exact fit or oversized decorations bleed into
             // neighboring cells.
             if (image.width() > deviceW || image.height() > deviceH) {
+                PIXET_PROF_COUNT("thumb.rescaled", 1);
                 image = image.scaled(deviceW, deviceH, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             }
         }
@@ -125,7 +137,9 @@ void ThumbLoader::dispatchNext() {
 
         qint64 fileId = req.fileId;
         qint64 thumbId = req.thumbId;
+        PIXET_PROF_COUNT("thumb.dispatched", 1);
         pool_.submit([this, fileId, thumbId, dpr, deviceW, deviceH]() {
+            PIXET_PROF_SCOPE("thumb.decodeTotal");
             QImage image = decodeThumb(thumbId, deviceW, deviceH);
             // Hops back onto thread_ - the pool worker thread must never touch
             // stack_/pending_/inFlight_ directly (see the class comment), and must
@@ -138,10 +152,12 @@ void ThumbLoader::dispatchNext() {
 }
 
 void ThumbLoader::onDecodeFinished(qint64 fileId, QImage image, qreal dpr) {
+    PIXET_PROF_SCOPE("thumb.onDecodeFinished");
     --inFlight_;
     pending_.remove(fileId);
     QPixmap pixmap;
     if (!image.isNull()) {
+        PIXET_PROF_SCOPE("thumb.QPixmap::fromImage");
         pixmap = QPixmap::fromImage(image);
         // Stamping the ratio is what keeps the grid's geometry in logical units: the
         // pixmap is now physically 2x on Retina, and ThumbGridView centres it using

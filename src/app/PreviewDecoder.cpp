@@ -5,6 +5,7 @@
 #include "QtInterop.h"
 #include "db/Schema.h"
 #include "decode/DisplayCodec.h"
+#include "util/Profile.h"
 
 PreviewDecoder::PreviewDecoder(QObject *parent) : QObject(parent) {
     moveToThread(&thread_);
@@ -27,7 +28,13 @@ void PreviewDecoder::doDecode(qint64 requestId, QString filePath, int fmt, int t
 
     QImage result;
     pixet::RgbImage img;
-    if (pixet::decodeForDisplay(filePath.toStdString(), (pixet::Format)fmt, targetLongEdge, img)) {
+    bool ok;
+    {
+        PIXET_PROF_SCOPE("preview.decodeForDisplay");
+        ok = pixet::decodeForDisplay(filePath.toStdString(), (pixet::Format)fmt, targetLongEdge, img);
+    }
+    if (ok) {
+        PIXET_PROF_SCOPE("preview.decode.toQImage");
         result = rgbImageToQImage(img);
     }
 

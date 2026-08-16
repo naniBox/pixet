@@ -5,6 +5,7 @@
 #include "QtInterop.h"
 #include "db/Schema.h"
 #include "decode/DisplayCodec.h"
+#include "util/Profile.h"
 
 FullscreenDecoder::FullscreenDecoder(QObject *parent) : QObject(parent) {
     moveToThread(&thread_);
@@ -35,7 +36,13 @@ void FullscreenDecoder::processOne() {
 
     QImage result;
     pixet::RgbImage img;
-    if (pixet::decodeForDisplay(req.filePath.toStdString(), (pixet::Format)req.fmt, req.targetLongEdge, img)) {
+    bool ok;
+    {
+        PIXET_PROF_SCOPE("fullscreen.decodeForDisplay");
+        ok = pixet::decodeForDisplay(req.filePath.toStdString(), (pixet::Format)req.fmt, req.targetLongEdge, img);
+    }
+    if (ok) {
+        PIXET_PROF_SCOPE("fullscreen.decode.toQImage");
         result = rgbImageToQImage(img);
     }
 
