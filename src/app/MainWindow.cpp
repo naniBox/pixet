@@ -684,6 +684,7 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
     // Scoped to one navigation deliberately. A session-long accumulation buries the thing
     // being investigated ("opening this folder is slow") under every folder visited before it,
     // and the timeline marks are only readable relative to a known t=0.
+    invalidateStaleCache(); // different folder - the cached count says nothing about this one
     PIXET_PROF_RESET();
     PIXET_PROF_MARK("nav.begin");
 #ifdef PIXET_PROFILE
@@ -1434,6 +1435,23 @@ int MainWindow::countStaleThumbnails(const QString &dirPath) const {
     PIXET_PROF_SCOPE("ui.countStaleThumbnails");
     if (!db_ || dirPath.isEmpty()) return 0;
 
+    // Measured at 88ms on a 1280-file folder, and updateThumbStatusIndicator() runs it twice
+    // per navigation (once when Pass A lists the files, once when indexing finishes) - so it
+    // was ~176ms of every folder change, the largest single cost in a warm navigation.
+    //
+    // It's expensive for a structural reason: the join reaches into thumbs.db for t.w/t.h on
+    // every file in the folder, which is one random page read per file in a 185MB blob
+    // database. Caching is the cheap fix; the real one is denormalising the thumbnail's long
+    // edge into files, so the question can be answered from index.db alone - see the devlog.
+    //
+    // Invalidated by invalidateStaleCache() wherever thumbnails can actually have changed, so
+    // the second call after a *warm* navigation (where Pass B did nothing) is free while a
+    // folder that really did get re-thumbnailed still recomputes.
+    const int needed = displayThumbLongEdge();
+    if (staleCacheValue_ >= 0 && staleCachePath_ == dirPath && staleCacheNeeded_ == needed) {
+        return staleCacheValue_;
+    }
+
     auto dirSel = db_->prepare("SELECT id FROM dirs WHERE path=?");
     dirSel.bind(1, dirPath.toStdString());
     if (!dirSel.step()) return 0; // folder not indexed yet - nothing to be stale
@@ -1454,10 +1472,16 @@ int MainWindow::countStaleThumbnails(const QString &dirPath) const {
         "SELECT COUNT(*) FROM files f JOIN thumbs.thumbs t ON t.id = f.thumb_id "
         "WHERE f.dir_id = ? AND MAX(t.w, t.h) < MIN(?, MAX(f.width, f.height))");
     sel.bind(1, dirId);
-    sel.bind(2, (int64_t)displayThumbLongEdge());
+    sel.bind(2, (int64_t)needed);
     if (!sel.step()) return 0;
-    return (int)sel.columnInt64(0);
+
+    staleCachePath_ = dirPath;
+    staleCacheNeeded_ = needed;
+    staleCacheValue_ = (int)sel.columnInt64(0);
+    return staleCacheValue_;
 }
+
+void MainWindow::invalidateStaleCache() { staleCacheValue_ = -1; }
 
 void MainWindow::updateThumbStatusIndicator() {
     PIXET_PROF_SCOPE("ui.updateThumbStatusIndicator");
@@ -1989,6 +2013,7 @@ void MainWindow::onThumbsProgress(QString path) {
     // resetting the model, so already-displayed ones don't flicker.
     if (path != currentPath_) return;
     PIXET_PROF_SCOPE("nav.onThumbsProgress");
+    invalidateStaleCache(); // a Pass B batch just wrote new blobs
     gridModel_->refreshThumbStates();
     grid_->viewport()->update(); // see the comment on the thumbReady connection above
     updateSelectionStatus();     // dimensions/taken-at/duration only land at decode time

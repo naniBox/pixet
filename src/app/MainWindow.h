@@ -421,6 +421,12 @@ private:
     // Set by onIndexFailed(), shown by onIndexerFinished() - see the comment there on why it
     // can't just be shown when it arrives.
     QString pendingIndexError_;
+    // Memoises countStaleThumbnails(), which is ~88ms on a large folder and asked twice per
+    // navigation. -1 means "no valid cached answer"; see invalidateStaleCache().
+    mutable QString staleCachePath_;
+    mutable int staleCacheNeeded_ = 0;
+    mutable int staleCacheValue_ = -1;
+    void invalidateStaleCache();
     QString pendingPreviewPath_;
     int pendingPreviewFmt_ = 0;
     qint64 previewRequestCounter_ = 0;
