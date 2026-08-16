@@ -145,6 +145,9 @@ private:
         bool hasGps = false;
         QPixmap thumb;
         mutable bool requested = false;
+        // Bytes `thumb` occupies, cached at insert time so eviction doesn't have to ask a
+        // QPixmap whose backing store may already be gone. 0 when thumb is null.
+        qint64 thumbBytes = 0;
     };
 
     // Maps the current row of a "SELECT id, name, fmt, state, thumb_id, size, width,
@@ -184,6 +187,31 @@ private:
     QVector<Row> rows_;
     QHash<qint64, int> rowByFileId_;
     QHash<QString, int> rowByName_;
+
+    // Decoded thumbnails used to accumulate in rows_ forever - one QPixmap per row, never
+    // released until the folder changed. That is fine for a few hundred files and quietly
+    // ruinous past that: at a 300px icon on a 2x display each pixmap is ~1.1MB, so scrolling
+    // through a 1280-file folder (a real one on this machine) parks ~1.4GB of pixmaps, and a
+    // 5000-file folder would simply exhaust memory. The symptom isn't a crash, it's the whole
+    // machine slowing down as it starts swapping - which reads exactly like "the app is slow".
+    //
+    // So the cache is now bounded by total bytes and evicted oldest-first. Eviction only
+    // clears the pixmap and the `requested` flag; the row itself stays, so scrolling back up
+    // re-requests a decode (~1.5ms, off the UI thread) rather than showing a hole.
+    //
+    // The budget is deliberately far larger than any screenful - ~230 thumbnails at 300px/2x
+    // against ~18 visible - because evicting something still on screen would have the view
+    // immediately re-request it, and a cache that thrashes at the working-set size is worse
+    // than no cache. Bytes rather than a count, since a 480px icon costs 2.5x a 300px one.
+    static constexpr qint64 kThumbCacheBudgetBytes = 256LL * 1024 * 1024;
+    qint64 thumbCacheBytes_ = 0;
+    // Rows in the order their thumbnails were set. FIFO rather than true LRU on purpose: the
+    // access pattern here is scrolling, where insertion order and recency coincide closely
+    // enough that tracking real recency would cost a touch on every paint to buy nothing.
+    // May contain stale or duplicate entries (a row re-thumbnailed while still cached);
+    // evictThumbsIfNeeded() tolerates both by skipping rows that no longer hold a pixmap.
+    QList<int> thumbFifo_;
+    void evictThumbsIfNeeded();
     int imageCount_ = 0;
     int videoCount_ = 0;
     qint64 totalBytes_ = 0;

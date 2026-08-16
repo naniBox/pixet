@@ -122,6 +122,11 @@ void ThumbGridModel::setDirectory(const QString &path) {
     rows_.clear();
     rowByFileId_.clear();
     rowByName_.clear();
+    // Every cached pixmap died with rows_, so the byte accounting and the eviction queue have
+    // to go with it - otherwise the budget stays "full" against pixmaps that no longer exist
+    // and the next folder evicts itself immediately.
+    thumbFifo_.clear();
+    thumbCacheBytes_ = 0;
     imageCount_ = 0;
     videoCount_ = 0;
     totalBytes_ = 0;
@@ -330,7 +335,41 @@ void ThumbGridModel::setThumbnail(qint64 fileId, const QPixmap &pixmap) {
     auto it = rowByFileId_.find(fileId);
     if (it == rowByFileId_.end()) return;
     int row = it.value();
+
+    // Replacing an existing pixmap (a re-thumbnail landing while this folder is on screen)
+    // has to give back the old bytes first, or the accounting drifts up and the cache
+    // slowly evicts itself down to nothing.
+    thumbCacheBytes_ -= rows_[row].thumbBytes;
     rows_[row].thumb = pixmap;
+    // depth() is bits per pixel of the actual backing store (32 here, but 8 for a mask and
+    // potentially other values on other backends), so this measures the real cost rather
+    // than assuming ARGB32.
+    rows_[row].thumbBytes =
+        pixmap.isNull() ? 0 : (qint64)pixmap.width() * pixmap.height() * pixmap.depth() / 8;
+    thumbCacheBytes_ += rows_[row].thumbBytes;
+    thumbFifo_.push_back(row);
+
     QModelIndex idx = index(row);
     emit dataChanged(idx, idx, {Qt::DecorationRole});
+
+    // After the dataChanged for this row, so the view has already been told about the arrival
+    // it was waiting for before anything else is taken away from it.
+    evictThumbsIfNeeded();
+}
+
+void ThumbGridModel::evictThumbsIfNeeded() {
+    while (thumbCacheBytes_ > kThumbCacheBudgetBytes && !thumbFifo_.isEmpty()) {
+        int row = thumbFifo_.takeFirst();
+        if (row < 0 || row >= rows_.size()) continue; // rows shifted under us (insert/remove)
+        Row &r = rows_[row];
+        if (r.thumb.isNull()) continue; // already evicted, or a duplicate FIFO entry
+        thumbCacheBytes_ -= r.thumbBytes;
+        r.thumb = QPixmap();
+        r.thumbBytes = 0;
+        // Cleared so data() will re-emit thumbNeeded if this row scrolls back into view -
+        // without this the row would be permanently blank, having been "requested" once.
+        r.requested = false;
+        QModelIndex idx = index(row);
+        emit dataChanged(idx, idx, {Qt::DecorationRole});
+    }
 }
