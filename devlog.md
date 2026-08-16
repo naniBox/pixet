@@ -5,6 +5,91 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-16 — mac — A checked-in profiler, and where the time in a big folder actually goes
+
+Added `util/Profile.h`: `PIXET_PROF_SCOPE` / `_COUNT` / `_MARK`, compiled out unless
+`-DPIXET_PROFILE=ON`, with the macros expanding to *no tokens* when off (verified: zero
+`pixet::profile` symbols in the default binary). Reports come out via
+`Debug > Copy Profile Report` or `PIXET_PROFILE_DUMP_MS=<n>` for scripted runs. It stays in
+the tree on purpose - the folders worth measuring only exist on this machine, so
+re-instrumenting from scratch every time is the thing to avoid.
+
+Two self-inflicted bugs on the way in, both worth recording because they're the classic ones:
+
+- **The profiler killed the process it was measuring.** The `PIXET_PROFILE_ATEXIT` dump runs
+  from an `atexit` handler registered during static init, so it fires *after* function-local
+  statics constructed later are destroyed. `static std::mutex m;` therefore blew up on the way
+  out - `mutex lock failed: Invalid argument` - after a clean 8.8s run. All the profiler's
+  singletons are now deliberately leaked heap objects.
+- **A dangling `qgetenv()`**: `if (const char *ms = qgetenv("X").constData(); ms && *ms)` binds
+  to a temporary that dies before the condition runs. It silently never fired and produced an
+  empty measurement file.
+
+### Where the time goes, measured on `/Users/david.morris/data/photos` (1280 media files, 5.4GB)
+
+**Cold (first visit, nothing indexed): 8.5s**, and it is essentially one thing.
+
+| scope | calls | total CPU | avg |
+|---|---|---|---|
+| `idx.generateThumb` | 1280 | **62.1s** (8 threads) | 48.5ms |
+| ` └ gen.jpeg.fullDecode` | 1165 | **42.8s** | 36.7ms |
+| ` └ gen.readWholeFile` | 1210 | 9.7s (3.53GB) | 8.0ms |
+| ` └ resize / orient / encode` | 1170 | 1.75s combined | — |
+
+So 69% of it is entropy-decoding JPEG, and that cost is **not** avoidable by asking for a
+smaller output: the scaled-DCT path is already working (`gen.jpeg.decodedPixels` averages
+184k px, i.e. ~430x430 out of a 4032x3024 original), but libjpeg still has to Huffman-decode
+the entire compressed stream to get there. 3.5GB of it.
+
+The obvious escape - embedded previews - mostly isn't available here. Only **35 of 1280**
+files had a usable one. Checking the actual bytes: the bulk `.jpeg` files are 720x960 with
+*no* embedded preview at all, and the iPhone `.JPG` files carry only a 160x120 EXIF
+thumbnail, which the size check correctly rejects against a 600px target. Nothing is
+misconfigured; the data simply doesn't contain a shortcut.
+
+**Warm (already indexed): ~240-460ms**, dominated by:
+
+| scope | total | note |
+|---|---|---|
+| `ui.countStaleThumbnails` | 88-95ms | UI thread, per navigation |
+| `idx.listDir` | 52-290ms | 2531 entries; varies hugely with FS cache state |
+| `thumb.decodeTotal` (x16) | 25-37ms | 4 threads - the visible screenful is cheap |
+
+Worth noting the visible grid is only ~18 cells, and filling it is ~25ms. Displaying a large
+folder is *not* slow; generating it for the first time is.
+
+### Fixed
+
+- **The decoded-thumbnail cache was unbounded.** `ThumbGridModel` kept a `QPixmap` per row
+  and never released one. At ~1.1MB per pixmap, scrolling this folder parks **~1.4GB**; a
+  5000-file folder would exhaust memory. This is the most likely explanation for "browsing a
+  big folder gets slow" that isn't visible in any timing at all - the machine starts swapping.
+  Now capped at 256MB, evicted oldest-first, with `requested` cleared on eviction so a row
+  scrolled back into view re-requests rather than staying permanently blank.
+- **`countStaleThumbnails` memoised** - though the profiler also corrected my reading of it:
+  the 88ms "for two calls" was one 87.7ms call and one 0.37ms call already hitting a warm page
+  cache, so this wins far less than it first appeared. Recorded honestly rather than claimed.
+
+### Not done - the real levers, in order of value
+
+1. **Thumbnail what's on screen first.** Pass B walks `pending` in rowid order, i.e. readdir
+   order, which has nothing to do with the grid's sort. The user looks at ~18 cells and waits
+   8.5s for 1280. Serving the visible ones first would make a cold folder *feel* ~50x faster
+   without generating a single thumbnail less. Cleanest shape is an `IndexCallbacks` hook the
+   GUI supplies, letting it reorder the remaining work between chunks so it tracks scrolling -
+   which keeps `pixet_core` ignorant of the GUI.
+2. **A fast first pass, refined later.** Even a 160x120 EXIF thumbnail costs ~1ms against
+   ~49ms, and only needs the file's first ~64KB rather than all 3MB. Blurry-then-sharp beats
+   empty-then-sharp, and the `FileState::DoneNeedsRender` machinery already models exactly
+   this two-tier scheme for RAW.
+3. **Denormalise the thumbnail's long edge into `files`.** Removes the cross-database join
+   behind `countStaleThumbnails` entirely. Needs a schema migration.
+4. Note `gridSortKey=TakenDate` is ordering a cold folder by a column that is 0 for every row
+   until thumbnailing fills it in - so the initial order of a first-visit folder is arbitrary,
+   which interacts with (1).
+
+---
+
 ## 2026-08-13 — mac — Root cause found: ThumbLoader held a read lock on `thumbs.db` forever
 
 The crash from earlier today reproduced, from the command line, with the exact error the new
