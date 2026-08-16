@@ -22,6 +22,8 @@ add_library(pixet_core STATIC
     util/PathUtil.cpp
     util/ProcessId.h
     util/ProcessId.cpp
+    util/Profile.h
+    util/Profile.cpp
     util/ThreadPool.h
     util/ThreadPool.cpp
 
@@ -115,6 +117,19 @@ endif()
 # CMakeLists - and reaches version.cpp through here, so the library and the .app bundle's
 # CFBundleShortVersionString can't drift apart.
 target_compile_definitions(pixet_core PRIVATE PIXET_VERSION="${PROJECT_VERSION}")
+
+# Checked-in instrumentation, compiled out by default - see util/Profile.h. PUBLIC because the
+# macros are used in src/app and src/index too, and a header-level define that only half the
+# targets see would silently profile some translation units and not others.
+#
+# Deliberately not tied to CMAKE_BUILD_TYPE: the interesting measurements are of *release*
+# behaviour against a real library (a debug build's decode times are ~8x off and would send you
+# after the wrong bottleneck), so this has to be independently switchable.
+#   cmake --preset mac-release -DPIXET_PROFILE=ON
+option(PIXET_PROFILE "Compile in the scope/counter/timeline profiler (util/Profile.h)" OFF)
+if(PIXET_PROFILE)
+    target_compile_definitions(pixet_core PUBLIC PIXET_PROFILE)
+endif()
 
 # The commit the binary was built from, captured at *build* time. A custom target rather
 # than a configure-time execute_process: configure doesn't re-run when you commit, so a
