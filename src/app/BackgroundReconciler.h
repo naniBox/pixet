@@ -30,6 +30,20 @@ class BackgroundReconciler : public QObject {
     Q_OBJECT
 
 public:
+    // One instance for the whole application, shared by every window.
+    //
+    // This is library-wide hygiene work, not per-window work: it rotates over every directory
+    // pixet has ever indexed, independent of what any window is showing. Creating one per
+    // window (which is what happened before multi-window, since MainWindow owned it) would
+    // mean N full sweeps of the library, N worker threads and N database connections all
+    // grinding over the same rows. The claims table would keep them from corrupting each
+    // other's work, but they would still be doing it N times.
+    //
+    // Every window connects to the same instance's directoryChanged() and filters it against
+    // its own current folder, which is exactly what each window already did with its private
+    // one - so sharing needed no change on the receiving side.
+    static BackgroundReconciler &shared();
+
     explicit BackgroundReconciler(QObject *parent = nullptr);
     ~BackgroundReconciler() override;
 

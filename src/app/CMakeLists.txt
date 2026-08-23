@@ -67,6 +67,9 @@ add_executable(pixet ${PIXET_APP_TYPE}
     FullscreenViewer.h
     FullscreenViewer.cpp
 
+    WindowRegistry.h
+    WindowRegistry.cpp
+
     FolderIndexer.h
     FolderIndexer.cpp
 
