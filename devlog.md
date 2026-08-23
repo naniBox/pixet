@@ -5,6 +5,74 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-16 — mac — Multiple windows (`feature/multi-window`)
+
+`File > New Window` (Cmd+N), `Close Window` (Cmd+W), and `View > Windows` listing every open
+window. pixet was single-window for a structural reason rather than a decided one: `main()`
+owned the sole `MainWindow` **by value**, so nothing else could create another. On Windows
+that never mattered - a second window is a second process - but macOS routes a second launch
+back into the running instance (`open -a`, the Dock, Finder all do), so there was no way to
+get one at all.
+
+New `WindowRegistry` tracks open windows, hands out new ones, and emits `changed()` so every
+window rebuilds its own Windows submenu. New windows open on the *invoking* window's folder,
+not the persisted `lastDirectory` - wanting a second window almost always means comparing
+against what is already on screen. They cascade off their parent so a new window isn't hidden
+exactly on top of it looking like nothing happened.
+
+Window titles now lead with the folder (`photos - pixet`): the Dock, the app switcher and the
+Windows menu all truncate from the right, and three windows called `pixet 1.2.1` are
+unidentifiable.
+
+Extra positional arguments used to be silently ignored; each now opens its own window, so
+`pixet folderA folderB` comes up side-by-side in one step.
+
+### `BackgroundReconciler` and `RawRenderer` are now app-wide singletons
+
+Both were owned per-window by `MainWindow`, which was fine when there was exactly one. Both
+sweep the *entire library* regardless of what any window shows, so N windows would have meant
+N full sweeps of the same rows, N worker threads and N database connections. The claims table
+would have stopped them corrupting each other's work - they would just all have been doing
+it. Nothing changed on the receiving side: each window already filtered `directoryChanged()`
+against its own folder, which is exactly what sharing needs. Leaked deliberately, like the
+profiler's singletons - worker threads are still running at static-destruction time.
+
+### Three latent bugs the single-window design had masked
+
+- **The application-wide event filter fires once per window.** Each `MainWindow` installs one
+  on the *application* for the mouse back/forward buttons, so with two windows open a single
+  click arrived twice and would have navigated both. Guarded on `isActiveWindow()`.
+- **The layout preferences are single-valued.** `windowGeometry`, three splitter states and
+  `lastDirectory` are written by every window on close *and* again by all of them on
+  `aboutToQuit`, so the surviving values would have been whichever window was signalled last.
+  Only the most recently activated window writes them now - deterministic, and what "restore
+  what I was last looking at" should mean.
+- **`~MainWindow()` was `= default;`** and needed a real body to unregister from the registry.
+
+### The bug worth writing down
+
+The first version of that destructor change was applied by a script aiming at "the first
+brace after `MainWindow::~MainWindow()`" - and since the destructor had no braces at all, it
+landed inside `navigateTo()`. So **every folder change unregistered the window**, and the
+Windows list was permanently empty. It built clean and the app ran fine; three windows opened
+correctly. The only symptom was a count of 0 where it should have been 3.
+
+Found by probing the registry rather than by reading the diff - the probe showed the same
+registry object going from size 1 to size 0 with nothing visibly calling `remove()`, which is
+what pointed at the misplaced call. A reminder that a text-anchored patch needs the anchor
+verified, not assumed, and that "it compiles and runs" says very little.
+
+### Verification note
+
+AppleScript is refused assistive access on this machine, so `System Events` can't drive Cmd+N
+or count windows. Used a small C probe against `CGWindowListCopyWindowInfo` instead, which
+needs no permission for the count (window *names* do need screen recording, hence
+"(untitled)"). Three folder paths -> three windows, titles `photos`/`jakarta`/`data`, registry
+count tracking 1->2->3, clean stderr. **Not** verified by automation: closing a window and
+what the Windows menu looks like on screen - both need a human.
+
+---
+
 ## 2026-08-16 — mac — A checked-in profiler, and where the time in a big folder actually goes
 
 Added `util/Profile.h`: `PIXET_PROF_SCOPE` / `_COUNT` / `_MARK`, compiled out unless
