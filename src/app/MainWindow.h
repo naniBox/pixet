@@ -74,6 +74,8 @@ signals:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    // Tracks which window the user is actually in - see WindowRegistry::noteActivated().
+    void changeEvent(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
@@ -385,12 +387,13 @@ private:
     std::unique_ptr<ThumbLoader> thumbLoader_;
     std::unique_ptr<PreviewDecoder> previewDecoder_;
     std::unique_ptr<FolderIndexer> folderIndexer_;
-    // Low-priority background sweep that keeps already-indexed folders honest against
-    // files changed on disk outside pixet - see BackgroundReconciler's class comment.
-    std::unique_ptr<BackgroundReconciler> backgroundReconciler_;
-    // Low-priority background upgrade of RAW files from their fast embedded-preview
-    // thumbnail to a full demosaic render - see RawRenderer's class comment.
-    std::unique_ptr<RawRenderer> rawRenderer_;
+    // BackgroundReconciler (the low-priority sweep that keeps indexed folders honest against
+    // on-disk changes) and RawRenderer (the background upgrade of RAW files from a fast
+    // embedded preview to a full demosaic render) used to be owned here, one pair per window.
+    // They are now application-wide singletons - BackgroundReconciler::shared() /
+    // RawRenderer::shared() - because both sweep the entire library regardless of what any
+    // window is showing, so one pair per window meant N sweeps of the same rows. Each window
+    // still connects to their directoryChanged() and filters it against its own folder.
     // The app's first code path that can move/copy/overwrite a real file - see
     // FileOpsWorker's class comment for the preflight/execute protocol.
     std::unique_ptr<FileOpsWorker> fileOps_;
@@ -427,6 +430,13 @@ private:
     mutable int staleCacheNeeded_ = 0;
     mutable int staleCacheValue_ = -1;
     void invalidateStaleCache();
+    // Short, human-identifiable name for this window - the current folder's leaf name, with
+    // the full path as a fallback at a filesystem root where there is no leaf. Used for both
+    // the window title and its View > Windows entry so the two always agree.
+    QString windowMenuLabel() const;
+    void updateWindowTitle();
+    // Owned by the menu bar; held because its contents are rebuilt as windows come and go.
+    QMenu *windowsMenu_ = nullptr;
     QString pendingPreviewPath_;
     int pendingPreviewFmt_ = 0;
     qint64 previewRequestCounter_ = 0;
@@ -588,6 +598,13 @@ private:
     // so this sidesteps that entirely - the modern pointer-to-member connect()
     // syntax used to wire up the menu action doesn't require its target to be a
     // registered slot either.
+    // File > New Window (Cmd/Ctrl+N). Opens on this window's current folder - see the
+    // implementation for why that beats the persisted lastDirectory.
+    void onNewWindow();
+    // Rebuilds View > Windows. Connected both to WindowRegistry::changed() (so the list is
+    // correct even while the menu is closed, which matters for the Cmd+W-then-reopen case) and
+    // to the submenu's own aboutToShow (so the checkmark and folder names are fresh).
+    void rebuildWindowsMenu();
     void onCopyGridDebugInfo();
     // Debug > Copy Profile Report. Only present when built -DPIXET_PROFILE=ON (see
     // util/Profile.h); copies the scope/counter/timeline dump for the navigation just
