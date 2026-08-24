@@ -1680,24 +1680,76 @@ void MainWindow::onChooseFolder() {
 }
 
 void MainWindow::onAbout() {
-    // QMessageBox::about renders as a proper About panel in the application menu on macOS.
-    // Qt's runtime version is worth showing: the AGL link workaround in src/app/CMakeLists.txt
-    // is specific to 6.8, so knowing which Qt a given build was made against is the first
-    // thing anyone would want when it eventually stops being needed.
+    // A hand-built QDialog rather than QMessageBox::about(), which can show text and nothing
+    // else. This needs an icon, a clickable link and a button that opens a folder, and fighting
+    // a QMessageBox into all three (its label's openExternalLinks is off and only reachable by
+    // findChild on an internal object name) is more fragile than just building the dialog.
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("About pixet"));
+
+    // The PNG from the compiled-in Qt resource, not the bundle's pixet.icns and not the .ico.
+    // PNG decoding lives in QtGui itself, while both ICNS and ICO are runtime plugins that
+    // scripts/deploy-mac.sh prunes - so either of those would render as an empty space in a
+    // deployed build while looking fine in a dev one. Sized against the device pixel ratio so
+    // it isn't a soft upscale on a Retina display.
+    auto *iconLabel = new QLabel(&dlg);
+    const QIcon appIcon(QStringLiteral(":/pixet.png"));
+    iconLabel->setPixmap(appIcon.pixmap(QSize(72, 72), devicePixelRatioF()));
+    iconLabel->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+
     // The build's exact provenance, so a bug report from a given binary identifies the source
-    // it came from. "modified" matters as much as the hash: a dirty build is *not* that
-    // commit, and silently showing the hash alone would claim otherwise.
-    QString build = QString::fromLatin1(pixet::gitCommit());
+    // it came from. "modified" matters as much as the hash: a dirty build is *not* that commit,
+    // and showing the hash alone would claim otherwise.
+    QString build = QStringLiteral("%1 &middot; %2")
+                        .arg(QString::fromLatin1(pixet::gitCommit()),
+                             QString::fromLatin1(pixet::buildTime()));
     if (pixet::gitDirty()) {
         build += QStringLiteral(" <span style='color:#f0883e'>(modified)</span>");
     }
 
-    QMessageBox::about(this, QStringLiteral("About pixet"),
-                        QStringLiteral("<b>pixet %1</b><br><br>Photo and video viewer.<br><br>"
-                                        "Build: %2<br>Qt %3<br>Cache: %4")
-                            .arg(QString::fromLatin1(pixet::version()), build,
-                                  QString::fromLatin1(qVersion()),
-                                  QString::fromStdString(pixet::appDataDir())));
+    // Qt's runtime version is worth showing: the AGL link workaround in
+    // src/app/CMakeLists.txt is specific to 6.8, so knowing which Qt a given build was made
+    // against is the first thing anyone would want when it eventually stops being needed.
+    const QString prefsPath = prefs::settingsFilePath();
+    auto *text = new QLabel(&dlg);
+    text->setTextFormat(Qt::RichText);
+    // Both flags are needed and do different jobs: TextBrowserInteraction makes the link
+    // clickable and the paths selectable for copying, openExternalLinks is what actually hands
+    // the URL to the browser instead of emitting linkActivated into the void.
+    text->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    text->setOpenExternalLinks(true);
+    text->setText(QStringLiteral("<b style='font-size:15pt'>pixet %1</b><br>"
+                                  "Photo and video viewer<br><br>"
+                                  "Build: %2<br>"
+                                  "Qt %3<br><br>"
+                                  "Cache: <code>%4</code><br>"
+                                  "Settings: <code>%5</code><br><br>"
+                                  "<a href='%6'>%6</a>")
+                       .arg(QString::fromLatin1(pixet::version()), build,
+                            QString::fromLatin1(qVersion()),
+                            QString::fromStdString(pixet::appDataDir()), prefsPath,
+                            QStringLiteral("https://github.com/naniBox/pixet")));
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+    // Opens the containing folder rather than revealing the .ini itself: "open that path" is
+    // what was asked for, and handing a plain file URL to the shell would have the OS try to
+    // launch pixet.ini in whatever is registered for .ini files.
+    QPushButton *revealButton =
+        buttons->addButton(QStringLiteral("Open Settings Folder"), QDialogButtonBox::ActionRole);
+    connect(revealButton, &QPushButton::clicked, this, [prefsPath]() {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(prefsPath).absolutePath()));
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    auto *row = new QHBoxLayout();
+    row->addWidget(iconLabel);
+    row->addSpacing(12);
+    row->addWidget(text, /*stretch=*/1);
+
+    auto *layout = new QVBoxLayout(&dlg);
+    layout->addLayout(row);
+    layout->addWidget(buttons);
+    dlg.exec();
 }
 
 void MainWindow::openSystemPath(const QString &path) {

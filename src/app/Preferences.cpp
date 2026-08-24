@@ -14,10 +14,11 @@ std::atomic<int> g_thumbnailIconSize{-1};
 
 namespace prefs {
 
-QSettings settingsStore() {
-    QString path = QString::fromStdString(pixet::appDataDir()) + QStringLiteral("/pixet.ini");
-    return QSettings(path, QSettings::IniFormat);
+QString settingsFilePath() {
+    return QString::fromStdString(pixet::appDataDir()) + QStringLiteral("/pixet.ini");
 }
+
+QSettings settingsStore() { return QSettings(settingsFilePath(), QSettings::IniFormat); }
 
 int thumbnailIconSize() {
     int cached = g_thumbnailIconSize.load(std::memory_order_relaxed);

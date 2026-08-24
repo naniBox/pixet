@@ -20,6 +20,12 @@ namespace prefs {
 // than switching backends (registry on Windows, plist on macOS) per platform.
 QSettings settingsStore();
 
+// Absolute path of the .ini settingsStore() reads and writes. Exposed so the About box can
+// show it and offer to open its folder - the whole point of an explicit-path IniFormat store
+// (see this header's own note on that choice) is that the location is knowable, and it is
+// worth nothing if nothing ever tells the user where it is.
+QString settingsFilePath();
+
 // Grid thumbnail on-screen size (long edge, pixels) - both what ThumbGridView lays
 // cells out at and what ThumbLoader decodes stored blobs down to for display.
 // Cached after first read (see Preferences.cpp) since sizeHint()/paint() call this
