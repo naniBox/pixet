@@ -13,6 +13,8 @@ const char *version() { return PIXET_VERSION; }
 
 const char *gitCommit() { return PIXET_GIT_COMMIT; }
 
+const char *buildTime() { return PIXET_BUILD_TIME; }
+
 bool gitDirty() { return PIXET_GIT_DIRTY != 0; }
 
 } // namespace pixet

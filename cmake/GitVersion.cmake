@@ -22,6 +22,16 @@ find_package(Git QUIET)
 # binary still builds and simply reports that it doesn't know.
 set(PIXET_GIT_COMMIT "unknown")
 set(PIXET_GIT_DIRTY 0)
+# Wall-clock local time of this build, to the minute. Its whole purpose is answering "am I
+# running the binary I just built", which a commit date cannot do for a dirty tree - and a dirty
+# tree is exactly when the question gets asked.
+#
+# Note what this costs: the timestamp changes on every build, so the "only rewrite when the
+# contents change" guard at the bottom of this file now always rewrites, recompiling version.cpp
+# and relinking pixet, pixet-index and the tests. Measured before accepting it - a no-op build
+# goes from 0.25s to 1.53s. That 1.3s is worth paying for a build id that can actually
+# distinguish two builds of the same source.
+string(TIMESTAMP PIXET_BUILD_TIME "%Y-%m-%d %H:%M")
 
 if(GIT_FOUND)
     execute_process(
@@ -34,6 +44,7 @@ if(GIT_FOUND)
 
     if(_rc EQUAL 0 AND NOT _hash STREQUAL "")
         set(PIXET_GIT_COMMIT "${_hash}")
+
 
         # --untracked-files=no is deliberate: an untracked scratch file sitting in the tree
         # doesn't change what got compiled, and counting it would leave every build
@@ -56,7 +67,8 @@ set(_content
 "// Generated at build time by cmake/GitVersion.cmake - do not edit, and do not commit.\n\
 #pragma once\n\
 #define PIXET_GIT_COMMIT \"${PIXET_GIT_COMMIT}\"\n\
-#define PIXET_GIT_DIRTY ${PIXET_GIT_DIRTY}\n")
+#define PIXET_GIT_DIRTY ${PIXET_GIT_DIRTY}\n\
+#define PIXET_BUILD_TIME \"${PIXET_BUILD_TIME}\"\n")
 
 set(_existing "")
 if(EXISTS "${OUTPUT_FILE}")
