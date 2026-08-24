@@ -31,6 +31,12 @@ class RawRenderer : public QObject {
     Q_OBJECT
 
 public:
+    // One instance for the whole application - same reasoning as
+    // BackgroundReconciler::shared(): this hunts the entire library for RAW files still on a
+    // fast embedded preview, so it is not per-window work, and a full demosaic render is far
+    // too expensive to be running N of concurrently.
+    static RawRenderer &shared();
+
     explicit RawRenderer(QObject *parent = nullptr);
     ~RawRenderer() override;
 

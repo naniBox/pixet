@@ -32,6 +32,14 @@ RawRenderer::~RawRenderer() {
     thread_.wait();
 }
 
+RawRenderer &RawRenderer::shared() {
+    // Leaked deliberately, like the profiler's singletons: worker threads are still running
+    // at static-destruction time and tearing this down from a static destructor races them.
+    // The process is exiting either way.
+    static RawRenderer *s = new RawRenderer();
+    return *s;
+}
+
 void RawRenderer::start() {
     QMetaObject::invokeMethod(this, &RawRenderer::renderNext, Qt::QueuedConnection);
 }

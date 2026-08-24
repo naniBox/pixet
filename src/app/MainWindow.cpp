@@ -52,6 +52,7 @@
 #include "DatabaseStatsDialog.h"
 #include "FileOpsWorker.h"
 #include "FolderIndexer.h"
+#include "WindowRegistry.h"
 #include "FolderTreeView.h"
 #include "FullscreenViewer.h"
 #include "HoverInfoWorker.h"
@@ -106,6 +107,11 @@ QModelIndex nextSiblingOrAunt(QFileSystemModel *model, const QModelIndex &idx) {
 
 MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent), resetLayout_(resetLayout) {
     setWindowTitle(QStringLiteral("pixet %1").arg(pixet::version()));
+    WindowRegistry::instance().add(this);
+    // Every window rebuilds its own Windows submenu when the set of windows changes, so
+    // opening or closing a window updates the list everywhere rather than only where it
+    // happened.
+    connect(&WindowRegistry::instance(), &WindowRegistry::changed, this, &MainWindow::rebuildWindowsMenu);
     resize(1280, 800);
 
     db_ = std::make_unique<pixet::Database>(pixet::indexDbPath(), pixet::thumbsDbPath(), false);
@@ -461,17 +467,24 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(folderIndexer_.get(), &FolderIndexer::indexFailed, this, &MainWindow::onIndexFailed);
     connect(folderIndexer_.get(), &FolderIndexer::finished, this, &MainWindow::onIndexerFinished);
 
-    backgroundReconciler_ = std::make_unique<BackgroundReconciler>();
-    connect(backgroundReconciler_.get(), &BackgroundReconciler::directoryChanged, this,
+    // Shared across every window rather than owned per-window - see
+    // BackgroundReconciler::shared(). Both sweep the whole library regardless of what any
+    // window is showing, so one instance per window would multiply that work by the window
+    // count. start() is idempotent enough to call again here (it just queues another
+    // beginLoop), but guarding on first use keeps the intent obvious.
+    static bool sharedServicesStarted = false;
+    connect(&BackgroundReconciler::shared(), &BackgroundReconciler::directoryChanged, this,
             &MainWindow::onBackgroundDirectoryChanged);
-    connect(this, &MainWindow::requestFullReindex, backgroundReconciler_.get(),
+    connect(this, &MainWindow::requestFullReindex, &BackgroundReconciler::shared(),
             &BackgroundReconciler::triggerFullSweepNow);
-    backgroundReconciler_->start();
-
-    rawRenderer_ = std::make_unique<RawRenderer>();
-    connect(rawRenderer_.get(), &RawRenderer::directoryChanged, this, &MainWindow::onBackgroundDirectoryChanged);
-    connect(this, &MainWindow::requestRawRenderPriority, rawRenderer_.get(), &RawRenderer::prioritize);
-    rawRenderer_->start();
+    connect(&RawRenderer::shared(), &RawRenderer::directoryChanged, this,
+            &MainWindow::onBackgroundDirectoryChanged);
+    connect(this, &MainWindow::requestRawRenderPriority, &RawRenderer::shared(), &RawRenderer::prioritize);
+    if (!sharedServicesStarted) {
+        sharedServicesStarted = true;
+        BackgroundReconciler::shared().start();
+        RawRenderer::shared().start();
+    }
 
     fileOps_ = std::make_unique<FileOpsWorker>();
     connect(this, &MainWindow::requestFileOpPreflight, fileOps_.get(), &FileOpsWorker::preflight);
@@ -506,6 +519,18 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // shortcuts after the editor closes, since QAction doesn't watch settings
     // itself.
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
+    // Cmd/Ctrl+N. On Windows a second window is just a second process, but macOS routes a
+    // second launch back into the running instance, so without this there is no way to get
+    // one at all - see WindowRegistry's class comment.
+    QAction *newWindowAction = fileMenu->addAction(QStringLiteral("New Window"), this, &MainWindow::onNewWindow);
+    newWindowAction->setShortcut(QKeySequence::New);
+    // MenuRole matters on macOS: without an explicit non-default role Qt's text heuristics can
+    // relocate an item into the application menu, and "New Window" belongs in File.
+    newWindowAction->setMenuRole(QAction::NoRole);
+    QAction *closeWindowAction = fileMenu->addAction(QStringLiteral("Close Window"), this, &QWidget::close);
+    closeWindowAction->setShortcut(QKeySequence::Close);
+    closeWindowAction->setMenuRole(QAction::NoRole);
+    fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("Choose Folder..."), this, &MainWindow::onChooseFolder);
 
     // Select All uses a fixed QKeySequence::StandardKey rather than the configurable
@@ -548,11 +573,29 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     hoverInfoAction_->setCheckable(true);
     hoverInfoAction_->setChecked(prefs::hoverInfoEnabled());
 
+    // --- Windows: inline in this menu rather than a submenu, so the open windows are visible
+    // the moment View is opened instead of needing a second hover. A disabled action acts as
+    // the section heading; the entries themselves are inserted between it and
+    // windowSectionEnd_ by rebuildWindowsMenu(), which is the only reason that separator is
+    // held as a member - insertAction() needs something to insert *before*. ---
+    viewMenu->addSeparator();
+    viewMenu_ = viewMenu;
+    QAction *windowsHeader = viewMenu->addAction(QStringLiteral("Windows"));
+    windowsHeader->setEnabled(false);
+    // NoRole matters on macOS even for a disabled item: Qt's menu-role heuristics look at the
+    // text, and an item left at TextHeuristicRole can be relocated into the application menu.
+    windowsHeader->setMenuRole(QAction::NoRole);
+    windowSectionEnd_ = viewMenu->addSeparator();
+    // aboutToShow rather than only on WindowRegistry::changed(), so the checkmark and the
+    // folder paths are correct at the moment the menu opens - activation deliberately doesn't
+    // trigger a rebuild (see WindowRegistry::noteActivated()).
+    connect(viewMenu, &QMenu::aboutToShow, this, &MainWindow::rebuildWindowsMenu);
+    rebuildWindowsMenu();
+
     // --- Sort By: the QActions themselves were created earlier (see the comment by
     // sortKeyGroup's construction, above) - this just places the same objects into a
     // menu too, via addAction(QAction*) rather than the addAction(text, receiver,
     // slot) overload that would create new ones. ---
-    viewMenu->addSeparator();
     auto *sortMenu = viewMenu->addMenu(QStringLiteral("Sort By"));
     sortMenu->addAction(sortByNameAction_);
     sortMenu->addAction(sortByFileDateAction_);
@@ -675,9 +718,19 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     grid_->setFocus();
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+    // Unregister before any member is torn down: remove() emits changed(), every other window
+    // rebuilds its Windows submenu from it, and none of them must find a half-destroyed entry.
+    //
+    // Was `= default;` until multi-window - which is exactly how the first version of this got
+    // it wrong. A patch aimed at "the first brace after the destructor" landed in navigateTo()
+    // instead, so every folder change silently unregistered the window and the Windows list
+    // was permanently empty. The body has to be real for the call to have anywhere to live.
+    WindowRegistry::instance().remove(this);
+}
 
 void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRethumbnail) {
+
     QString normalized = normalizeForDb(path);
     if (normalized.isEmpty()) return;
 
@@ -708,6 +761,7 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
     // must not later resurrect a stale one.
     pendingSelectFileName_.clear();
     currentPath_ = normalized;
+    updateWindowTitle(); // the Windows submenu and the Dock/app-switcher label track the folder
     navSettleTimer_.restart(); // bounds how long onTreeDirectoryLoaded() keeps chasing this row - see its member comment
     navThumbTimer_.restart(); // see navThumbTimer_'s member comment
     navThumbsRequested_.clear();
@@ -1898,6 +1952,94 @@ void MainWindow::onNavThumbReady(qint64 fileId, QPixmap /*pixmap*/) {
     if (navThumbsReceived_.size() >= navThumbsRequested_.size()) navAllThumbsMs_ = navThumbTimer_.elapsed();
 }
 
+void MainWindow::onNewWindow() {
+    // Opens on the folder this window is showing rather than the persisted lastDirectory: the
+    // reason to want a second window is almost always to compare something against what is
+    // already on screen, and starting from here makes that one navigation instead of two.
+    WindowRegistry::instance().createWindow(currentPath_);
+}
+
+void MainWindow::rebuildWindowsMenu() {
+    if (!viewMenu_ || !windowSectionEnd_) return;
+
+    // Only the entries this function put there last time - the rest of the View menu (Refresh,
+    // Hover Info, Sort By...) is built once in the constructor and must survive untouched.
+    for (QAction *stale : windowSectionActions_) {
+        viewMenu_->removeAction(stale);
+        delete stale;
+    }
+    windowSectionActions_.clear();
+
+    // Registry order, which is creation order - deliberately not sorted by name or recency, so
+    // an entry doesn't move out from under the cursor between one opening of the menu and the
+    // next.
+    for (MainWindow *w : WindowRegistry::instance().windows()) {
+        QAction *act = new QAction(w->windowMenuLabel(), viewMenu_);
+        act->setCheckable(true);
+        act->setChecked(w == this);
+        act->setMenuRole(QAction::NoRole);
+        // Receiver is `w`, so Qt drops the connection if that window is destroyed - and the
+        // registry removes a window before its destructor runs anyway, which rebuilds this
+        // list. Both together mean an entry for a dead window can't be left behind and clicked.
+        connect(act, &QAction::triggered, w, [w]() {
+            // Both calls are needed: a minimised window has to be un-minimised before it can
+            // be raised, and on macOS raise() alone does not move keyboard focus.
+            if (w->isMinimized()) w->showNormal();
+            w->raise();
+            w->activateWindow();
+        });
+        viewMenu_->insertAction(windowSectionEnd_, act);
+        windowSectionActions_.push_back(act);
+    }
+}
+
+QString MainWindow::windowMenuLabel() const {
+    if (currentPath_.isEmpty()) return QStringLiteral("pixet");
+
+    // Split on '/' rather than the native separator: currentPath_ has been through
+    // normalizeForDb(), so it is forward-slashed on Windows too, and this is the same form the
+    // path bar displays.
+    const QStringList parts = currentPath_.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (parts.isEmpty()) return currentPath_; // a filesystem root ("/") has no components
+
+    // The folder and its parent are always shown in full, however long that makes the label.
+    // Two windows deep in the same tree are frequently distinguishable *only* by the parent -
+    // "media" and "media" tells you nothing, "20260309_jakarta/media" does - so eliding either
+    // of them would defeat the point of putting a path here at all.
+    int first = qMax(0, parts.size() - 2);
+    QString label = QStringList(parts.mid(first)).join(QLatin1Char('/'));
+
+    // Then keep taking further ancestors for as long as they fit the budget. Grown one whole
+    // component at a time rather than by trimming characters, so the label is always a run of
+    // real directory names and never a half-word.
+    while (first > 0) {
+        const QString wider = QStringList(parts.mid(first - 1)).join(QLatin1Char('/'));
+        if (wider.size() > kWindowMenuLabelChars) break;
+        label = wider;
+        --first;
+    }
+    return label;
+}
+
+QString MainWindow::windowLeafName() const {
+    if (currentPath_.isEmpty()) return QString();
+    QString name = QFileInfo(currentPath_).fileName();
+    // Empty at a filesystem root ("/" on macOS, "C:/" on Windows), where fileName() has
+    // nothing to return - same drive-root fallback addBookmark() uses.
+    return name.isEmpty() ? currentPath_ : name;
+}
+
+void MainWindow::updateWindowTitle() {
+    // Folder first so the window is identifiable from the Dock, the app switcher and the
+    // Windows submenu, all of which truncate from the right.
+    if (currentPath_.isEmpty()) {
+        setWindowTitle(QStringLiteral("pixet %1").arg(pixet::version()));
+    } else {
+        setWindowTitle(QStringLiteral("%1 - pixet").arg(windowLeafName()));
+    }
+    WindowRegistry::instance().titlesChanged();
+}
+
 void MainWindow::onCopyProfileReport() {
     // Also written to stderr, because the interesting runs are usually launched from a
     // terminal and having it only on the clipboard means alt-tabbing to paste it somewhere.
@@ -2164,11 +2306,30 @@ void MainWindow::nukeDatabase() {
 }
 
 void MainWindow::saveWindowState() {
+    // With several windows open these preferences are single-valued and every window would
+    // write them - on its own close, and again for all of them on aboutToQuit - so the
+    // surviving values would be whichever window happened to be signalled last. Restricting
+    // the write to the most recently activated window makes it deterministic and matches what
+    // "restore what I was last looking at" should mean.
+    //
+    // Note the window being closed is still registered at this point (closeEvent runs before
+    // the destructor's remove()), so closing the active window correctly saves its own state.
+    if (WindowRegistry::instance().lastActive() != this) return;
+
     QSettings settings = prefs::settingsStore();
     settings.setValue(QStringLiteral("windowGeometry"), saveGeometry());
     settings.setValue(QStringLiteral("mainSplitterState"), splitter_->saveState());
     settings.setValue(QStringLiteral("topSplitterState"), topSplitter_->saveState());
     settings.setValue(QStringLiteral("leftSplitterState"), leftSplitter_->saveState());
+}
+
+void MainWindow::changeEvent(QEvent *event) {
+    // Feeds WindowRegistry::lastActive(), which decides which window's geometry is persisted
+    // and where a macOS FileOpen event is delivered.
+    if (event->type() == QEvent::ActivationChange && isActiveWindow()) {
+        WindowRegistry::instance().noteActivated(this);
+    }
+    QMainWindow::changeEvent(event);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
@@ -2182,6 +2343,10 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     if (event->type() == QEvent::MouseButtonPress) {
         Qt::MouseButton button = static_cast<QMouseEvent *>(event)->button();
         if (button == Qt::BackButton || button == Qt::ForwardButton) {
+            // Every window installs this filter on the *application*, so with two windows
+            // open a single back-button click arrives here once per window. Without this
+            // guard one click would navigate every open window at once.
+            if (!isActiveWindow()) return false;
             // Not while the fullscreen viewer is up: there, "back" reads as the previous
             // image, and silently changing folders underneath it would be worse than doing
             // nothing. Left unhandled rather than repurposed - image navigation already has
