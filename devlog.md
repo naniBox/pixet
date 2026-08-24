@@ -14,8 +14,34 @@ that never mattered - a second window is a second process - but macOS routes a s
 back into the running instance (`open -a`, the Dock, Finder all do), so there was no way to
 get one at all.
 
+The window list sits **inline in the View menu** under a disabled "Windows" heading, not in a
+submenu - the open windows should be visible the moment View opens, not after a second hover.
+Entries are inserted between that heading and a separator kept as a member, since
+`insertAction()` needs a fixed anchor; each rebuild deletes exactly what the last one added so
+the rest of the View menu is untouched.
+
+Each entry carries **path context**, because a bare folder name is frequently useless - two
+windows both showing a folder called `media` are indistinguishable. The rule: the current
+folder and its parent are always shown in full however long that is (they are what actually
+tells two windows apart), then further ancestors are added while the total stays within 56
+characters, growing a whole component at a time so a label is never a half-word. Verified
+against every branch:
+
+| path | label | len |
+|---|---|---|
+| `/` | `/` | 1 |
+| `/Users/david.morris/data/photos` | `Users/david.morris/data/photos` | 30 |
+| `…/jakarta/20260309_jakarta/media` | `david.morris/data/field/jakarta/20260309_jakarta/media` | 54 |
+| `…/20250318_jakarta/2025-03-18_Cabin_Hardware` | `field/jakarta/20250318_jakarta/2025-03-18_Cabin_Hardware` | **56** |
+| a 90-char parent/child pair | shown in full, no ancestors | 90 |
+
+The 56 case lands exactly on the budget (the bound is inclusive); the 90 case is the
+documented exception. Window *titles* deliberately keep the short leaf name - the title bar,
+Dock and app switcher all truncate from the right, so the long form that helps in a menu is
+actively worse there.
+
 New `WindowRegistry` tracks open windows, hands out new ones, and emits `changed()` so every
-window rebuilds its own Windows submenu. New windows open on the *invoking* window's folder,
+window rebuilds its list. New windows open on the *invoking* window's folder,
 not the persisted `lastDirectory` - wanting a second window almost always means comparing
 against what is already on screen. They cascade off their parent so a new window isn't hidden
 exactly on top of it looking like nothing happened.
