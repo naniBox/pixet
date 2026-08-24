@@ -1,5 +1,12 @@
 <RCC>
     <qresource prefix="/">
         <file>pixet.ico</file>
+        <!-- PNG as well as the .ico, and the PNG is the one Qt code should use. PNG decoding
+             is compiled into QtGui; ICO is a runtime plugin (libqico), which
+             scripts/deploy-mac.sh prunes because this app decodes every image itself. So
+             QIcon(":/pixet.ico") silently yields a null icon in a deployed macOS bundle. The
+             .ico stays for pixet.rc, which is a native Win32 resource and doesn't involve Qt
+             at all. -->
+        <file>pixet.png</file>
     </qresource>
 </RCC>

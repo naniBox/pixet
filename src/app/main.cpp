@@ -73,10 +73,16 @@ int main(int argc, char *argv[]) {
     // but Windows does NOT also use that as the *running* window's icon (title bar,
     // taskbar, Alt+Tab) - Qt needs an explicit setWindowIcon() call for that. Loaded
     // from a Qt resource (icons.qrc) rather than a loose path so it doesn't depend
-    // on anything being deployed alongside the exe. Qt's ICO/BMP support is built
-    // directly into QtGui, not a runtime-discovered plugin, so this doesn't
-    // reintroduce the image-plugin dependency the macOS branch below avoids.
-    QApplication::setWindowIcon(QIcon(QStringLiteral(":/pixet.ico")));
+    // on anything being deployed alongside the exe.
+    //
+    // The PNG, not the .ico, and the comment here used to claim the opposite - that "Qt's
+    // ICO/BMP support is built directly into QtGui, not a runtime-discovered plugin". That is
+    // wrong: ICO is libqico, a plugin, which is why QIcon(":/pixet.ico") comes back null
+    // wherever imageformats isn't deployed (scripts/deploy-mac.sh prunes it deliberately - this
+    // app decodes every image itself). PNG really is compiled into QtGui, so this is the form
+    // that holds up everywhere. pixet.ico is still what pixet.rc stamps on the .exe, which is a
+    // native Win32 resource and never goes through Qt.
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/pixet.png")));
 #endif
     // No further setWindowIcon() call on macOS. The Dock/Finder icon comes from the
     // bundle's CFBundleIconFile (src/app/pixet.icns), and loading the same icon again
