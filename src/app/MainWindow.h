@@ -111,6 +111,9 @@ private slots:
     // sequence of steps that got me here right now."
     void onNavigateBack();
     void onNavigateForward();
+    // Up one directory (Alt+Up). Unlike back/forward this reads off currentPath_ rather than
+    // the history stack, so it is available even on the first folder of a session.
+    void onNavigateUp();
     void onEditSelectAll();
     void onEditCut();
     void onEditCopy();
@@ -269,6 +272,7 @@ private:
     // duplicating it between a button and a separate shortcut registration.
     QAction *backAction_;
     QAction *forwardAction_;
+    QAction *upAction_;
     // Plain linear back/forward stack over navigateTo() calls - every entry is a
     // normalized folder path, appended in recordNavHistory() (called from
     // navigateTo() unless navigatingViaHistory_ says a back/forward button is what's
@@ -431,6 +435,9 @@ private:
     mutable int staleCacheNeeded_ = 0;
     mutable int staleCacheValue_ = -1;
     void invalidateStaleCache();
+    // Parent of `path`, or empty when there isn't one (a filesystem root) - which is also how
+    // the Up button decides whether to be enabled.
+    QString parentDirectoryOf(const QString &path) const;
     // Short, human-identifiable name for this window - the current folder's leaf name, with
     // the full path as a fallback at a filesystem root where there is no leaf. Used for both
     // the window title and its View > Windows entry so the two always agree.

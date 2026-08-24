@@ -291,12 +291,23 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     forwardAction_->setEnabled(false);
     connect(forwardAction_, &QAction::triggered, this, &MainWindow::onNavigateForward);
 
+    // Up one directory. Alt+Up completes the Alt+Left/Alt+Right set and is the same binding
+    // Explorer and most file managers use; deliberately fixed rather than configurable, same
+    // reasoning as back/forward above.
+    upAction_ = new QAction(style()->standardIcon(QStyle::SP_ArrowUp), QStringLiteral("Up"), this);
+    upAction_->setShortcut(QKeySequence(QStringLiteral("Alt+Up")));
+    upAction_->setEnabled(false);
+    connect(upAction_, &QAction::triggered, this, &MainWindow::onNavigateUp);
+
     auto *backButton = new QToolButton(this);
     backButton->setDefaultAction(backAction_);
     backButton->setAutoRaise(true); // flat, address-bar-adjacent look rather than a raised push button
     auto *forwardButton = new QToolButton(this);
     forwardButton->setDefaultAction(forwardAction_);
     forwardButton->setAutoRaise(true);
+    auto *upButton = new QToolButton(this);
+    upButton->setDefaultAction(upAction_);
+    upButton->setAutoRaise(true);
 
     // --- Sort By: created here, before navRowLayout below (which needs valid QAction
     // pointers for the toolbar buttons) rather than down in the View menu setup, which
@@ -366,6 +377,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     navRowLayout->setContentsMargins(0, 0, 0, 0);
     navRowLayout->addWidget(backButton);
     navRowLayout->addWidget(forwardButton);
+    navRowLayout->addWidget(upButton);
     navRowLayout->addWidget(pathBar_, /*stretch=*/1);
     // Sort button bar, right of the path bar (nothing after it has stretch, so these
     // stay pinned to the right edge). Same QAction objects as the View > Sort By
@@ -937,8 +949,41 @@ void MainWindow::recordNavHistory(const QString &path) {
 }
 
 void MainWindow::updateNavButtonsEnabled() {
-    backAction_->setEnabled(navHistoryIndex_ > 0);
-    forwardAction_->setEnabled(navHistoryIndex_ >= 0 && navHistoryIndex_ < navHistory_.size() - 1);
+    const bool canBack = navHistoryIndex_ > 0;
+    const bool canForward = navHistoryIndex_ >= 0 && navHistoryIndex_ < navHistory_.size() - 1;
+    backAction_->setEnabled(canBack);
+    forwardAction_->setEnabled(canForward);
+
+    // Tooltips name the actual destination rather than repeating the button's own label, which
+    // told you nothing you couldn't already see. Where these go is in-memory history, so it
+    // isn't guessable from the path bar the way Up is - "Back" is the one button whose target
+    // genuinely needs stating.
+    //
+    // The plain label is kept as the fallback for a disabled button: some styles still show a
+    // tooltip on one, and a stale path pointing somewhere you can no longer go would be worse
+    // than no path at all.
+    backAction_->setToolTip(canBack ? navHistory_[navHistoryIndex_ - 1] : QStringLiteral("Back"));
+    forwardAction_->setToolTip(canForward ? navHistory_[navHistoryIndex_ + 1] : QStringLiteral("Forward"));
+
+    const QString parent = parentDirectoryOf(currentPath_);
+    upAction_->setEnabled(!parent.isEmpty());
+    upAction_->setToolTip(parent.isEmpty() ? QStringLiteral("Up") : parent);
+}
+
+QString MainWindow::parentDirectoryOf(const QString &path) const {
+    if (path.isEmpty()) return {};
+    QDir dir(path);
+    // False at a filesystem root, which is exactly when Up should be disabled.
+    if (!dir.cdUp()) return {};
+    const QString parent = normalizeForDb(dir.absolutePath());
+    // Belt and braces: if cdUp() ever succeeds without actually moving (a path that normalises
+    // onto itself), treat it as "no parent" rather than offering a no-op navigation.
+    return parent == normalizeForDb(path) ? QString() : parent;
+}
+
+void MainWindow::onNavigateUp() {
+    const QString parent = parentDirectoryOf(currentPath_);
+    if (!parent.isEmpty()) navigateTo(parent);
 }
 
 void MainWindow::onNavigateBack() {
