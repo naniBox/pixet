@@ -2,6 +2,7 @@
 
 #include <QElapsedTimer>
 #include <QImage>
+#include <QList>
 #include <QMainWindow>
 #include <QPixmap>
 #include <QSet>
@@ -433,10 +434,21 @@ private:
     // Short, human-identifiable name for this window - the current folder's leaf name, with
     // the full path as a fallback at a filesystem root where there is no leaf. Used for both
     // the window title and its View > Windows entry so the two always agree.
+    // How long a View-menu window entry is allowed to get. The current folder and its parent
+    // are always shown in full even when that alone exceeds this - see windowMenuLabel().
+    static constexpr int kWindowMenuLabelChars = 56;
     QString windowMenuLabel() const;
+    // Just the current folder's name, for the window title - the Dock, the app switcher and
+    // the window title bar all truncate from the right, so the long contextual form used in
+    // the View menu would be actively worse there.
+    QString windowLeafName() const;
     void updateWindowTitle();
-    // Owned by the menu bar; held because its contents are rebuilt as windows come and go.
-    QMenu *windowsMenu_ = nullptr;
+    // The View menu itself, plus the separator that closes the Windows section. The window
+    // entries live inline in View (not a submenu), so rebuilding them means inserting before
+    // a fixed anchor and deleting exactly what was added last time - hence all three members.
+    QMenu *viewMenu_ = nullptr;
+    QAction *windowSectionEnd_ = nullptr;
+    QList<QAction *> windowSectionActions_;
     QString pendingPreviewPath_;
     int pendingPreviewFmt_ = 0;
     qint64 previewRequestCounter_ = 0;

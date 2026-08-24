@@ -573,20 +573,29 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     hoverInfoAction_->setCheckable(true);
     hoverInfoAction_->setChecked(prefs::hoverInfoEnabled());
 
+    // --- Windows: inline in this menu rather than a submenu, so the open windows are visible
+    // the moment View is opened instead of needing a second hover. A disabled action acts as
+    // the section heading; the entries themselves are inserted between it and
+    // windowSectionEnd_ by rebuildWindowsMenu(), which is the only reason that separator is
+    // held as a member - insertAction() needs something to insert *before*. ---
+    viewMenu->addSeparator();
+    viewMenu_ = viewMenu;
+    QAction *windowsHeader = viewMenu->addAction(QStringLiteral("Windows"));
+    windowsHeader->setEnabled(false);
+    // NoRole matters on macOS even for a disabled item: Qt's menu-role heuristics look at the
+    // text, and an item left at TextHeuristicRole can be relocated into the application menu.
+    windowsHeader->setMenuRole(QAction::NoRole);
+    windowSectionEnd_ = viewMenu->addSeparator();
+    // aboutToShow rather than only on WindowRegistry::changed(), so the checkmark and the
+    // folder paths are correct at the moment the menu opens - activation deliberately doesn't
+    // trigger a rebuild (see WindowRegistry::noteActivated()).
+    connect(viewMenu, &QMenu::aboutToShow, this, &MainWindow::rebuildWindowsMenu);
+    rebuildWindowsMenu();
+
     // --- Sort By: the QActions themselves were created earlier (see the comment by
     // sortKeyGroup's construction, above) - this just places the same objects into a
     // menu too, via addAction(QAction*) rather than the addAction(text, receiver,
     // slot) overload that would create new ones. ---
-    viewMenu->addSeparator();
-    // Populated by rebuildWindowsMenu(), kept as a member because the contents change as
-    // windows open, close and navigate. aboutToShow rather than only on registry changes so
-    // the checkmark for "this window" and the folder names are correct at the moment it opens
-    // - activation alone deliberately doesn't trigger a rebuild (see noteActivated()).
-    windowsMenu_ = viewMenu->addMenu(QStringLiteral("Windows"));
-    connect(windowsMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildWindowsMenu);
-    rebuildWindowsMenu();
-
-    viewMenu->addSeparator();
     auto *sortMenu = viewMenu->addMenu(QStringLiteral("Sort By"));
     sortMenu->addAction(sortByNameAction_);
     sortMenu->addAction(sortByFileDateAction_);
@@ -1951,35 +1960,71 @@ void MainWindow::onNewWindow() {
 }
 
 void MainWindow::rebuildWindowsMenu() {
-    if (!windowsMenu_) return;
-    windowsMenu_->clear();
+    if (!viewMenu_ || !windowSectionEnd_) return;
 
-    const QList<MainWindow *> &all = WindowRegistry::instance().windows();
-    for (MainWindow *w : all) {
-        // Folder name, not the full path - the full path is long enough to make the menu
-        // unusable, and the same eliding argument the status bar row already makes applies.
-        QString label = w->windowMenuLabel();
-        QAction *act = windowsMenu_->addAction(label);
+    // Only the entries this function put there last time - the rest of the View menu (Refresh,
+    // Hover Info, Sort By...) is built once in the constructor and must survive untouched.
+    for (QAction *stale : windowSectionActions_) {
+        viewMenu_->removeAction(stale);
+        delete stale;
+    }
+    windowSectionActions_.clear();
+
+    // Registry order, which is creation order - deliberately not sorted by name or recency, so
+    // an entry doesn't move out from under the cursor between one opening of the menu and the
+    // next.
+    for (MainWindow *w : WindowRegistry::instance().windows()) {
+        QAction *act = new QAction(w->windowMenuLabel(), viewMenu_);
         act->setCheckable(true);
         act->setChecked(w == this);
-        // Captured raw rather than through a QPointer because the registry removes a window
-        // before it is destroyed and the menu is rebuilt from that same signal, so an entry
-        // for a dead window can't be left behind to be clicked.
+        act->setMenuRole(QAction::NoRole);
+        // Receiver is `w`, so Qt drops the connection if that window is destroyed - and the
+        // registry removes a window before its destructor runs anyway, which rebuilds this
+        // list. Both together mean an entry for a dead window can't be left behind and clicked.
         connect(act, &QAction::triggered, w, [w]() {
-            // Both calls are needed: a minimised window needs un-minimising before raising,
-            // and on macOS raise() alone does not move keyboard focus.
+            // Both calls are needed: a minimised window has to be un-minimised before it can
+            // be raised, and on macOS raise() alone does not move keyboard focus.
             if (w->isMinimized()) w->showNormal();
             w->raise();
             w->activateWindow();
         });
+        viewMenu_->insertAction(windowSectionEnd_, act);
+        windowSectionActions_.push_back(act);
     }
-    windowsMenu_->setEnabled(!all.isEmpty());
 }
 
 QString MainWindow::windowMenuLabel() const {
     if (currentPath_.isEmpty()) return QStringLiteral("pixet");
+
+    // Split on '/' rather than the native separator: currentPath_ has been through
+    // normalizeForDb(), so it is forward-slashed on Windows too, and this is the same form the
+    // path bar displays.
+    const QStringList parts = currentPath_.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (parts.isEmpty()) return currentPath_; // a filesystem root ("/") has no components
+
+    // The folder and its parent are always shown in full, however long that makes the label.
+    // Two windows deep in the same tree are frequently distinguishable *only* by the parent -
+    // "media" and "media" tells you nothing, "20260309_jakarta/media" does - so eliding either
+    // of them would defeat the point of putting a path here at all.
+    int first = qMax(0, parts.size() - 2);
+    QString label = QStringList(parts.mid(first)).join(QLatin1Char('/'));
+
+    // Then keep taking further ancestors for as long as they fit the budget. Grown one whole
+    // component at a time rather than by trimming characters, so the label is always a run of
+    // real directory names and never a half-word.
+    while (first > 0) {
+        const QString wider = QStringList(parts.mid(first - 1)).join(QLatin1Char('/'));
+        if (wider.size() > kWindowMenuLabelChars) break;
+        label = wider;
+        --first;
+    }
+    return label;
+}
+
+QString MainWindow::windowLeafName() const {
+    if (currentPath_.isEmpty()) return QString();
     QString name = QFileInfo(currentPath_).fileName();
-    // Empty for a filesystem root ("/" on macOS, "C:/" on Windows), where fileName() has
+    // Empty at a filesystem root ("/" on macOS, "C:/" on Windows), where fileName() has
     // nothing to return - same drive-root fallback addBookmark() uses.
     return name.isEmpty() ? currentPath_ : name;
 }
@@ -1990,7 +2035,7 @@ void MainWindow::updateWindowTitle() {
     if (currentPath_.isEmpty()) {
         setWindowTitle(QStringLiteral("pixet %1").arg(pixet::version()));
     } else {
-        setWindowTitle(QStringLiteral("%1 - pixet").arg(windowMenuLabel()));
+        setWindowTitle(QStringLiteral("%1 - pixet").arg(windowLeafName()));
     }
     WindowRegistry::instance().titlesChanged();
 }
