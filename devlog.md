@@ -5,6 +5,65 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-24 — mac — Up button, nav tooltips, About box rework, build timestamp
+
+Four small things, one of which turned out to be a real bug.
+
+**Up button** beside back/forward, Alt+Up. Reads off `currentPath_` rather than the history
+stack, so unlike back/forward it works on the first folder of a session; disabled only at a
+filesystem root, which is what `QDir::cdUp()` returning false already means.
+`updateNavButtonsEnabled()` now also runs from `navigateTo()`, since Up depends on the current
+path rather than the stack and so has to refresh on navigations that never touch history.
+
+**Back/forward tooltips name their destination** instead of repeating the button label. Worth
+it for these two specifically because their target comes from in-memory history and isn't
+guessable from anything on screen - unlike Up's, which is just the path bar minus a component.
+The plain label stays as the disabled-state fallback; a stale path pointing somewhere you can
+no longer go is worse than none.
+
+**About box** is a real `QDialog` now rather than `QMessageBox::about()`, which shows text and
+nothing else. Gains the app icon, the settings path next to the cache path (new
+`prefs::settingsFilePath()`), an "Open Settings Folder" button, a link to the repo, and the
+build timestamp. Both paths are selectable, which is most of why anyone opens it.
+
+Two details that would otherwise be re-learned: `QMessageBox` can't host a hyperlink without
+`findChild()` on an internal object name, and a `QLabel` needs *both*
+`TextBrowserInteraction` (clickable, selectable) and `openExternalLinks` (actually hands the
+URL to the browser) - one without the other silently does nothing.
+
+### `QIcon(":/pixet.ico")` has been returning null
+
+Found while adding the icon. `main.cpp` loaded the window icon from the compiled-in `.ico`,
+with a comment asserting that *"Qt's ICO/BMP support is built directly into QtGui, not a
+runtime-discovered plugin, so this doesn't reintroduce the image-plugin dependency the macOS
+branch below avoids."*
+
+That is simply wrong. **ICO is `libqico`, a plugin** - it sits in Qt's `imageformats` directory
+next to `libqjpeg` and `libqsvg`, the very directory `scripts/deploy-mac.sh` prunes because
+this app decodes every image through its own codecs. So the icon was null in every deployed
+macOS bundle, and in a plain dev build too. Loading both side by side: the PNG yields a 72x72
+pixmap, the `.ico` yields `QSize(0, 0)`.
+
+PNG decoding *is* compiled into QtGui, so `pixet.png` (from `pixet.icns` via `sips`) is now
+what Qt code uses. `pixet.ico` stays for `pixet.rc`, which stamps the `.exe` as a native Win32
+resource and never involves Qt. Worth remembering the shape of this one: the comment was
+confident, specific, and load-bearing, and had been wrong since it was written.
+
+### Build timestamp, and what it costs
+
+`gitCommit()` can't identify a binary once the tree is dirty - and "(modified)" is displayed
+exactly then, so the hash describes any number of builds. `buildTime()` closes that.
+
+The cost is real and is called out because `cmake/GitVersion.cmake` carries a comment about
+avoiding precisely this: a timestamp changes every build, so the "only rewrite the header when
+its contents change" guard now always rewrites, recompiling `version.cpp` and relinking
+`pixet`, `pixet-index` and the tests. **Measured before accepting: a no-op build goes 0.25s ->
+1.53s.** 1.3s for a build id that can distinguish two builds of the same source is a good
+trade. A commit date would have cost nothing and cannot do that at all, which is why it was
+tried and rejected rather than shipped.
+
+---
+
 ## 2026-08-16 — mac — Multiple windows (`feature/multi-window`)
 
 `File > New Window` (Cmd+N), `Close Window` (Cmd+W), and `View > Windows` listing every open
