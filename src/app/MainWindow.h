@@ -193,6 +193,14 @@ private slots:
     void onNavThumbReady(qint64 fileId, QPixmap pixmap);
     void onThumbsProgress(QString path);
     void onIndexerFinished(QString path);
+    // Tells FolderIndexer which files to thumbnail first: the ones the grid currently
+    // has on screen, plus a screenful either side. Pass B's own order is readdir order,
+    // which has nothing to do with the grid's sort, so without this a cold folder
+    // generates 1280 thumbnails somewhere else in the list while the ~18 cells the user
+    // is actually looking at stay empty. Fired on every scroll/resize/reload (see
+    // ThumbGridView::visibleRowsChanged), so the queue keeps tracking the viewport
+    // rather than being set once per navigation.
+    void pushGridPriorityToIndexer();
     void onIndexFailed(QString path, QString message);
     void onPreviewReady(qint64 requestId, QImage image);
     void triggerPreviewRequest();

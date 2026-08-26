@@ -2,9 +2,10 @@
 
 #include "../util/Profile.h"
 
+#include <algorithm>
 #include <future>
+#include <limits>
 #include <thread>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -42,6 +43,38 @@ struct ExistingFile {
     int64_t size;
     int64_t thumbId; // 0 = none
 };
+
+// One file in a directory still waiting for a thumbnail. Pass B holds these in the
+// order the work will be done, which IndexCallbacks::onWantFirst is allowed to reorder.
+struct PendingRow {
+    int64_t fileId;
+    std::string name;
+    int64_t existingThumbId; // 0 = none
+};
+
+// Moves `wanted`'s file ids to the front of pending[from, end), in the order given,
+// leaving everything else in its existing relative order behind them. Ids that aren't
+// in that range are ignored - see IndexCallbacks::onWantFirst on why that's the
+// contract rather than an error.
+//
+// stable_sort rather than a partition because it does both halves of the job at once:
+// the wanted ids come out ordered by the caller's own ranking, and everything else
+// keeps the order it already had. Duplicate ids in `wanted` keep their first (highest)
+// rank, so a caller repeating one costs nothing.
+void movePendingToFront(std::vector<PendingRow> &pending, size_t from, const std::vector<int64_t> &wanted) {
+    if (wanted.empty() || from >= pending.size()) return;
+
+    std::unordered_map<int64_t, size_t> rank;
+    rank.reserve(wanted.size());
+    for (size_t i = 0; i < wanted.size(); ++i) rank.emplace(wanted[i], i);
+
+    auto rankOf = [&rank](const PendingRow &p) {
+        auto it = rank.find(p.fileId);
+        return it == rank.end() ? std::numeric_limits<size_t>::max() : it->second;
+    };
+    std::stable_sort(pending.begin() + (std::ptrdiff_t)from, pending.end(),
+                      [&rankOf](const PendingRow &a, const PendingRow &b) { return rankOf(a) < rankOf(b); });
+}
 
 struct PendingThumb {
     int64_t fileId;
@@ -249,13 +282,13 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
     pendingSql += ")";
 
     PIXET_PROF_SCOPE("idx.passB");
-    std::vector<std::tuple<int64_t, std::string, int64_t>> pending; // (fileId, name, existingThumbId)
+    std::vector<PendingRow> pending;
     {
         auto sel = db_.prepare(pendingSql);
         sel.bind(1, dirId);
         while (sel.step()) {
             int64_t existingThumbId = sel.columnIsNull(3) ? 0 : sel.columnInt64(3);
-            pending.emplace_back(sel.columnInt64(0), sel.columnText(1), existingThumbId);
+            pending.push_back({sel.columnInt64(0), sel.columnText(1), existingThumbId});
         }
     }
 
@@ -346,33 +379,64 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
         if (callbacks.onProgress) callbacks.onProgress(stats);
     };
 
-    // Each chunk's generateThumb() calls are submitted to pool_ concurrently and
-    // collected before this directory's usual flushBatch()/progress/heartbeat cadence
-    // runs - see ThreadPool.h. Chunk size is kBatchSize normally, or capped to the pool's own
-    // thread count for a --render-raws run. A real demosaic decode is slow enough that
-    // batching 63 more in before reporting progress defeats wanting to *watch* a large RAW
-    // folder render rather than wait for it in one lump, so a "wave" the size of the pool is
-    // the right granularity there - everything in it finishes at roughly the same time
-    // anyway. Applied
-    // to the whole chunk once renderRaws is set, not per-item file format (a
-    // --render-raws run's pending list can still include ordinary new JPEGs) - a
-    // little extra, still-cheap transaction overhead on those beats reasoning about
-    // per-item chunk boundaries under concurrent dispatch.
-    size_t chunkCap =
-        opts_.renderRaws ? std::max<size_t>(1, std::min(kBatchSize, resolveThreadCount(opts_.threadCount))) : kBatchSize;
+    // Pass B dispatches in *waves* and commits in *batches*, and those are two
+    // different sizes for two different reasons.
+    //
+    // A wave is how many generateThumb() calls are in flight at once - they're
+    // submitted to pool_ concurrently and collected together (see ThreadPool.h). It is
+    // also how often onWantFirst gets re-asked, since a wave boundary is the only point
+    // at which the remaining work can be reordered. So with that hook installed a wave
+    // is the pool's own thread count: the smallest wave that still keeps every thread
+    // busy, and therefore the tightest the queue can track a scrolling grid. With no
+    // hook there is nothing to re-ask and nothing to reorder, so a wave is simply a
+    // whole batch.
+    //
+    // A batch is how many results go into one transaction. Commits aren't free, so this
+    // stays at kBatchSize however small the waves get. --render-raws is the deliberate
+    // exception and commits every wave: a real demosaic decode is slow enough that
+    // batching 63 more in before reporting progress would defeat wanting to *watch* a
+    // large RAW folder render rather than wait for it in one lump. That's applied to the
+    // whole run once renderRaws is set, not per-item file format (a --render-raws run's
+    // pending list can still include ordinary new JPEGs) - a little extra, still-cheap
+    // transaction overhead on those beats reasoning about per-item batch boundaries
+    // under concurrent dispatch.
+    const size_t poolWave = std::max<size_t>(1, std::min(kBatchSize, resolveThreadCount(opts_.threadCount)));
+    const size_t waveCap = (opts_.renderRaws || callbacks.onWantFirst) ? poolWave : kBatchSize;
+    const size_t flushAfter = opts_.renderRaws ? 1 : kBatchSize;
 
-    for (size_t chunkStart = 0; chunkStart < pending.size(); chunkStart += chunkCap) {
-        size_t chunkEnd = std::min(pending.size(), chunkStart + chunkCap);
+    // The last answer onWantFirst gave. Re-sorting the remaining work when nothing has
+    // moved is pure overhead - on a 1280-file folder with 8-wide waves that would be
+    // ~160 sorts of ~1300 rows each - and the answer only changes when the user scrolls,
+    // which is rare next to a wave. Skipping is safe because sorting [from, end) and
+    // then advancing `from` leaves the rest of the range already in the order asked for.
+    std::vector<int64_t> lastWanted;
+
+    for (size_t waveStart = 0; waveStart < pending.size(); waveStart += waveCap) {
+        // Asked *before* dispatching, first wave included - the whole point is that a
+        // cold folder's first wave is the screenful the user is looking at, not whatever
+        // readdir happened to return first.
+        if (callbacks.onWantFirst) {
+            std::vector<int64_t> remaining;
+            remaining.reserve(pending.size() - waveStart);
+            for (size_t j = waveStart; j < pending.size(); ++j) remaining.push_back(pending[j].fileId);
+
+            std::vector<int64_t> wanted = callbacks.onWantFirst(dirId, dirPath, remaining);
+            if (wanted != lastWanted) {
+                movePendingToFront(pending, waveStart, wanted);
+                lastWanted = std::move(wanted);
+            }
+        }
+
+        size_t waveEnd = std::min(pending.size(), waveStart + waveCap);
 
         std::vector<std::future<ThumbResult>> futures;
-        futures.reserve(chunkEnd - chunkStart);
-        for (size_t j = chunkStart; j < chunkEnd; ++j) {
-            const auto &name = std::get<1>(pending[j]);
-            Format fmt = classifyFormat(name);
+        futures.reserve(waveEnd - waveStart);
+        for (size_t j = waveStart; j < waveEnd; ++j) {
+            Format fmt = classifyFormat(pending[j].name);
             // Also forces a fresh (state=New) RAW file straight to a full render
             // during a --render-raws run - see IndexOptions::renderRaws.
             bool forceFullRender = opts_.renderRaws && fmt == Format::Raw;
-            std::string filePath = joinPath(dirPath, name);
+            std::string filePath = joinPath(dirPath, pending[j].name);
             int targetLongEdge = opts_.targetLongEdge;
             int quality = opts_.quality;
             futures.push_back(pool_.submit([filePath, fmt, targetLongEdge, quality, forceFullRender]() {
@@ -381,12 +445,11 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
             }));
         }
 
-        for (size_t j = chunkStart; j < chunkEnd; ++j) {
-            auto &[fileId, name, existingThumbId] = pending[j];
-            Format fmt = classifyFormat(name);
-            batch.push_back({fileId, fmt, existingThumbId, futures[j - chunkStart].get()});
+        for (size_t j = waveStart; j < waveEnd; ++j) {
+            const PendingRow &row = pending[j];
+            batch.push_back({row.fileId, classifyFormat(row.name), row.existingThumbId, futures[j - waveStart].get()});
         }
-        {
+        if (batch.size() >= flushAfter || waveEnd == pending.size()) {
             PIXET_PROF_SCOPE("idx.passB.flushBatch");
             flushBatch();
         }

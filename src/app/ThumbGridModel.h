@@ -73,6 +73,13 @@ public:
     // otherwise be tens of thousands of QVariant constructions per status-bar update.
     qint64 sizeForRows(const QList<int> &rows) const;
 
+    // File ids for rows [first, last] inclusive, in row (i.e. display) order. The range
+    // is clipped to what exists rather than validated, so a caller can ask for a
+    // screenful past either end without doing the arithmetic itself - which is exactly
+    // how MainWindow builds the indexer's priority hint (see
+    // FolderIndexer::setPriorityFiles). Empty if the range doesn't overlap any row.
+    QVector<qint64> fileIdsForRows(int first, int last) const;
+
     // True once setDirectory() has resolved a real dirs row - insertOrUpdateFileByName()/
     // removeFileById() are meaningless before that (there's nothing to query
     // against); callers should fall back to a full setDirectory() reload instead.

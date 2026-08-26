@@ -1,5 +1,7 @@
 #include "FolderIndexer.h"
 
+#include <QMutexLocker>
+
 #include "Preferences.h"
 #include "db/Database.h"
 #include "scan/Indexer.h"
@@ -15,6 +17,12 @@ FolderIndexer::FolderIndexer(QObject *parent) : QObject(parent) {
 FolderIndexer::~FolderIndexer() {
     thread_.quit();
     thread_.wait();
+}
+
+void FolderIndexer::setPriorityFiles(const QString &folderPath, QVector<qint64> fileIds) {
+    QMutexLocker lock(&priorityMutex_);
+    priorityPath_ = folderPath;
+    priorityIds_ = std::move(fileIds);
 }
 
 void FolderIndexer::indexFolder(QString path, bool force, bool forceRethumbnail) {
@@ -40,6 +48,17 @@ void FolderIndexer::indexFolder(QString path, bool force, bool forceRethumbnail)
     pixet::IndexCallbacks callbacks;
     callbacks.onFilesListed = [this, path](int64_t, const std::string &) { emit filesListed(path); };
     callbacks.onProgress = [this, path](const pixet::IndexStats &) { emit thumbsProgress(path); };
+    // Called on this worker thread once per Pass B wave. `remaining` is ignored: the
+    // grid's answer is "these are on screen", and the core already drops whatever isn't
+    // still pending, so there's nothing to intersect here. opts.recursive is false, so
+    // dirPath is always `path` - the folder check that matters is against the hint's own
+    // folder, which may be one the user has since navigated away from.
+    callbacks.onWantFirst = [this, path](int64_t, const std::string &,
+                                          const std::vector<int64_t> &) -> std::vector<int64_t> {
+        QMutexLocker lock(&priorityMutex_);
+        if (priorityPath_ != path) return {};
+        return std::vector<int64_t>(priorityIds_.begin(), priorityIds_.end());
+    };
 
     // Guarded for the same reason as BackgroundReconciler::sweepNext() - an exception on this
     // QThread has no handler above it and reaches std::terminate() - plus one specific to

@@ -52,7 +52,10 @@ ThumbGridView::ThumbGridView(QWidget *parent) : QAbstractScrollArea(parent) {
     // QAbstractScrollArea doesn't repaint automatically when the scrollbar value
     // changes (unlike QAbstractItemView, which this deliberately isn't) - painting reads
     // verticalScrollBar()->value() directly, so a scroll is a repaint.
-    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() { viewport()->update(); });
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+        viewport()->update();
+        emit visibleRowsChanged();
+    });
 
     // mouseMoveEvent only fires without a button held if mouse tracking is on - see
     // handleHoverMove(), the no-button branch of mouseMoveEvent().
@@ -117,6 +120,23 @@ QSize ThumbGridView::iconSize() const { return QSize(iconSize_, iconSize_); }
 
 int ThumbGridView::rowCount() const { return model_ ? model_->rowCount() : 0; }
 
+QPair<int, int> ThumbGridView::visibleRowRange() const {
+    int rc = rowCount();
+    if (rc <= 0 || columns_ <= 0 || cellHeight_ <= 0) return {-1, -1};
+
+    int scrollValue = verticalScrollBar()->value();
+    int firstGridRow = qMax(0, scrollValue / cellHeight_);
+    int lastGridRow = (scrollValue + viewport()->height()) / cellHeight_;
+
+    int first = firstGridRow * columns_;
+    // The last cell of lastGridRow, clamped to the last row that actually exists - the
+    // final grid row is usually partly empty, and scrolled to the bottom lastGridRow can
+    // be past the end entirely.
+    int last = qMin(rc - 1, lastGridRow * columns_ + columns_ - 1);
+    if (first > last) return {-1, -1};
+    return {first, last};
+}
+
 void ThumbGridView::relayout() {
     imageAreaHeight_ = prefs::thumbnailImageAreaHeightFor(iconSize_);
     cellHeight_ = kCellPadding + imageAreaHeight_ + kTextTopGap + kTextRowHeight + kCellPadding;
@@ -158,6 +178,10 @@ void ThumbGridView::relayout() {
     verticalScrollBar()->setSingleStep(cellHeight_);
 
     viewport()->update();
+    // Covers every trigger of relayout() that isn't a scroll: viewport resize, icon-size
+    // change, model reset, and incremental row insert/remove - all of which change which
+    // files are on screen even when the scroll position doesn't move.
+    emit visibleRowsChanged();
 }
 
 QRect ThumbGridView::contentRect(int row) const {
@@ -458,8 +482,13 @@ void ThumbGridView::paintEvent(QPaintEvent *event) {
 
     int rc = rowCount();
     int scrollValue = verticalScrollBar()->value();
-    int firstGridRow = qMax(0, scrollValue / cellHeight_);
-    int lastGridRow = (scrollValue + viewport()->height()) / cellHeight_;
+    const QPair<int, int> visible = visibleRowRange();
+    if (visible.first < 0) {
+        if (dragActive_) drawDropFeedback(painter);
+        return;
+    }
+    int firstGridRow = visible.first / columns_;
+    int lastGridRow = visible.second / columns_;
 
     for (int gridRow = firstGridRow; gridRow <= lastGridRow; ++gridRow) {
         for (int col = 0; col < columns_; ++col) {

@@ -3,6 +3,7 @@
 #include <QAbstractScrollArea>
 #include <QBitArray>
 #include <QList>
+#include <QPair>
 #include <QPoint>
 
 #include <memory>
@@ -116,6 +117,16 @@ public:
     // path bar) instead centers it directly, no nudging.
     void scrollToRow(int row, bool center = false);
 
+    // First and last model row currently intersecting the viewport, inclusive, or
+    // (-1, -1) when nothing is displayed. This is the same range paintEvent() draws -
+    // it derives its own loop bounds from this call rather than recomputing them, so
+    // "visible" can't come to mean two different things.
+    //
+    // Rows here are model rows, not grid rows: the first and last are the ends of a
+    // partially-visible row of cells, so the range is a little generous at both edges,
+    // which is what a caller prefetching against it wants anyway.
+    QPair<int, int> visibleRowRange() const;
+
     // TODO: debug-build-only would be the natural gating; in release too for now
     // (2026-08-11), see MainWindow::onCopyGridDebugInfo(). The two are always equal by
     // construction (see the class comment). Kept as two separate calls anyway so the debug
@@ -155,6 +166,13 @@ signals:
     // view can't build the drag payload itself (it only knows filenames, not the
     // folder path), so MainWindow constructs and exec()s the actual QDrag.
     void dragOutRequested();
+    // The set of rows visibleRowRange() would return may have changed - a scroll, a
+    // resize, an icon-size change, or a model reset. Deliberately not de-duplicated
+    // against the previous range: the receiver (MainWindow, telling the indexer which
+    // thumbnails to generate first) does trivial work per emission, and suppressing
+    // "same range" here would also suppress the case where the range is the same but
+    // the *rows* in it are different files, which is exactly what a model reset is.
+    void visibleRowsChanged();
     // Ctrl is held and the mouse moved onto a different cell than last reported (or
     // Ctrl was released, or the mouse left the grid, or moved over empty space) -
     // row is -1 for all of the latter cases, meaning "stop peeking, go back to
