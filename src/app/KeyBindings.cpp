@@ -125,7 +125,7 @@ const QList<QKeySequence> &reservedSequences() {
 bool matches(const QKeyEvent *event, const QKeySequence &seq) {
     if (seq.isEmpty()) return false;
     int key = event->key();
-    if (key == Qt::Key_Enter) key = Qt::Key_Return; // numpad Enter == Return, historical behavior
+    if (key == Qt::Key_Enter) key = Qt::Key_Return; // numpad Enter and Return are one key to a user
     Qt::KeyboardModifiers mods =
         event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
     QKeySequence pressed(key | mods);

@@ -117,10 +117,10 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     db_ = std::make_unique<pixet::Database>(pixet::indexDbPath(), pixet::thumbsDbPath(), false);
 
     // --- left panel: folder tree + bookmarks (top), preview (bottom, user-resizable) ---
-    // palette(mid) (previously used for both titles below) turned out to read as
-    // basically black on this app's dark theme - too close to the background to
-    // actually see. placeholder-text is Qt's actual semantic role for "muted but
-    // still legible" text.
+    // placeholder-text is Qt's semantic role for "muted but still legible" text, which is
+    // exactly what a section title wants. palette(mid) is the obvious-looking alternative
+    // and is wrong here: on this app's dark theme it resolves to near-black, too close to
+    // the background to actually see.
     auto makeSectionTitle = [](const QString &text, QWidget *parent) {
         auto *title = new QLabel(text, parent);
         title->setStyleSheet(QStringLiteral("color: palette(placeholder-text); font-weight: bold;"));
@@ -174,9 +174,9 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onTreeSelectionChanged);
     connect(fsModel_, &QFileSystemModel::directoryLoaded, this, &MainWindow::onTreeDirectoryLoaded);
 
-    // Wrapped with its own title now too, matching bookmarksPanel - previously
-    // considered self-explanatory next to a labeled list, but side by side the
-    // asymmetry read as a missing label rather than an intentional omission.
+    // Titled to match bookmarksPanel. A folder tree is self-explanatory on its own, but
+    // sitting side by side with a labeled list the asymmetry reads as a missing label
+    // rather than an intentional omission.
     auto *treePanel = new QWidget(this);
     auto *treePanelLayout = new QVBoxLayout(treePanel);
     treePanelLayout->setContentsMargins(0, 0, 0, 0);
@@ -196,11 +196,10 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     topSplitter_->setCollapsible(0, false);
     topSplitter_->setCollapsible(1, false);
 
-    // Preview used to be forced square (height pinned to match leftPanel_'s width on
-    // every resize - see git history). A real QSplitter handle lets the user pick
-    // whatever height they actually want instead - e.g. wide-but-short for a
-    // panorama, or tall for a portrait shot - and leftSplitterState below persists
-    // that choice the same way mainSplitterState/topSplitterState already do.
+    // A real QSplitter handle rather than a preview locked to a fixed aspect: the user
+    // picks whatever height actually suits the image - wide-but-short for a panorama, tall
+    // for a portrait shot - and leftSplitterState below persists that choice the same way
+    // mainSplitterState/topSplitterState do.
     leftSplitter_ = new QSplitter(Qt::Vertical, this);
     leftSplitter_->addWidget(topSplitter_);
     leftSplitter_->addWidget(preview_);
@@ -256,18 +255,17 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     pathBar_->setInsertPolicy(QComboBox::NoInsert); // history is only ever written via navigateTo(), never by typing
     pathBar_->setPlaceholderText(QStringLiteral("Path..."));
     refreshPathBarHistory();
-    // returnPressed lives on the combo's internal line edit, not the combo itself -
-    // fires for text typed/pasted directly, matching the old QLineEdit behavior
-    // exactly (an arbitrary path doesn't need to already be a history entry).
+    // returnPressed lives on the combo's internal line edit, not the combo itself. This is
+    // the path for text typed or pasted directly, so an arbitrary path submits without
+    // having to already be a history entry.
     connect(pathBar_->lineEdit(), &QLineEdit::returnPressed, this, &MainWindow::onPathBarReturnPressed);
     // Fires when a dropdown entry is actually picked (mouse click, or arrow keys +
     // Enter while the popup is open) - textActivated already updates currentText()
     // before this runs, so the same submit path applies.
     connect(pathBar_, &QComboBox::textActivated, this, &MainWindow::onPathBarHistoryActivated);
-    // select-all-on-focus is implemented in eventFilter() (QEvent::FocusIn) - that
-    // only fires because of this call, which got missed when the feature was
-    // originally added. Installed on the combo's actual line edit, since that's what
-    // receives keyboard focus (and therefore FocusIn) for an editable QComboBox, not
+    // select-all-on-focus is implemented in eventFilter() (QEvent::FocusIn), which only
+    // fires because of this call. Installed on the combo's actual line edit, since that's
+    // what receives keyboard focus (and therefore FocusIn) for an editable QComboBox, not
     // the QComboBox widget itself.
     pathBar_->lineEdit()->installEventFilter(this);
     // Application-wide, for the mouse's back/forward buttons (see eventFilter()). It has to
@@ -326,23 +324,23 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     auto addSortKeyAction = [&](const QString &text, prefs::SortKey key, sorticons::Kind icon) {
         QAction *a = new QAction(sorticons::make(icon, iconColor), text, this);
         a->setCheckable(true);
-        // Clicking the key that is *already* the active one flips the direction instead of
-        // being the no-op it used to be: an exclusive QActionGroup won't let a click uncheck
-        // its checked member, so re-triggering the active key previously recomputed the exact
-        // same sort and reordered nothing. Every file manager treats a second click on the
-        // active sort column as "reverse it", so that's what it does now.
+        // Clicking the key that is already active flips the direction, the way every file
+        // manager treats a second click on the active sort column. Without this the click
+        // would do nothing at all: an exclusive QActionGroup won't let a click uncheck its
+        // checked member, so re-triggering the active key just recomputes an identical sort.
         //
-        // This is why the key actions no longer share onSortOrderChanged() directly the way
-        // the reverse toggle still does - the flip has to know *which* key was clicked, and
-        // by the time the slot runs the QActionGroup has already moved the check mark, so
-        // there is nothing left to read that distinguishes "switched to Name" from "clicked
-        // Name again". prefs::gridSortKey() is still the pre-click key here (onSortOrderChanged()
-        // below is what writes the new one), which is exactly the comparison needed.
+        // This is why the key actions go through a lambda rather than connecting straight to
+        // onSortOrderChanged() the way the reverse toggle does: the flip has to know *which*
+        // key was clicked, and by the time the slot runs the QActionGroup has already moved
+        // the check mark, so nothing left to read distinguishes "switched to Name" from
+        // "clicked Name again". prefs::gridSortKey() is still the pre-click key here
+        // (onSortOrderChanged() below is what writes the new one), which is the comparison
+        // needed.
         //
         // setChecked() rather than toggle() to be explicit that no triggered() is re-emitted
         // from here - only toggled(), which nothing is connected to. Applies to the View >
         // Sort By submenu too, since these are the same QAction objects; picking the already
-        // ticked entry there reverses as well, which is consistent rather than surprising.
+        // ticked entry there reverses as well.
         connect(a, &QAction::triggered, this, [this, key] {
             if (key == prefs::gridSortKey())
                 sortReverseAction_->setChecked(!sortReverseAction_->isChecked());
@@ -458,9 +456,9 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
             if (!state.isEmpty()) leftSplitterRestored = leftSplitter_->restoreState(state);
         }
         if (!leftSplitterRestored) {
-            // Roughly matches the old forced-square look at a typical left-panel
-            // width, without actually forcing anything - just a reasonable first
-            // impression the user can immediately resize away from.
+            // First-run default: preview height set to the left panel's width, so it
+            // starts out roughly square at typical widths. Nothing is forced - the handle
+            // is draggable from the first moment.
             int leftW = leftPanel_->width() > 0 ? leftPanel_->width() : static_cast<int>(width() * 0.4);
             int h = leftSplitter_->height() > 0 ? leftSplitter_->height() : height();
             leftSplitter_->setSizes({qMax(0, h - leftW), leftW});
@@ -657,10 +655,9 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
 
     // Qt's Cocoa menu bar relocates Preferences and About into the macOS *application* menu
     // (as Cmd-, and "About pixet"). So on Apple they're added to File, which still has
-    // Choose Folder left in it after the move - this used to be the reason Tools was
-    // Windows-only too (a Tools menu holding *only* Preferences would look empty once
-    // Cocoa relocated it out), but that no longer applies now that Tools always has Force
-    // Re-thumbnail in it regardless of platform.
+    // Choose Folder left in it after the move. Tools is built on both platforms because it
+    // always holds Force Re-thumbnail - a Tools menu holding *only* Preferences would come
+    // out empty on macOS, once Cocoa relocated that one entry away.
     QAction *prefsAction = nullptr;
     QAction *aboutAction = nullptr;
 #ifdef Q_OS_MACOS
@@ -698,12 +695,11 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     }
 #endif
 
-    // Insurance for window/layout persistence. Everything used to be saved only from
-    // closeEvent(), which is not guaranteed to run: on macOS, Cmd+Q and "Quit pixet" go
-    // through the application menu and terminate without necessarily delivering a close
-    // event to the window - so geometry, splitter sizes and the last directory would just
-    // silently stop being remembered for the most common way of quitting. Saving twice is
-    // harmless (same values, same keys).
+    // Insurance for window/layout persistence: closeEvent() is not guaranteed to run. On
+    // macOS, Cmd+Q and "Quit pixet" go through the application menu and terminate without
+    // necessarily delivering a close event to the window, so saving only from there leaves
+    // geometry, splitter sizes and the last directory silently un-remembered for the most
+    // common way of quitting. Saving twice is harmless (same values, same keys).
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, &MainWindow::saveWindowState);
 
     // Nominal pixel widths, sized generously for typical content - shrink together
@@ -976,8 +972,8 @@ void MainWindow::updateNavButtonsEnabled() {
     backAction_->setEnabled(canBack);
     forwardAction_->setEnabled(canForward);
 
-    // Tooltips name the actual destination rather than repeating the button's own label, which
-    // told you nothing you couldn't already see. Where these go is in-memory history, so it
+    // Tooltips name the actual destination rather than repeating the button's own label,
+    // which would say nothing the button doesn't. Where these go is in-memory history, so it
     // isn't guessable from the path bar the way Up is - "Back" is the one button whose target
     // genuinely needs stating.
     //
@@ -1380,9 +1376,9 @@ void MainWindow::onGridItemActivated(int row) {
             } else {
                 started = QProcess::startDetached(player, {filePath});
             }
-            // startDetached's return value used to be discarded, so a misconfigured player
-            // path made a double-click do nothing at all with no indication why - the same
-            // failure mode the empty-path fallback above was already written to avoid.
+            // Checked rather than discarded: a misconfigured player path would otherwise
+            // make a double-click do nothing at all with no indication why - the same
+            // failure mode the empty-path fallback above avoids.
             if (!started) {
                 statusBar()->showMessage(
                     QStringLiteral("Could not launch video player: %1  (check Preferences)").arg(player), 8000);
@@ -1411,11 +1407,11 @@ void MainWindow::onGridSelectionChanged() {
     grid_->viewport()->update();
 
     // Keep a visible fullscreen viewer on whatever the grid is showing. The viewer can be
-    // moved aside or switched to a window (F), which leaves the grid clickable behind it -
-    // before this, changing the selection there left the two showing different images.
-    // Deliberately driven from here, the one place a lead-row change already lands, and
-    // passing currentPath_ so a folder change is carried across too; the viewer itself
-    // decides whether anything needs doing (see followGridSelection).
+    // moved aside or switched to a window (F), which leaves the grid clickable behind it,
+    // and the two must not end up displaying different images. Driven from here, the one
+    // place a lead-row change already lands, and handed currentPath_ so a folder change is
+    // carried across as well; the viewer itself decides whether anything needs doing (see
+    // followGridSelection).
     fullscreenViewer_->followGridSelection(currentPath_, grid_->currentRow());
 
     QModelIndex idx = gridModel_->index(grid_->currentRow());
@@ -1566,12 +1562,12 @@ int MainWindow::countStaleThumbnails(const QString &dirPath) const {
 
     // Measured at 88ms on a 1280-file folder, and updateThumbStatusIndicator() runs it twice
     // per navigation (once when Pass A lists the files, once when indexing finishes) - so it
-    // was ~176ms of every folder change, the largest single cost in a warm navigation.
+    // costs ~176ms of every folder change, the largest single cost in a warm navigation.
     //
     // It's expensive for a structural reason: the join reaches into thumbs.db for t.w/t.h on
     // every file in the folder, which is one random page read per file in a 185MB blob
     // database. Caching is the cheap fix; the real one is denormalising the thumbnail's long
-    // edge into files, so the question can be answered from index.db alone - see the devlog.
+    // edge into files, so the question can be answered from index.db alone.
     //
     // Invalidated by invalidateStaleCache() wherever thumbnails can actually have changed, so
     // the second call after a *warm* navigation (where Pass B did nothing) is free while a
@@ -2325,24 +2321,21 @@ void MainWindow::onIndexerFinished(QString path) {
     PIXET_PROF_MARK("nav.indexerFinished");
     gridModel_->refreshThumbStates(); // catch any trailing batch
     grid_->viewport()->update();
-    // Used to also post a transient statusBar()->showMessage("<path> - N items", ...)
-    // here - redundant with folderStatsLabel_ (which already shows this persistently)
-    // and the actual bug: QStatusBar's built-in temporary-message label doesn't elide/
-    // shrink the way StatusLabel does (see its class comment), so a long full path
-    // routinely ran right into the permanent widget row, e.g. rendering as
-    // "...\Models - 4 i" immediately followed by folderStatsLabel_'s own
-    // "4 items (4 img, 0 vid) · 9.52 MiB" with no gap - a real reported bug, not
-    // hypothetical. updateSelectionStatus() here instead keeps rawStatusLabel_ (RAW
-    // rendered/preview counts) fresh too, which this handler previously didn't touch.
+    // Deliberately no transient statusBar()->showMessage("<path> - N items") here. It would
+    // duplicate folderStatsLabel_, which shows the same thing persistently, and QStatusBar's
+    // built-in temporary-message label doesn't elide/shrink the way StatusLabel does (see
+    // its class comment) - so a long full path runs straight into the permanent widget row,
+    // rendering as "...\Models - 4 i" immediately followed by folderStatsLabel_'s own
+    // "4 items (4 img, 0 vid) · 9.52 MiB" with no gap. updateSelectionStatus() covers the
+    // same ground and keeps rawStatusLabel_ (RAW rendered/preview counts) fresh as well.
     updateSelectionStatus();
     // Thumbnails have settled, so a folder that was red because it was mid-generation can
     // now legitimately go green.
     updateThumbStatusIndicator();
-    // Clears onIndexerStarted()'s "Indexing <folder>..." message, which has no
-    // timeout of its own (indexing can take anywhere from milliseconds to well over
-    // a minute) - without this call, removing the old showMessage() here (above)
-    // left nothing to ever replace/clear it, so it silently lingered forever. A real
-    // reported regression from that first fix, not hypothetical either.
+    // Clears onIndexerStarted()'s "Indexing <folder>..." message, which has no timeout of
+    // its own (indexing can take anywhere from milliseconds to well over a minute). Nothing
+    // else in this handler posts a status message that would replace it, so without this
+    // call it lingers on screen forever.
     statusBar()->clearMessage();
     // Posted here rather than in onIndexFailed(), because that handler necessarily runs
     // *before* this one (both signals are queued from the same worker thread, in emission

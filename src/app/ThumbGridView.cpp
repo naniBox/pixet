@@ -33,8 +33,8 @@
 ThumbGridView::ThumbGridView(QWidget *parent) : QAbstractScrollArea(parent) {
     // Always reserve the vertical scrollbar's width, even when nothing needs
     // scrolling, rather than the default show/hide-as-needed - see the class
-    // comment on why a fluctuating viewport width is exactly the thing that made
-    // the old implementation unpredictable. No horizontal scrolling at all: cells are a
+    // comment on why a fluctuating viewport width is exactly the thing that makes
+    // column-fit arithmetic unpredictable. No horizontal scrolling at all: cells are a
     // fixed width and the block of columns is centred, with any leftover width becoming an
     // outer margin (see relayout()).
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
@@ -50,7 +50,7 @@ ThumbGridView::ThumbGridView(QWidget *parent) : QAbstractScrollArea(parent) {
     viewport()->setAcceptDrops(true);
 
     // QAbstractScrollArea doesn't repaint automatically when the scrollbar value
-    // changes (unlike QAbstractItemView, which this no longer is) - painting reads
+    // changes (unlike QAbstractItemView, which this deliberately isn't) - painting reads
     // verticalScrollBar()->value() directly, so a scroll is a repaint.
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() { viewport()->update(); });
 
@@ -124,12 +124,12 @@ void ThumbGridView::relayout() {
     int vw = viewport()->width();
     if (vw > 0) {
         // Cells keep their natural width (iconSize_ + padding) - only the *gutters*
-        // between/around them absorb the leftover. This used to be
-        // `cellWidth_ = vw / columns_`, stretching every cell to fill the row evenly:
-        // that sounds harmless and isn't, since the thumbnail inside is still only
-        // iconSize_ wide, so all of the leftover became empty space *around each
-        // photo*, and the amount jumped around as the window resized (at a 240px icon
-        // size: 2px per side at a 1300px viewport, 22px at 1500px). Spreading it across
+        // between/around them absorb the leftover. The tempting `cellWidth_ = vw / columns_`
+        // - stretching every cell to fill the row evenly - sounds harmless and isn't: the
+        // thumbnail inside is still only iconSize_ wide, so all of the leftover becomes
+        // empty space *around each photo*, and the amount jumps around as the window
+        // resizes (at a 240px icon size: 2px per side at a 1300px viewport, 22px at
+        // 1500px). Spreading it across
         // (columns_+1) equal gutters instead keeps every photo exactly the size the
         // user picked, and reads as intentional grid spacing rather than a wide dead
         // margin down each side - see the class comment on gridOffsetX_/columnStride_.
@@ -293,9 +293,9 @@ void ThumbGridView::selectAll() {
     selectedCount_ = rc;
     // Leave the lead/preview alone when a selection already exists - Select All is a
     // precursor to Cut/Copy, not a navigation gesture. Jumping the preview to an
-    // arbitrary (possibly huge RAW) file and scrolling there would repeat the exact
-    // scroll-position-loss class of bug this project has already fixed once (see
-    // devlog). Only pick a lead when nothing was selected before.
+    // arbitrary (possibly huge RAW) file and scrolling there would throw away the scroll
+    // position the user is working from. Only pick a lead when nothing was selected
+    // before.
     if (currentRow_ < 0) currentRow_ = 0;
     anchorRow_ = currentRow_;
     applySelectionResult(oldCurrent);

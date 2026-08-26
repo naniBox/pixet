@@ -15,18 +15,17 @@ class QDropEvent;
 class QTimer;
 class HoverInfoWorker;
 
-// Fully custom-painted, virtualized thumbnail grid - replaces an earlier QListView-
-// based implementation whose IconMode flow-layout (Qt's own internal algorithm for
-// deciding how many same-size cells fit per row) turned out to sometimes disagree
-// with a plain, exact, no-remainder division by a column count. Confirmed via a real
+// Fully custom-painted, virtualized thumbnail grid, deliberately not built on QListView:
+// its IconMode flow-layout (Qt's own internal algorithm for deciding how many same-size
+// cells fit per row) sometimes disagrees with a plain, exact, no-remainder division by a
+// column count. Confirmed via a real
 // side-by-side repro, not a hypothetical: a 748px-wide viewport with 187px cells
 // rendered 4 columns (4*187=748, exact); an 8px-wider, 756px viewport with 189px
 // cells - an equally exact division, 4*189=756 - rendered only 3, with
 // devicePixelRatio()==1 in both cases, ruling out DPI-scaling rounding as the cause.
 // There's no way to predict that kind of internal-to-Qt rounding from the outside, so
-// rather than another attempt at guessing it correctly (a previous version tried a
-// guess-then-verify-then-backoff loop against exactly this, which just moved the
-// unpredictability into a different, more fragile shape - see git history), this
+// rather than trying to guess it correctly - a guess-then-verify-then-backoff loop against
+// exactly this only moves the unpredictability into a different, more fragile shape - this
 // class doesn't ask IconMode to lay anything out at all. It computes every cell's
 // row/column directly (row = index / columns, col = index % columns) and paints
 // visible cells itself, so there is no second layout engine left that could ever
@@ -79,9 +78,9 @@ public:
     void hideHoverTooltip();
 
     // Square icons only - matches prefs::thumbnailIconSize(), the only way this is
-    // ever actually driven. Recomputes the grid layout immediately (unlike the old
-    // QListView-based setIconSize(), a plain property with no side effect of its
-    // own) - there's no longer a separate applyIconSizeChange() to call afterward.
+    // ever actually driven. Recomputes the grid layout immediately, unlike QListView's own
+    // setIconSize() (a plain property with no side effect), so there is no separate
+    // apply-the-change call for a caller to forget.
     void setIconSize(QSize size);
     QSize iconSize() const;
 
@@ -117,11 +116,11 @@ public:
     // path bar) instead centers it directly, no nudging.
     void scrollToRow(int row, bool center = false);
 
-    // TODO: was debug-build-only; in release too for now (2026-08-11), see
-    // MainWindow::onCopyGridDebugInfo(). Always equal now, by construction (see the
-    // class comment). Kept as two separate calls anyway so the debug dump states
-    // that plainly rather than silently dropping the "actually rendered" field that
-    // used to be the whole point of this dump.
+    // TODO: debug-build-only would be the natural gating; in release too for now
+    // (2026-08-11), see MainWindow::onCopyGridDebugInfo(). The two are always equal by
+    // construction (see the class comment). Kept as two separate calls anyway so the debug
+    // dump can state that plainly: "computed" versus "actually rendered" is the exact
+    // discrepancy the dump exists to catch, so collapsing them to one would hide it.
     int debugComputedColumns() const { return columns_; }
     int debugRenderedColumnCount() const { return columns_; }
     QSize debugCellSize() const { return QSize(cellWidth_, cellHeight_); }
@@ -284,7 +283,7 @@ private:
     int rowCount() const;
     // Recomputes columns_/cellWidth_/cellHeight_ from the current viewport width and
     // iconSize_, and the scrollbar range from those plus the current row count. No
-    // debounce needed (unlike the old QListView-based updateGridSize()): there's no
+    // debounce needed, unlike a QListView-based relayout: there's no
     // per-item relayout to force here, just arithmetic - the actual per-item cost
     // only happens in paintEvent(), which only ever touches on-screen cells and which
     // Qt already coalesces repaint requests for on its own.

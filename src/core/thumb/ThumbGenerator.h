@@ -8,8 +8,8 @@
 
 namespace pixet {
 
-// Which rung of the extraction ladder actually produced the thumbnail - the P1
-// benchmark gate reports throughput broken down by this.
+// Which rung of the extraction ladder actually produced the thumbnail. The indexer's
+// throughput benchmark reports its numbers broken down by this.
 enum class ThumbTier {
     EmbeddedPreview, // decoded from an EXIF/container-embedded thumbnail - cheapest
     Decoded,         // decoded the main image (scaled-DCT where the format allows it)

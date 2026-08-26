@@ -77,7 +77,7 @@ add_library(pixet_core STATIC
 # util/StringUtil (UTF-8 <-> UTF-16, for crossing into WinAPI) is Windows-only, and
 # util/Unicode (NFC normalization, because macOS hands back decomposed filenames) is
 # macOS-only. Both headers therefore live in their platform's branch rather than in the
-# unconditional list above - listing StringUtil.h unconditionally used to leave two
+# unconditional list above - listing StringUtil.h unconditionally would leave two
 # std::wstring declarations with no definition on any non-Windows build.
 if(WIN32)
     target_sources(pixet_core PRIVATE

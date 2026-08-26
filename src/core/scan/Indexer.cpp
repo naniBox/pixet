@@ -95,11 +95,11 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
         }
     } guard{this, dirId};
 
-    // dirMtimeUnix throws if the directory can't be stat'd, and this call used to be bare -
-    // which meant one unreadable folder threw straight out through run() (also unguarded),
-    // aborting the entire index run *and* leaking the claim row taken just above until its
-    // heartbeat went stale. Tolerable on Windows, where an unreadable folder in a photo
-    // tree is unusual; not on macOS, where TCC-protected directories are everywhere and
+    // dirMtimeUnix throws if the directory can't be stat'd, and must not be called bare here:
+    // unguarded, one unreadable folder throws straight out through run(), aborting the entire
+    // index run *and* leaking the claim row taken just above until its heartbeat goes stale.
+    // Tolerable on Windows, where an unreadable folder in a photo tree is unusual; not on
+    // macOS, where TCC-protected directories are everywhere and
     // "index my home folder" would reliably die on the first one. Handled the same way the
     // listDir failure below already was: release the claim, count it, skip the folder.
     int64_t actualMtime = 0;
@@ -348,13 +348,12 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
 
     // Each chunk's generateThumb() calls are submitted to pool_ concurrently and
     // collected before this directory's usual flushBatch()/progress/heartbeat cadence
-    // runs - see ThreadPool.h. Chunk size is kBatchSize normally (unchanged from
-    // before), or capped to the pool's own thread count for a --render-raws run: a
-    // forced full RAW render used to flush immediately after every single one, since a
-    // real demosaic decode is slow enough that batching 63 more in before reporting
-    // progress would defeat wanting to *watch* a large RAW folder render rather than
-    // wait for it in one lump. A "wave" the size of the pool is the parallel
-    // equivalent - everything in it finishes at roughly the same time anyway. Applied
+    // runs - see ThreadPool.h. Chunk size is kBatchSize normally, or capped to the pool's own
+    // thread count for a --render-raws run. A real demosaic decode is slow enough that
+    // batching 63 more in before reporting progress defeats wanting to *watch* a large RAW
+    // folder render rather than wait for it in one lump, so a "wave" the size of the pool is
+    // the right granularity there - everything in it finishes at roughly the same time
+    // anyway. Applied
     // to the whole chunk once renderRaws is set, not per-item file format (a
     // --render-raws run's pending list can still include ordinary new JPEGs) - a
     // little extra, still-cheap transaction overhead on those beats reasoning about
@@ -484,12 +483,12 @@ void Indexer::run(const std::string &rootPath, IndexStats &stats, const IndexCal
         std::vector<std::pair<int64_t, std::string>> subdirs;
         // One bad directory must not end the run, and must never escape to the caller.
         //
-        // This used to be a bare call, and the consequence was severe out of proportion to
-        // the cause: a single failed COMMIT threw std::runtime_error all the way out through
-        // run(), out of BackgroundReconciler::sweepNext()'s timer slot, and - with no handler
-        // anywhere on that QThread - into std::terminate(), killing the whole application.
-        // Observed in the field on macOS: a background hygiene sweep, which by definition is
-        // doing work nobody asked for, took the app down with it.
+        // Bare, the consequence is severe out of all proportion to the cause: a single failed
+        // COMMIT throws std::runtime_error all the way out through run(), out of
+        // BackgroundReconciler::sweepNext()'s timer slot, and - with no handler anywhere on
+        // that QThread - into std::terminate(), killing the whole application. Observed in
+        // the field on macOS, where a background hygiene sweep doing work nobody asked for
+        // took the app down with it.
         //
         // indexOneDirectory() rolls back and releases its claim before rethrowing, so by the
         // time we get here this directory has left no lock or open transaction behind and the

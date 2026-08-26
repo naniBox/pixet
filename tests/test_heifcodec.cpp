@@ -3,9 +3,8 @@
 // a heavy dependency not needed for read-only thumbnailing) - confirmed by no x265
 // buildtree existing at all, so there's no encoder plugin to synthesize a fixture
 // with, only the libde265 decode backend this codec actually needs. These tests cover
-// error-handling and format-gating only. HEIC was the user's lowest P4 priority
-// (their phone shoots JPEG, not HEIC), and there's no real HEIC sample on the dev
-// machine to live-verify against either.
+// error-handling and format-gating only. There's no real HEIC sample on the dev machine
+// to live-verify against either - the camera feeding this library shoots JPEG.
 #include "TestHarness.h"
 #include "TestPaths.h"
 
@@ -34,9 +33,9 @@ PIXET_TEST(ReadHeifDimensionsFailsOnGarbageData) {
 }
 
 PIXET_TEST(ThumbGeneratorHeicIsNoLongerUnsupported) {
-    // Missing file, not garbage bytes - if Heic were still gated as Unsupported, this
-    // would come back Unsupported instead of Failed. Confirms Format::Heic actually
-    // reaches the HEIF decode path now - the last format in the P4 priority list.
+    // Missing file, not garbage bytes: a Heic gated as Unsupported would come back
+    // Unsupported, so Failed is what proves Format::Heic actually reaches the HEIF
+    // decode path.
     ThumbResult result = generateThumb(nonexistentPath("heic"), Format::Heic);
     PIXET_CHECK(result.tier == ThumbTier::Failed);
 }

@@ -16,23 +16,19 @@ namespace {
 // own thread_, and never touches stack_/pending_/inFlight_ (those stay confined to
 // thread_ - see ThumbLoader::onDecodeFinished()).
 //
-// Returns a QImage, not a QPixmap, and deliberately so: an earlier version of this
-// function returned QPixmap directly, built via QPixmap::fromImage()/scaled() right
-// here on the pool worker thread - and crashed for real (reproduced live: debug CRT
-// heap-corruption abort, ucrtbased.dll, STATUS_BREAKPOINT) within seconds of
-// navigating to a real folder once more than one worker could be decoding at once.
-// QPixmap's Windows backend isn't safe to construct/scale concurrently from multiple
-// threads, even though a single non-GUI thread doing it serially (thread_, in
-// onDecodeFinished() - or the old one-QThread-only design this replaced) is fine and
-// was proven so for this app's entire history before this rewrite. QImage has no such
-// restriction - each thread's instance here is independent, never shared while being
-// built - so the actual QPixmap construction now happens only in onDecodeFinished(),
+// Returns a QImage, not a QPixmap, and deliberately so. Building the QPixmap here via
+// QPixmap::fromImage()/scaled() on a pool worker thread crashes for real: a debug CRT
+// heap-corruption abort (ucrtbased.dll, STATUS_BREAKPOINT) within seconds of navigating to
+// a real folder, once more than one worker is decoding at a time. QPixmap's Windows backend
+// is not safe to construct or scale concurrently from multiple threads. A single non-GUI
+// thread doing it serially *is* fine, which is exactly what thread_ does in
+// onDecodeFinished(). QImage carries no such restriction - each thread's instance here is
+// independent and never shared while being built - so QPixmap construction happens only
 // back on thread_, where it's safe.
 //
 // db/stmt are thread_local rather than passed in or held as ThumbLoader members: each
-// of pool_'s worker threads is reused across many requests over its lifetime (unlike
-// the old one-QThread design, where a single member sufficed), and Database is
-// explicitly documented as one-per-thread, not shareable. Lazily created on first use
+// of pool_'s worker threads is reused across many requests over its lifetime, and Database
+// is explicitly documented as one-per-thread, not shareable. Lazily created on first use
 // per thread, then kept alive - a pool worker thread makes its own connection exactly
 // once and reuses it (and its one prepared statement) for every decode it ever
 // handles, rather than re-preparing the same SQL on every single call.

@@ -21,10 +21,9 @@ inline std::string testTempPath(const std::string &name) {
 }
 
 // A path guaranteed not to exist, for the "does this fail cleanly on a missing file?"
-// tests every codec has. These used to be spelled "Z:\\does\\not\\exist.<ext>", which
-// does also not-exist on macOS (so the assertions always held) but read as Windows-only
-// scaffolding in a codebase that no longer is. Deliberately absolute and implausible on
-// both platforms rather than clever.
+// tests every codec has. Deliberately absolute and implausible on both platforms rather
+// than clever - a Windows-flavoured spelling like "Z:\\does\\not\\exist.<ext>" would work
+// just as well on macOS, but reads as though the suite only runs on Windows.
 inline std::string nonexistentPath(const std::string &extension) {
     return "/pixet-no-such-directory/nope." + extension;
 }

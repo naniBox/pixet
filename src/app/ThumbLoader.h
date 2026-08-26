@@ -16,15 +16,13 @@ class Database;
 }
 
 // Decodes cached thumbnail blobs off the UI thread, across a small pool of worker
-// threads rather than one at a time (see kMaxConcurrentDecodes) - added as part of a
-// scalability pass (see devlog) once measurement showed the per-item work (a DB blob
-// read + JPEG decode + scale) was real, non-trivial cost that a big-enough on-screen
-// burst could stack up serially.
+// threads rather than one at a time (see kMaxConcurrentDecodes). The per-item work - a DB
+// blob read, a JPEG decode and a scale - is real, non-trivial cost, and a big enough
+// on-screen burst stacks it up serially if only one decode runs at a time.
 //
-// Requests are still a LIFO stack (deduped by file id), same intent as before
-// parallelizing: the most recently requested cell - typically wherever the user just
-// scrolled to - gets served first. Up to kMaxConcurrentDecodes can now be *in flight*
-// at once instead of strictly one, but which one goes next is unchanged.
+// Requests are a LIFO stack (deduped by file id): the most recently requested cell -
+// typically wherever the user just scrolled to - gets served first. Up to
+// kMaxConcurrentDecodes are in flight at once, with the stack deciding which goes next.
 class ThumbLoader : public QObject {
     Q_OBJECT
 

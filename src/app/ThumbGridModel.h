@@ -188,8 +188,8 @@ private:
     QHash<qint64, int> rowByFileId_;
     QHash<QString, int> rowByName_;
 
-    // Decoded thumbnails used to accumulate in rows_ forever - one QPixmap per row, never
-    // released until the folder changed. That is fine for a few hundred files and quietly
+    // Decoded thumbnails must not be allowed to accumulate in rows_ indefinitely. One QPixmap
+    // per row, held until the folder changes, is fine for a few hundred files and quietly
     // ruinous past that: at a 300px icon on a 2x display each pixmap is ~1.1MB, so scrolling
     // through a 1280-file folder (a real one on this machine) parks ~1.4GB of pixmaps, and a
     // 5000-file folder would simply exhaust memory. The symptom isn't a crash, it's the whole

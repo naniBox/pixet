@@ -40,10 +40,8 @@ QByteArray dropEffectBytes(bool cut) {
 // macOS has no Finder "Cut" to interoperate with - Finder's move-on-paste is
 // Cmd+Opt+V applied to an ordinary *copy* pasteboard, not a distinct cut state. A
 // private marker type, read back only by pixet's own paste, is the honest answer
-// here rather than a compromise. Best-effort from the Windows machine this was
-// built on - VERIFY ON THE MAC that a custom mime type survives an NSPasteboard
-// round trip within the app (see devlog's P5 precedent for this class of deferred
-// platform verification).
+// here rather than a compromise. Written without a Mac to hand: VERIFY ON THE MAC that a
+// custom mime type survives an NSPasteboard round trip within the app.
 const QString kPixetCutMarker = QStringLiteral("application/x-pixet-cut");
 #endif
 

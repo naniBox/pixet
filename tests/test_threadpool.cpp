@@ -1,6 +1,6 @@
 // Covers util/ThreadPool - the generic worker-pool primitive Indexer's Pass B spreads
-// generateThumb() calls across (see devlog/plan for the multi-threaded indexing work).
-// What matters here is exactly what a caller relies on: every submitted task actually
+// generateThumb() calls across. What matters here is exactly what a caller relies on:
+// every submitted task actually
 // runs and its result comes back correctly, a pool sized 1 still works (the
 // BackgroundReconciler/RawRenderer case, which pins threadCount=1), and an exception
 // inside a task surfaces through the future rather than silently vanishing or taking

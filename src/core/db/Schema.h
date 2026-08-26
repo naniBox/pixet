@@ -31,7 +31,7 @@ enum class FileState : int {
     New = 0,        // row exists, no thumbnail attempted yet
     Done = 1,       // thumbnail generated successfully
     Failed = 2,     // decode was attempted and failed (corrupt/unreadable file)
-    Unsupported = 3,// format has no decoder yet (P1: everything but JPEG) - retry once support lands
+    Unsupported = 3,// format has no decoder built yet - retry once support lands
     // RAW only: the current thumbnail was generated from the file's embedded preview
     // (fast, but camera-baked - a different rendering pipeline than the actual sensor
     // data, which can look meaningfully different: white balance, tone curve, crop).

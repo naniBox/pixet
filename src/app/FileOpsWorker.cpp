@@ -30,8 +30,8 @@ FileOpsWorker::FileOpsWorker(QObject *parent) : QObject(parent) {
     // boundary directly (see the header comment) - registered once, up front, rather
     // than trusting moc's best-effort auto-registration for a type this app has never
     // used in a signal before. An unregistered type here fails as a qWarning to a
-    // console this WIN32-subsystem build doesn't have, exactly the invisible-failure
-    // class the devlog already documents for moveToThread on a parented object.
+    // console this WIN32-subsystem build doesn't have - the same invisible-failure class
+    // as calling moveToThread() on an object that has a parent.
     qRegisterMetaType<FileOpsWorker::Request>("FileOpsWorker::Request");
     qRegisterMetaType<FileOpsWorker::DeleteRequest>("FileOpsWorker::DeleteRequest");
     qRegisterMetaType<QList<qint64>>("QList<qint64>");

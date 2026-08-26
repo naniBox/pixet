@@ -12,7 +12,7 @@ class Database;
 // GUI-facing wrapper around pixet_core's Indexer, run non-recursively (one folder,
 // not a whole tree) off the UI thread every time the user navigates. This is what
 // makes "no mandatory pre-index step" real: browsing a folder is what indexes it.
-// Reuses the exact same Pass A/B code the pixet-index CLI benchmarked in P1.
+// Reuses the exact same Pass A/B code as the pixet-index CLI.
 class FolderIndexer : public QObject {
     Q_OBJECT
 

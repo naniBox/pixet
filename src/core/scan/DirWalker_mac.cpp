@@ -117,8 +117,8 @@ int64_t dirMtimeUnix(const std::string &path) {
     struct stat st;
     if (stat(path.c_str(), &st) != 0) {
         // Includes errno, unlike the Windows version which omits it - same reasoning as
-        // listDir. Indexer now catches this (it previously did not, and a single
-        // permission-denied folder would abort an entire index run and leak its claim row).
+        // listDir. Indexer catches this; uncaught, a single permission-denied folder would
+        // abort an entire index run and leak its claim row.
         throw std::runtime_error("dirMtimeUnix failed (" + std::to_string(errno) + "): " + path);
     }
     return static_cast<int64_t>(st.st_mtimespec.tv_sec);

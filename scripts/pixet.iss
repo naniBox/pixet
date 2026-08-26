@@ -31,10 +31,9 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-; Per-user install (no admin/UAC prompt) into the per-user Program Files equivalent -
-; matches how the app has run as a local dev build all along, and how Inno Setup itself
-; was installed for this session (winget, no elevation). {autopf} would need admin;
-; {userpf} doesn't.
+; Per-user install into the per-user Program Files equivalent. {autopf} would need admin;
+; {userpf} doesn't, which is what keeps the whole install free of a UAC prompt (see
+; PrivilegesRequired below).
 DefaultDirName={userpf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 PrivilegesRequired=lowest
@@ -63,8 +62,9 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Name: "fileassoc"; Description: "Register {#MyAppName} as an app for opening image files (JPEG, PNG, HEIC, RAW, TIFF, WebP, AVIF)"; GroupDescription: "File associations:"
 
 [Files]
-; recursesubdirs/createallsubdirs: windeployqt drops the platforms/imageformats/styles
-; plugin subfolders alongside the DLLs, not just flat files next to the exe.
+; recursesubdirs/createallsubdirs: the staged folder isn't flat - windeployqt drops the
+; plugins into subfolders (platforms and styles, once deploy-windows.ps1 has pruned the
+; ones this app never loads) alongside the DLLs next to the exe.
 ;
 ; vc_redist.x64.exe is excluded from this bulk copy and staged separately below - pixet.exe
 ; genuinely needs it (confirmed via dumpbin /dependents: MSVCP140.dll, VCRUNTIME140.dll,

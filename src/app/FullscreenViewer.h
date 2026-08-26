@@ -13,7 +13,7 @@ class QTimer;
 class ThumbGridModel;
 class FullscreenDecoder;
 
-// Fullscreen image viewer (P3). Opened via double-click/Enter on a thumbnail, and
+// Fullscreen image viewer. Opened via double-click/Enter on a thumbnail, and
 // closed by Enter too - a toggle, not just an open action. Shows
 // the current image scaled to fit the screen by default. Click zooms to 1:1 native
 // pixels, centered on the clicked point; Z does the same fit<->1:1 toggle from the

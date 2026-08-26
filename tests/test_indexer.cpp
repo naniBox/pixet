@@ -1,7 +1,6 @@
-// Covers Indexer (src/core/scan/Indexer) - previously untested directly, only exercised
-// indirectly via test_fileops.cpp's smart-move-avoids-rethumbnail test. The critical
-// property to prove here, added alongside multi-threaded Pass B (see devlog/plan), is
-// determinism under concurrency: running the exact same set of files through Indexer
+// Covers Indexer (src/core/scan/Indexer) directly; test_fileops.cpp only reaches it
+// incidentally, through its smart-move-avoids-rethumbnail test. The critical property to
+// prove here is determinism under concurrency: running the exact same set of files
 // with threadCount=1 vs. threadCount>1 must produce identical results - same file
 // states, same thumbnail dimensions, same thumbnail byte length - not just "doesn't
 // crash". Pass A (the directory walk/diff) and every DB write stay single-threaded

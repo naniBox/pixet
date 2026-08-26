@@ -31,10 +31,11 @@ void printStats(const IndexStats &s, double elapsedSec) {
 } // namespace
 
 int main(int argc, char *argv[]) {
-    // --help/-h explicitly, because argv[1] is otherwise taken as the root path unconditionally:
-    // `pixet-index --help` used to print the banner and then start indexing a folder literally
-    // named "--help", which normalizePath() happily turns into <cwd>/--help. Harmless but
-    // baffling, and the first thing anyone types at an unfamiliar command.
+    // --help/-h explicitly, because argv[1] is otherwise taken as the root path
+    // unconditionally: without this, `pixet-index --help` prints the banner and then starts
+    // indexing a folder literally named "--help", which normalizePath() happily turns into
+    // <cwd>/--help. Harmless but baffling, and it is the first thing anyone types at an
+    // unfamiliar command.
     bool wantsHelp = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];

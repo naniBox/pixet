@@ -65,8 +65,8 @@ std::string tempNameForVictim(const std::string &dstPath) {
     return dstPath + ".pixet-old-" + std::to_string(currentProcessId()) + "-" + std::to_string(++g_tempCounter);
 }
 
-// One item's worth of work: filesystem operation first, DB update second, always -
-// see the class comment on execute() and the crash-recovery reasoning in devlog. Never
+// One item's worth of work: filesystem operation first, DB update second, always - see
+// the class comment on execute() for the crash-recovery reasoning behind that order. Never
 // throws (any DB exception is caught and turned into a failed outcome) so one bad item
 // can't abort the rest of the batch.
 void executeOneItem(Database &db, OpKind kind, const std::string &dstDirPath, int64_t dstDirId,

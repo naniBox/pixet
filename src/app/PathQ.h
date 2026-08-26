@@ -15,9 +15,9 @@
 //
 // Shared rather than duplicated because MainWindow and FullscreenViewer both build file
 // paths from the (directory, name) pairs coming out of ThumbGridModel, and the two must
-// agree - they previously each did `dir + QStringLiteral("\\") + name` inline, which was
-// invisible on Windows and silently broke every preview, fullscreen decode and video
-// launch anywhere else.
+// agree. Building it inline as `dir + QStringLiteral("\\") + name` is the tempting shortcut
+// and is invisibly wrong: it works on Windows and silently breaks every preview, fullscreen
+// decode and video launch everywhere else.
 inline QString joinPathQ(const QString &dir, const QString &name) {
     return QString::fromStdString(pixet::joinPath(dir.toStdString(), name.toStdString()));
 }

@@ -208,13 +208,13 @@ void FullscreenViewer::prefetchNeighbors() {
     // Listed farthest-first for the same reason: FullscreenDecoder::processOne() takes from
     // the back, so this list is in reverse order of when things actually decode.
     //
-    // This used to be `for (int d : {0, -1, 1, -2, 2})` with a comment reading "Current row
-    // first (most likely to actually be seen), then outward" - the right intent, and the
-    // precise opposite of what happened once LIFO was applied to it: the row two *ahead*
-    // decoded first and the visible image decoded fifth. Measured on this machine, a
-    // 4032x3024 JPEG fit-decode is ~65ms in a release build and ~520ms in a debug build, so
-    // being five decodes late meant roughly a third of a second of black screen at best and
-    // over two seconds at worst, every time the viewer opened.
+    // Getting this order backwards is expensive rather than cosmetic, and the natural-
+    // looking spelling is the wrong one: {0, -1, 1, -2, 2}, reading as "current row first,
+    // then outward", is the precise opposite once the LIFO stack is applied to it - the row
+    // two *ahead* decodes first and the visible image decodes fifth. A 4032x3024 JPEG
+    // fit-decode measures ~65ms in a release build and ~520ms in a debug build on this
+    // machine, so being five decodes late is a third of a second of black screen at best,
+    // and over two seconds at worst, every time the viewer opens.
     for (int d : {2, -2, 1, -1}) requestFit(currentRow_ + d);
     trimFitCache();
 }

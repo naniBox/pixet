@@ -6,26 +6,19 @@
 
 namespace pixet {
 
-// A note on why this is a separate _mac.cpp rather than one shared portable
-// implementation, since devlog's P5-prep entry floated exactly that ("FileIO's in
-// particular could likely just be a single portable std::ifstream-based implementation
-// shared by both platforms... but that's a call better made *with* a mac to build
-// against"). Making that call now, with the mac: keep them separate.
+// Why this is a separate _mac.cpp rather than one portable std::ifstream implementation
+// shared with Windows, which is otherwise the obvious simplification:
 //
-// The reason is the pitfall the same devlog entry documents two paragraphs earlier:
 // std::ifstream's narrow-string constructor interprets the path in the platform's *native
 // narrow encoding*, which on MSVC is the active ANSI codepage, not UTF-8. pixet_core's
 // paths are UTF-8 by contract, so a shared std::ifstream implementation would silently
-// fail to open any file with a non-ASCII name on Windows - which the devlog specifically
-// verified working (a real folder with an accented filename). Here on macOS the native
-// narrow encoding *is* UTF-8, so the same code is correct. Sharing the file would mean
-// trading a verified-working Windows behavior for tidiness, on a platform this session
-// can't test.
+// fail to open any file with a non-ASCII name on Windows (a folder with an accented
+// filename is enough to hit it). FileIO_win.cpp goes through CreateFileW for exactly that
+// reason. Here on macOS the native narrow encoding *is* UTF-8, so the same code is right.
 //
 // (std::filesystem::path's char8_t constructor would sidestep the encoding problem and
-// genuinely work on both - but it would also change Windows' sharing mode and read
-// chunking, which again can't be verified from here. Left as a future cleanup for a
-// session with both machines.)
+// genuinely work on both - but unifying on it would also change Windows' sharing mode and
+// read chunking, so it needs testing on both platforms before it's worth doing.)
 //
 // One behavioral difference from FileIO_win.cpp that is worth knowing rather than
 // "fixing": CreateFileW is called there with FILE_SHARE_READ only, so a file another

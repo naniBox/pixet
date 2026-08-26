@@ -75,13 +75,12 @@ int main(int argc, char *argv[]) {
     // from a Qt resource (icons.qrc) rather than a loose path so it doesn't depend
     // on anything being deployed alongside the exe.
     //
-    // The PNG, not the .ico, and the comment here used to claim the opposite - that "Qt's
-    // ICO/BMP support is built directly into QtGui, not a runtime-discovered plugin". That is
-    // wrong: ICO is libqico, a plugin, which is why QIcon(":/pixet.ico") comes back null
-    // wherever imageformats isn't deployed (scripts/deploy-mac.sh prunes it deliberately - this
-    // app decodes every image itself). PNG really is compiled into QtGui, so this is the form
-    // that holds up everywhere. pixet.ico is still what pixet.rc stamps on the .exe, which is a
-    // native Win32 resource and never goes through Qt.
+    // The PNG, not the .ico. ICO support is libqico, a runtime-discovered plugin, so
+    // QIcon(":/pixet.ico") comes back null anywhere the imageformats plugins aren't deployed
+    // - and both deploy scripts prune them deliberately, since this app decodes every image
+    // itself. PNG is compiled into QtGui proper, so it is the form that holds up everywhere.
+    // pixet.ico is still what pixet.rc stamps on the .exe: a native Win32 resource that
+    // never goes through Qt.
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/pixet.png")));
 #endif
     // No further setWindowIcon() call on macOS. The Dock/Finder icon comes from the
@@ -111,9 +110,9 @@ int main(int argc, char *argv[]) {
     // through FileOpenForwarder rather than argv.
     parser.process(app);
 
-    // Heap-allocated and owned by Qt (Qt::WA_DeleteOnClose) rather than a by-value local,
-    // which is what previously made a second window impossible: main() held the one and only
-    // MainWindow, so nothing else could create another. WindowRegistry now tracks them all.
+    // Heap-allocated and owned by Qt (Qt::WA_DeleteOnClose) rather than a by-value local:
+    // a local makes main() the owner of the one and only MainWindow, and nothing else can
+    // then create another. WindowRegistry tracks them all instead.
     //
     // Created directly rather than through WindowRegistry::createWindow() for one reason: the
     // --reset-layout flag applies to this launch's first window only, and createWindow() is
@@ -128,16 +127,13 @@ int main(int argc, char *argv[]) {
     auto *forwarder = new FileOpenForwarder(&app);
     app.installEventFilter(forwarder);
 
-    // Windows (and Linux) pass an "open this file" request as a plain positional
-    // argument rather than the Cocoa FileOpen event macOS uses above - e.g. once file
-    // association is registered (see scripts/pixet.iss), double-clicking a .jpg
-    // launches `pixet.exe "C:\...\photo.jpg"`. Only ever one positional argument in
-    // practice - Explorer hands over a single path per launch - so the rest are
-    // ignored rather than treated as an error.
-    // Windows (and Linux) pass "open this" as plain positional arguments rather than the
-    // Cocoa FileOpen event macOS uses above. The first lands in the window just created; any
-    // others each get their own window, so `pixet folderA folderB` comes up as a side-by-side
-    // comparison in one step. Extra arguments used to be silently ignored.
+    // Windows (and Linux) pass an "open this file" request as a plain positional argument
+    // rather than the Cocoa FileOpen event macOS uses above - e.g. once file association is
+    // registered (see scripts/pixet.iss), double-clicking a .jpg launches
+    // `pixet.exe "C:\...\photo.jpg"`. Explorer hands over a single path per launch, so in
+    // practice there is only ever one. The first lands in the window just created; any
+    // others each get their own window, so `pixet folderA folderB` comes up as a
+    // side-by-side comparison in one step.
     const QStringList positional = parser.positionalArguments();
     for (int i = 0; i < positional.size(); ++i) {
         if (i == 0) window->openSystemPath(positional.at(i));

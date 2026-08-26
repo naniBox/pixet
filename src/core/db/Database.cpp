@@ -156,19 +156,20 @@ Database::Database(const std::string &indexDbPath, const std::string &thumbsDbPa
     }
     exec("ATTACH DATABASE '" + escaped + "' AS thumbs;");
 
-    // thumbs.db in WAL too, and this is a correctness fix, not tuning. It used to be left on
-    // SQLite's defaults (rollback journal, synchronous=FULL) purely because the pragmas above
-    // ran before the ATTACH and were unqualified, and I previously argued for leaving it that
-    // way on the strength of a latency benchmark. That benchmark was measuring the wrong thing.
+    // thumbs.db in WAL too, and this is a correctness matter, not tuning. The pragmas above
+    // run before the ATTACH and are unqualified, so they only ever reach index.db; without
+    // this call thumbs.db silently keeps SQLite's defaults (rollback journal,
+    // synchronous=FULL). A latency benchmark makes those defaults look perfectly acceptable,
+    // and it is measuring the wrong thing.
     //
     // On a rollback journal, a writer's COMMIT must promote RESERVED -> EXCLUSIVE, and
     // EXCLUSIVE cannot be acquired while any other connection holds a SHARED lock - i.e. while
     // anything at all is mid-read. So a *reader* of thumbs.db blocks a *writer's commit*, which
     // is the one lock interaction WAL exists to eliminate. Reproduced end to end: with one
     // open read transaction on thumbs.db, `pixet-index --force-rethumbnail` waits out the
-    // full 10s busy_timeout and dies with "exec failed: database is locked / SQL: COMMIT;" -
-    // and, before the exception boundaries went in, took the GUI down with it from a
-    // background sweep. In WAL the identical run succeeds in 1.6s. That is the entire
+    // full 10s busy_timeout and dies with "exec failed: database is locked / SQL: COMMIT;",
+    // which without the exception boundaries around indexing would take the GUI down with it
+    // from a background sweep. In WAL the identical run succeeds in 1.6s. That is the entire
     // difference between "the CLI and the GUI can be used at the same time" and not, and the
     // claims table exists precisely so that they can be.
     //
@@ -178,8 +179,7 @@ Database::Database(const std::string &indexDbPath, const std::string &thumbsDbPa
     //
     // synchronous=NORMAL moves with it deliberately: NORMAL is crash-safe under WAL but risks
     // corruption on power loss under a rollback journal, so the two settings have to change
-    // together. FULL was the correct partner for the old journal mode, NORMAL is the correct
-    // partner for this one.
+    // together: FULL is the correct partner for a rollback journal, NORMAL for WAL.
     //
     // Attempted on every open, so an existing thumbs.db converts on the first launch that
     // finds it uncontended - see ensureWal above for why the attempt is allowed to fail rather
@@ -243,8 +243,8 @@ void Database::runMigrations() {
         // (or confirming) pass - safe even for ones that already happened to be fully
         // rendered, since re-rendering is idempotent (some wasted CPU once, not an
         // incorrect result). Without this, any RAW file indexed before this migration
-        // existed would sit at Done forever, invisible to the render-upgrade path -
-        // exactly what happened in practice (see devlog).
+        // existed would sit at Done forever, invisible to the render-upgrade path, which
+        // is exactly what happened in practice.
         exec("UPDATE files SET state=" + std::to_string((int64_t)FileState::DoneNeedsRender) +
              " WHERE fmt=" + std::to_string((int64_t)Format::Raw) +
              " AND state=" + std::to_string((int64_t)FileState::Done));
@@ -259,7 +259,7 @@ void Database::runMigrations() {
         // explicit handling there now. So any row sitting at Unsupported today is
         // necessarily stale: it was marked that way by an older build, from before
         // that format's decoder existed (Video was the concrete case found in
-        // practice - see devlog), and normal re-scanning never revisits it since Pass
+        // practice), and normal re-scanning never revisits it since Pass
         // B only processes State::New (or DoneNeedsRender, for a --render-raws pass) -
         // an already-Unsupported row is invisible to it forever otherwise. Reclassify
         // back to New so Pass B gives every one of them a real pass with today's

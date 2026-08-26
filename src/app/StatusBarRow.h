@@ -7,8 +7,8 @@ class StatusLabel;
 
 // A row of StatusLabel cells, each with a "nominal" (ideal) width, separated by
 // thin divider lines - positions and sizes every cell itself in resizeEvent()
-// rather than delegating to a QHBoxLayout. QHBoxLayout turned out to have
-// unpredictable, unusable behavior here once the row's total nominal width
+// rather than delegating to a QHBoxLayout. QHBoxLayout has unpredictable, unusable
+// behavior here once the row's total nominal width
 // exceeded what's actually available (the normal case once the window gets
 // reasonably narrow): with Qt::Fixed-policy cells (setFixedWidth()) it couldn't
 // shrink them at all, so it packed them at overlapping X offsets instead of

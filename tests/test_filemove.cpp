@@ -5,7 +5,7 @@
 //
 // Cross-volume behavior (the copy-then-delete-source fallback inside moveFile()) can't
 // be exercised portably by this suite - it needs two actual volumes (a USB stick, a
-// second partition) and is manual-only; see the devlog/plan for that verification step.
+// second partition), so it is verified manually rather than here.
 
 #include "TestHarness.h"
 #include "TestPaths.h"

@@ -96,7 +96,7 @@ private slots:
     // whatever's actually selected via onGridSelectionChanged().
     void onGridCtrlHoverChanged(int row);
     void onGridContextMenu(const QPoint &pos);
-    // Double-click or Enter/Return on a thumbnail - opens the fullscreen viewer (P3).
+    // Double-click or Enter/Return on a thumbnail - opens the fullscreen viewer.
     void onGridItemActivated(int row);
     void onPathBarReturnPressed();
     // A history entry was picked from the path bar's dropdown - navigates the same
@@ -398,11 +398,11 @@ private:
     std::unique_ptr<FolderIndexer> folderIndexer_;
     // BackgroundReconciler (the low-priority sweep that keeps indexed folders honest against
     // on-disk changes) and RawRenderer (the background upgrade of RAW files from a fast
-    // embedded preview to a full demosaic render) used to be owned here, one pair per window.
-    // They are now application-wide singletons - BackgroundReconciler::shared() /
-    // RawRenderer::shared() - because both sweep the entire library regardless of what any
-    // window is showing, so one pair per window meant N sweeps of the same rows. Each window
-    // still connects to their directoryChanged() and filters it against its own folder.
+    // embedded preview to a full demosaic render) are deliberately *not* owned here. Both are
+    // application-wide singletons - BackgroundReconciler::shared() / RawRenderer::shared() -
+    // because both sweep the entire library regardless of what any window is showing, so one
+    // pair per window would mean N sweeps of the same rows. Each window connects to their
+    // directoryChanged() and filters it against its own folder.
     // The app's first code path that can move/copy/overwrite a real file - see
     // FileOpsWorker's class comment for the preflight/execute protocol.
     std::unique_ptr<FileOpsWorker> fileOps_;
@@ -607,10 +607,10 @@ private:
     // geometry, DPI, and content counts to the clipboard as plain text, which is
     // harmless but not something an end user needs to see. See the &Debug menu in
     // the constructor. Exists specifically for the grid column-fit bug: rebuilding
-    // this info from a live repro is slow and every past attempt at reproducing it
-    // synthetically turned out not to match whatever the user was actually seeing.
-    // Also now reports navThumbTimer_'s navigation-timing numbers (added during a
-    // thumbnail-loading scalability pass - see devlog), for exactly the same reason:
+    // this info from a live repro is slow, and a synthetic reproduction of it reliably
+    // fails to match what the user is actually seeing.
+    // Also reports navThumbTimer_'s navigation-timing numbers, for exactly the same
+    // reason:
     // if a slow-thumbnail-fill report ever comes in again, this is the fast path to
     // real numbers (requested/received counts, time to first thumbnail, time to
     // catch up) for whatever folder is on screen, instead of another from-scratch

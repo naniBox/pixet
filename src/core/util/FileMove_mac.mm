@@ -11,14 +11,14 @@
 
 #import <Foundation/Foundation.h>
 
-// Best-effort from the Windows machine this feature was built on, following the same
-// pattern as util/FileIO_mac.cpp/util/PathUtil_mac.cpp: written against documented
-// POSIX/Darwin behavior, not yet run. See devlog's P5 entries for the precedent - this
-// needs an actual pass on the Mac (renamex_np/RENAME_EXCL availability against the real
-// deployment target, copyfile() flag behavior, EXDEV handling across an external
-// volume, and - the one Objective-C++ addition here - NSFileManager's trashItem:
-// behavior/error codes) before being trusted the way the Windows implementation
-// already is. This file is .mm (Objective-C++) rather than .cpp purely for
+// UNVERIFIED ON HARDWARE: written against documented POSIX/Darwin behavior from a Windows
+// machine, following the same pattern as util/FileIO_mac.cpp and util/PathUtil_mac.cpp.
+// Before this is trusted the way the Windows implementation is, it needs a real pass on a
+// Mac covering renamex_np/RENAME_EXCL availability against the actual deployment target,
+// copyfile() flag behavior, EXDEV handling across an external volume, and - the one
+// Objective-C++ addition here - NSFileManager's trashItem: behavior and error codes.
+//
+// This file is .mm (Objective-C++) rather than .cpp purely for
 // moveToTrash() - there's no POSIX trash API, NSFileManager is the only correct way to
 // reach the real per-volume Trash - every other function here is unchanged plain
 // POSIX/Darwin C++ and compiles identically under either extension.

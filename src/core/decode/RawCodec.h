@@ -10,8 +10,8 @@ namespace pixet {
 // Extracts the embedded preview camera RAW files typically carry (often a full-size
 // or near-full-size JPEG - DNG and most manufacturer RAW formats include one) via
 // LibRaw's thumbnail API. Far cheaper than a full demosaic decode when available,
-// which - per the same embedded-preview-first rationale the P1 benchmark validated
-// for JPEG (96.5% of real JPEGs hit that path) - is worth trying first here too.
+// which - per the same embedded-preview-first rationale that holds for JPEG, where 96.5%
+// of real files hit that path - is worth trying first here too.
 // targetLongEdge is forwarded to the inner JPEG decode when the embedded preview
 // happens to itself be a JPEG (the common case), so a large embedded preview still
 // gets libjpeg's cheap scaled-DCT decode rather than a full-size one. Returns false

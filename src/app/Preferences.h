@@ -38,9 +38,9 @@ constexpr int kDefaultThumbnailIconSize = 180;
 constexpr int kMinThumbnailIconSize = 80;
 constexpr int kMaxThumbnailIconSize = 480;
 
-// The sizes offered in the UI. One list, used by both the status bar drop-down and the
-// Preferences dialog - they used to be a preset list and a free-form spinbox respectively,
-// which meant Preferences could produce a value the drop-down had no entry for.
+// The sizes offered in the UI. One list, shared by the status bar drop-down and the
+// Preferences dialog so the two can't disagree - a free-form control in Preferences would be
+// able to produce a value the drop-down has no entry for.
 //
 // kMin/kMaxThumbnailIconSize deliberately stay wider than this: they're the clamp applied to
 // whatever is *read back* from the ini, so a value saved by an older build (the previous

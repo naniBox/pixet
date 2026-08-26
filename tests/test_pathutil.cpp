@@ -42,8 +42,8 @@ PIXET_TEST(JoinPathHandlesEmptyOperands) {
 }
 
 PIXET_TEST(JoinPathNeverEmitsAForeignSeparator) {
-    // The regression this whole helper exists for: Indexer used to hardcode '\\', so every
-    // subdirectory on a non-Windows box was stored as "/Users/x/Photos\Sub".
+    // The bug this whole helper exists to prevent: a hardcoded '\\' in Indexer stores every
+    // subdirectory on a non-Windows box as "/Users/x/Photos\Sub".
     std::string joined = joinPath("parent", "child");
 #ifdef _WIN32
     PIXET_CHECK(joined.find('/') == std::string::npos);

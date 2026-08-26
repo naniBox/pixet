@@ -59,11 +59,11 @@ ThumbResult generateJpegThumb(const std::vector<uint8_t> &fileBytes, int targetL
     // Take the embedded preview only when it's actually large enough for what was asked for.
     //
     // decodeJpeg downscales but never upscales, so a typical ~160px EXIF thumbnail caps the
-    // result at 160px however big targetLongEdge is. That used to be unconditional, which
-    // made it permanent rather than merely disappointing: the preview is always present, so
-    // re-thumbnailing the file at a larger size regenerated the very same small image, and no
-    // amount of "Force Re-thumbnail" could ever improve it. Checked header-only, so rejecting
-    // a preview costs no pixel decode.
+    // result at 160px however big targetLongEdge is. Taking the preview unconditionally would
+    // make that permanent rather than merely disappointing: the preview is always present, so
+    // re-thumbnailing the file at a larger size would regenerate the very same small image,
+    // and no amount of "Force Re-thumbnail" could ever improve it. Checked header-only, so
+    // rejecting a preview costs no pixel decode.
     bool hadSmallThumb = false;
     if (exif.hasThumb()) {
         int thumbW = 0, thumbH = 0;
@@ -82,8 +82,8 @@ ThumbResult generateJpegThumb(const std::vector<uint8_t> &fileBytes, int targetL
         if (decoded) result.tier = ThumbTier::Decoded;
     }
     // A preview rejected as too small still beats no thumbnail at all, so it stays the last
-    // resort for a file whose full decode fails (truncated or corrupt data with an intact
-    // EXIF thumbnail) - the case the old unconditional order handled by accident.
+    // resort for a file whose full decode fails - truncated or corrupt data with an intact
+    // EXIF thumbnail.
     if (!decoded && hadSmallThumb) {
         decoded = decodeJpeg(fileBytes.data() + exif.thumbOffset, exif.thumbLength, targetLongEdge, img);
         if (decoded) result.tier = ThumbTier::EmbeddedPreview;

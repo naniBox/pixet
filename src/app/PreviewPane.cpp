@@ -17,9 +17,8 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent) {
     layout->addWidget(label_);
 
     setMinimumWidth(160);
-    // Was implicitly floored elsewhere when this pane was forced square (see git
-    // history) - now that it's a plain QSplitter child the user can drag to any
-    // height, this is what stops a drag-to-the-edge from squeezing it to nothing.
+    // This pane is a plain QSplitter child, so its height is whatever the user drags it to.
+    // This floor is what stops a drag to the very edge from squeezing it away to nothing.
     setMinimumHeight(60);
 }
 

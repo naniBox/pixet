@@ -151,14 +151,13 @@ if(PIXET_DEBUG_MENU)
     target_compile_definitions(pixet PRIVATE PIXET_DEBUG_MENU)
 endif()
 
-# Widgets only. Qt6::Sql and Qt6::Concurrent used to be here and were never used by a single
-# line of code - the database layer talks to the sqlite3 C API directly (see
-# core/db/Database.h) and the thread pools are std::thread (see util/ThreadPool.h). They cost
-# 4.8MB in the deployed bundle, because macdeployqt correctly follows the linkage: QtSql.framework,
-# QtConcurrent.framework, and all four SQL driver plugins - including libqsqlpsql and
-# libqsqlmimer, i.e. Postgres and Mimer client drivers, shipped to users of a local photo
-# viewer. Confirmed dead before removing: zero source references, and QT_DEBUG_PLUGINS=1
-# showed the sqldrivers plugins were never loaded at runtime.
+# Widgets only, and deliberately so. Qt6::Sql and Qt6::Concurrent are the two that look like
+# they belong here and don't: the database layer talks to the sqlite3 C API directly (see
+# core/db/Database.h) and the thread pools are std::thread (see util/ThreadPool.h). Linking
+# them costs 4.8MB in the deployed bundle, because macdeployqt correctly follows the linkage:
+# QtSql.framework, QtConcurrent.framework, and all four SQL driver plugins - including
+# libqsqlpsql and libqsqlmimer, i.e. Postgres and Mimer client drivers, shipped to users of a
+# local photo viewer. QT_DEBUG_PLUGINS=1 confirms the sqldrivers plugins are never loaded.
 target_link_libraries(pixet PRIVATE
     pixet_core
     Qt6::Widgets

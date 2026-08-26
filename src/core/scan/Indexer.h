@@ -98,9 +98,8 @@ struct IndexCallbacks {
 };
 
 // Walks and thumbnails a directory tree, reusing the exact same code path the GUI's
-// on-demand FolderIndexer will call for a single folder (see devlog/plan) - this
-// class is the one place Pass A (walk+diff) and Pass B (thumbnail state=0 files)
-// actually live.
+// on-demand FolderIndexer calls for a single folder - this class is the one place Pass A
+// (walk+diff) and Pass B (thumbnail state=0 files) actually live.
 class Indexer {
 public:
     Indexer(Database &db, IndexOptions opts);

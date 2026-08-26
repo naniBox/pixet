@@ -109,7 +109,7 @@ void BackgroundReconciler::sweepNext() {
     // std::terminate() and takes the entire application down with it. That is exactly what
     // happened in the field: a failed COMMIT deep inside Indexer killed pixet while the user
     // was doing nothing but browsing photos, brought down by background hygiene work nobody
-    // had asked for. Indexer::run() now absorbs per-directory failures itself; this is the
+    // had asked for. Indexer::run() absorbs per-directory failures itself; this is the
     // outer backstop for the parts of it that sit outside that loop.
     bool failed = false;
     try {

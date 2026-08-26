@@ -17,7 +17,7 @@
 # to someone else without friction: a downloaded DMG gets the com.apple.quarantine attribute,
 # and Gatekeeper will refuse an app that isn't Developer-ID-signed and notarized. Recipients
 # then have to launch it once, get refused, and go to System Settings > Privacy & Security >
-# "Open Anyway" (the old Control-click > Open bypass was removed in macOS 15). Or, from a
+# "Open Anyway" (the Control-click > Open bypass stopped working in macOS 15). Or, from a
 # terminal:  xattr -dr com.apple.quarantine /Applications/pixet.app
 #
 # To produce something that just opens, with no warning, you need an Apple Developer Program
@@ -27,7 +27,7 @@
 #   PIXET_NOTARY_PROFILE=my-notary-profile \
 #     ./scripts/deploy-mac.sh
 #
-# (PIXET_NOTARY_PROFILE is a keychain profile previously stored with
+# (PIXET_NOTARY_PROFILE is a keychain profile you store beforehand with
 #  `xcrun notarytool store-credentials`.)
 #
 # The hardened runtime is enabled only when a real identity is supplied, and that is not

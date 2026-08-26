@@ -1,13 +1,12 @@
 // Like camera RAW and video (see test_rawcodec.cpp/test_videocodec.cpp), there's no
-// round-trip fixture here - this vcpkg build's libavif links a decode-only AV1 backend
-// (avifEncoderWrite fails with no available encoder, confirmed empirically: an earlier
-// version of this file tried encoding a fixture on the fly via libavif's own encode
-// API, the same approach that works fine for PNG/TIFF/WebP, and it came back empty
-// every time). These tests cover error-handling and format-gating only. AVIF was the
-// user's second-lowest P4 priority specifically because their phone doesn't produce
-// it, so a real-file live-verification pass (the fallback used for RAW/video, which
-// don't have an encode path either) wasn't pursued either - there's no real AVIF
-// sample available on the dev machine to verify against.
+// round-trip fixture here - this vcpkg build's libavif links a decode-only AV1 backend.
+// avifEncoderWrite fails with no available encoder: synthesizing a fixture on the fly
+// through libavif's own encode API, the approach test_pngcodec/test_tiffcodec/
+// test_webpcodec all use, comes back empty every time. So these tests cover
+// error-handling and format-gating only. The fallback used for RAW and video - live
+// verification against a real file instead of a synthesized one - isn't available here
+// either, since there's no real AVIF sample on the dev machine and the camera feeding
+// this library doesn't produce any.
 #include "TestHarness.h"
 #include "TestPaths.h"
 

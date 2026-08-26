@@ -28,8 +28,9 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS version suppo
 
 # VERSION here is the single source of truth for the version string: src/core/version.cpp
 # reads it via the PIXET_VERSION compile definition (see src/core/CMakeLists.txt), and the
-# .app bundle's CFBundleShortVersionString comes from the same place. Previously it was
-# hardcoded in version.cpp alone, which the bundle metadata had no way to reach.
+# .app bundle's CFBundleShortVersionString comes from the same place, as does the Windows
+# installer's filename (scripts/deploy-windows.ps1 greps this line). Bump it here, nowhere
+# else.
 project(pixet VERSION 1.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
