@@ -173,12 +173,16 @@ private slots:
     // prefs::hoverInfoEnabled()). Hides any tooltip already on screen immediately
     // when turned off, rather than waiting for the next mouse move to notice.
     void onToggleHoverInfo(bool enabled);
-    // Any of the 4 exclusive sort-key actions, or the reverse-order toggle - all wired
-    // to this one slot (see the constructor) since it just re-reads which of them is
-    // currently checked rather than needing to know which one fired. Shared by the
-    // View > Sort By submenu and the sort button bar next to the path bar - both sets
-    // of QToolButtons/QActions are the same QAction objects, so the two can't drift
-    // out of sync with each other.
+    // Any of the 4 exclusive sort-key actions, or the reverse-order toggle - all end up
+    // here, since it just re-reads which of them is currently checked rather than needing
+    // to know which one fired. Shared by the View > Sort By submenu and the sort button
+    // bar next to the path bar - both sets of QToolButtons/QActions are the same QAction
+    // objects, so the two can't drift out of sync with each other.
+    //
+    // The reverse toggle is connected straight to this; the 4 key actions go through a
+    // lambda in the constructor that first reverses the direction when the clicked key is
+    // already the active one (the "click the active column again to flip it" convention).
+    // That decision needs to know which action fired, which this slot deliberately doesn't.
     void onSortOrderChanged();
     void onIndexerStarted(QString path);
     void onFilesListed(QString path);
@@ -499,6 +503,10 @@ private:
     // entry. Called from navigateTo(), guarded by navigatingViaHistory_.
     void recordNavHistory(const QString &path);
     void updateNavButtonsEnabled();
+    // Rewrites the 5 sort actions' tooltips for the current key/direction, so the icon-only
+    // toolbar buttons can say which way a click will sort. Called once at construction and
+    // from onSortOrderChanged() after the new order is committed.
+    void updateSortTooltips();
     // setDirectory() on the *same* path, with selection and scroll position carried
     // across the reset: captures the selected rows' file ids (and the lead row's)
     // beforehand, reloads, then re-derives row indices via

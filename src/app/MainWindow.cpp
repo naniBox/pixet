@@ -323,27 +323,46 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // either), not re-read per icon.
     const QColor iconColor = palette().color(QPalette::ButtonText);
     auto *sortKeyGroup = new QActionGroup(this); // exclusive by default
-    auto addSortKeyAction = [&](const QString &text, const QString &tooltip, sorticons::Kind icon) {
+    auto addSortKeyAction = [&](const QString &text, prefs::SortKey key, sorticons::Kind icon) {
         QAction *a = new QAction(sorticons::make(icon, iconColor), text, this);
-        a->setToolTip(tooltip);
         a->setCheckable(true);
-        connect(a, &QAction::triggered, this, &MainWindow::onSortOrderChanged);
+        // Clicking the key that is *already* the active one flips the direction instead of
+        // being the no-op it used to be: an exclusive QActionGroup won't let a click uncheck
+        // its checked member, so re-triggering the active key previously recomputed the exact
+        // same sort and reordered nothing. Every file manager treats a second click on the
+        // active sort column as "reverse it", so that's what it does now.
+        //
+        // This is why the key actions no longer share onSortOrderChanged() directly the way
+        // the reverse toggle still does - the flip has to know *which* key was clicked, and
+        // by the time the slot runs the QActionGroup has already moved the check mark, so
+        // there is nothing left to read that distinguishes "switched to Name" from "clicked
+        // Name again". prefs::gridSortKey() is still the pre-click key here (onSortOrderChanged()
+        // below is what writes the new one), which is exactly the comparison needed.
+        //
+        // setChecked() rather than toggle() to be explicit that no triggered() is re-emitted
+        // from here - only toggled(), which nothing is connected to. Applies to the View >
+        // Sort By submenu too, since these are the same QAction objects; picking the already
+        // ticked entry there reverses as well, which is consistent rather than surprising.
+        connect(a, &QAction::triggered, this, [this, key] {
+            if (key == prefs::gridSortKey())
+                sortReverseAction_->setChecked(!sortReverseAction_->isChecked());
+            onSortOrderChanged();
+        });
         sortKeyGroup->addAction(a);
         return a;
     };
     // Short labels rather than e.g. "Date Modified" - text still shows in the View >
     // Sort By submenu, but the toolbar buttons below go icon-only the moment an icon
     // is set (QToolButton's default style), so the tooltip is what actually explains
-    // each one there.
-    sortByNameAction_ =
-        addSortKeyAction(QStringLiteral("Name"), QStringLiteral("Sort by name"), sorticons::Kind::Name);
-    sortByFileDateAction_ = addSortKeyAction(QStringLiteral("Modified"), QStringLiteral("Sort by file modified date"),
-                                              sorticons::Kind::FileDate);
+    // each one there. Tooltips are set by updateSortTooltips() rather than passed in
+    // here, because they now have to say which direction a second click will give you
+    // and so change with the sort state - see that method.
+    sortByNameAction_ = addSortKeyAction(QStringLiteral("Name"), prefs::SortKey::Name, sorticons::Kind::Name);
+    sortByFileDateAction_ =
+        addSortKeyAction(QStringLiteral("Modified"), prefs::SortKey::FileDate, sorticons::Kind::FileDate);
     sortByTakenDateAction_ =
-        addSortKeyAction(QStringLiteral("Taken"), QStringLiteral("Sort by photo/video taken date (EXIF)"),
-                          sorticons::Kind::TakenDate);
-    sortBySizeAction_ =
-        addSortKeyAction(QStringLiteral("Size"), QStringLiteral("Sort by file size"), sorticons::Kind::Size);
+        addSortKeyAction(QStringLiteral("Taken"), prefs::SortKey::TakenDate, sorticons::Kind::TakenDate);
+    sortBySizeAction_ = addSortKeyAction(QStringLiteral("Size"), prefs::SortKey::Size, sorticons::Kind::Size);
     switch (prefs::gridSortKey()) {
         case prefs::SortKey::FileDate: sortByFileDateAction_->setChecked(true); break;
         case prefs::SortKey::TakenDate: sortByTakenDateAction_->setChecked(true); break;
@@ -352,10 +371,13 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
         default: sortByNameAction_->setChecked(true); break;
     }
     sortReverseAction_ = new QAction(sorticons::make(sorticons::Kind::Reverse, iconColor), QStringLiteral("Reverse"), this);
-    sortReverseAction_->setToolTip(QStringLiteral("Reverse sort order"));
     sortReverseAction_->setCheckable(true);
     sortReverseAction_->setChecked(prefs::gridSortDescending());
+    // Still shares the slot directly: this one only ever means "flip", so unlike the key
+    // actions above it has nothing extra to decide before onSortOrderChanged() re-reads state.
     connect(sortReverseAction_, &QAction::triggered, this, &MainWindow::onSortOrderChanged);
+    // First run, once every sort action exists and is in its restored-from-prefs state.
+    updateSortTooltips();
     // Pushes the persisted order in before the very first setDirectory() call
     // (restoreLastDirectory(), further down this constructor) - safe to call with
     // rows_ still empty, see ThumbGridModel::setSortOrder()'s doc comment.
@@ -1993,11 +2015,42 @@ void MainWindow::onToggleHoverInfo(bool enabled) {
     if (!enabled) grid_->hideHoverTooltip();
 }
 
+void MainWindow::updateSortTooltips() {
+    // The toolbar buttons are icon-only, so the tooltip is the only thing that can explain
+    // them - and now also the only place the second-click-reverses behaviour is discoverable,
+    // hence naming the direction a click would give you rather than just the key. Descriptions
+    // live here rather than at construction so the two halves of each tooltip can't drift.
+    const bool descending = sortReverseAction_->isChecked();
+    const struct {
+        QAction *action;
+        QString what;
+    } keys[] = {
+        {sortByNameAction_, QStringLiteral("name")},
+        {sortByFileDateAction_, QStringLiteral("file modified date")},
+        {sortByTakenDateAction_, QStringLiteral("photo/video taken date (EXIF)")},
+        {sortBySizeAction_, QStringLiteral("file size")},
+    };
+    for (const auto &k : keys) {
+        QString tip = QStringLiteral("Sort by %1").arg(k.what);
+        // Only the active key advertises the flip; on the other three a click switches key
+        // and keeps the current direction, so promising a reversal there would be a lie.
+        if (k.action->isChecked()) {
+            tip += descending ? QStringLiteral(" (descending)")
+                              : QStringLiteral(" (ascending");
+        }
+        k.action->setToolTip(tip);
+    }
+    sortReverseAction_->setToolTip(descending ? QStringLiteral("Descending")
+                                              : QStringLiteral("Ascending"));
+}
+
 void MainWindow::onSortOrderChanged() {
     // Re-reads which of the exclusive group is checked rather than being told, since
     // this one slot is shared by all 5 actions (see the constructor and this method's
     // own doc comment in the header) - by the time triggered() fires, the
-    // QActionGroup has already updated which one is checked.
+    // QActionGroup has already updated which one is checked. The key actions reach it
+    // through a small lambda that may have flipped sortReverseAction_ first; that flip
+    // is already applied by the time the descending read below happens.
     prefs::SortKey key = prefs::SortKey::Name;
     if (sortByFileDateAction_->isChecked()) key = prefs::SortKey::FileDate;
     else if (sortByTakenDateAction_->isChecked()) key = prefs::SortKey::TakenDate;
@@ -2006,6 +2059,7 @@ void MainWindow::onSortOrderChanged() {
 
     prefs::setGridSortKey(key);
     prefs::setGridSortDescending(descending);
+    updateSortTooltips();
 
     // Same selection-by-file-id preservation as reloadGridPreservingSelection(), but
     // reordering in place (ThumbGridModel::setSortOrder()) instead of a full
