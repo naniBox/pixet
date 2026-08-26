@@ -1410,6 +1410,14 @@ void MainWindow::onGridSelectionChanged() {
     // as elsewhere in this file.
     grid_->viewport()->update();
 
+    // Keep a visible fullscreen viewer on whatever the grid is showing. The viewer can be
+    // moved aside or switched to a window (F), which leaves the grid clickable behind it -
+    // before this, changing the selection there left the two showing different images.
+    // Deliberately driven from here, the one place a lead-row change already lands, and
+    // passing currentPath_ so a folder change is carried across too; the viewer itself
+    // decides whether anything needs doing (see followGridSelection).
+    fullscreenViewer_->followGridSelection(currentPath_, grid_->currentRow());
+
     QModelIndex idx = gridModel_->index(grid_->currentRow());
     if (!idx.isValid()) {
         pendingPreviewPath_.clear();

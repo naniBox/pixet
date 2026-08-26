@@ -76,10 +76,7 @@ FullscreenViewer::FullscreenViewer(QWidget *parent) : QWidget(parent) {
 
 FullscreenViewer::~FullscreenViewer() = default;
 
-void FullscreenViewer::openAt(ThumbGridModel *model, const QString &directoryPath, int startRow) {
-    model_ = model;
-    directoryPath_ = directoryPath;
-
+void FullscreenViewer::resetDecodeState() {
     fitCache_.clear();
     fitRequestRow_.clear();
     zoomPixmap_ = QPixmap();
@@ -89,6 +86,13 @@ void FullscreenViewer::openAt(ThumbGridModel *model, const QString &directoryPat
     decoder_->cancelPending();
     zoomDecoder_->cancelPending();
     zoomPrefetchTimer_->stop();
+}
+
+void FullscreenViewer::openAt(ThumbGridModel *model, const QString &directoryPath, int startRow) {
+    model_ = model;
+    directoryPath_ = directoryPath;
+
+    resetDecodeState();
     infoOverlayLevel_ = 0;
 
     // trueFullscreen_ deliberately isn't reset here - it's a persisted display
@@ -98,6 +102,31 @@ void FullscreenViewer::openAt(ThumbGridModel *model, const QString &directoryPat
     if (trueFullscreen_) showFullScreen(); else showMaximized();
     setFocus();
     showRow(startRow, /*resetZoom=*/true);
+}
+
+void FullscreenViewer::followGridSelection(const QString &directoryPath, int row) {
+    if (!isVisible() || !model_ || row < 0) return;
+
+    const bool sameFolder = (directoryPath == directoryPath_);
+    // Already showing it - the case that matters most, since this is what breaks the
+    // cycle with MainWindow: showRow() below emits rowChanged(), MainWindow answers by
+    // setting the grid's current row, and that comes straight back here. (The grid's own
+    // setCurrentRow() also declines to re-emit for a row it is already on, so this is
+    // belt and braces - but this side is the one that must hold, because it is the side
+    // that would re-enter decoding.)
+    if (sameFolder && row == currentRow_) return;
+
+    if (!sameFolder) {
+        // Folder changed under us (tree click, bookmark, path bar). The fit cache, the
+        // zoom pixmap and every in-flight request are keyed by row against the *old*
+        // folder, so they describe the wrong files now - same situation openAt() is in.
+        directoryPath_ = directoryPath;
+        resetDecodeState();
+    }
+    // resetZoom because this is a jump to an unrelated image rather than a step along a
+    // sequence: keeping a previous image's zoom factor and centre point would land on an
+    // arbitrary crop of the new one. Matches what a fresh openAt() does.
+    showRow(row, /*resetZoom=*/true);
 }
 
 void FullscreenViewer::showRow(int row, bool resetZoom) {

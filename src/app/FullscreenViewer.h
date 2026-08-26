@@ -59,6 +59,21 @@ public:
     // it).
     void openAt(ThumbGridModel *model, const QString &directoryPath, int startRow);
 
+    // Follow a selection change the user made in the main window while this viewer is
+    // still up - reachable because the viewer can be moved aside or switched to windowed
+    // mode (F), leaving the grid clickable behind it. Without this the two drift apart
+    // and the viewer keeps showing whatever it was opened on.
+    //
+    // Takes the directory as well as the row because the main window can change folder
+    // underneath us, not just row: everything cached in here is keyed by row, and a row
+    // means a different file in a different folder.
+    //
+    // A no-op when the viewer is hidden, so MainWindow can call it unconditionally, and
+    // when the row is already the one on screen - that second guard is also what stops
+    // this bouncing, since showRow() emits rowChanged() and MainWindow answers that by
+    // moving the grid's current row back to the same place.
+    void followGridSelection(const QString &directoryPath, int row);
+
 signals:
     // Fired whenever the displayed row changes (navigation, or the initial open) -
     // lets MainWindow keep the grid's selection in sync so closing the viewer lands
@@ -141,6 +156,10 @@ private:
     bool dragMoved_ = false; // past the click-vs-drag movement threshold
 
     void showRow(int row, bool resetZoom);
+    // Drops every cached/in-flight decode. Shared by openAt() and by
+    // followGridSelection() when the folder changed - both are cases where the existing
+    // row-keyed caches now describe different files entirely.
+    void resetDecodeState();
     QString pathForRow(int row) const;
     int formatForRow(int row) const;
     QPixmap thumbnailForRow(int row) const;
