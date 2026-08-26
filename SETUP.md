@@ -2,8 +2,9 @@
 
 Toolchain bootstrap for a fresh machine.
 
-- **Windows** — steps 0-7 below. Run top to bottom. Everything except step 3 (VS Build
-  Tools) is per-user and needs no admin rights.
+- **Windows** — steps 0-8 below. Run top to bottom. Everything except step 3 (VS Build
+  Tools) is per-user and needs no admin rights. Steps 0-7 get you building and debugging;
+  step 8 is only needed if you want to produce the installer.
 - **macOS (Apple Silicon)** — jump to [macOS](#macos-apple-silicon) near the end. Much
   shorter: no admin, no dev-shell, and the compiler comes from the Command Line Tools.
 
@@ -159,10 +160,26 @@ machine restores it from the share instead of rebuilding from source. It's a pla
 network path, not synced storage — nothing moves between machines except through this
 cache lookup, so there's no risk of it silently going stale or ballooning a sync folder.
 
-`build/debug/src/app/pixet.exe` should launch a window titled "pixet 0.1.0" — that's the
-P0 exit gate (needs `C:\Qt\6.8.3\msvc2022_64\bin` on `PATH`, or run from inside an IDE
-that sets it, since we haven't wired `windeployqt` yet). `build/debug/src/index/pixet-index.exe`
-should print a version stub.
+`build/debug/src/app/pixet.exe` should launch a window titled "pixet <version>", where the
+version comes from `project(pixet VERSION ...)` in the top-level `CMakeLists.txt` — that is
+the single source of truth every version string in the repo reads from (`src/core/version.cpp`
+via the `PIXET_VERSION` compile definition, the macOS bundle's `CFBundleShortVersionString`,
+and the installer filename), so it is the one place to bump.
+
+A locally built `pixet.exe` needs `C:\Qt\6.8.3\msvc2022_64\bin` on `PATH`, or to be run from
+an IDE that sets it (`.vscode/launch.json` does). `windeployqt` *is* wired up now, but only in
+the installer path (step 8) — dev builds deliberately stay un-deployed so an incremental
+rebuild never has to re-copy Qt. `build/debug/src/index/pixet-index.exe --help` should print
+its usage.
+
+Then run the tests:
+
+```powershell
+ctest --test-dir build/debug --output-on-failure
+```
+
+`build\debug\tests\pixet_tests.exe` is the same binary run directly, with more readable
+output on failure.
 
 ## 7. VS Code run/debug (recommended over the manual CLI steps above)
 
@@ -190,6 +207,112 @@ same reason step 6's manual dance exists, plus it wires up the shared vcpkg cach
 If `pixet.exe` fails to *launch* (not build) with a missing-DLL error, check
 `launch.json`'s `PATH` override still points at your actual Qt install (see the
 `CMakeUserPresets.json` note above if yours differs from `C:\Qt\6.8.3\msvc2022_64`).
+
+## 8. Building an installer you can give to someone else (Windows)
+
+Only needed when you want to hand pixet to someone who doesn't have a build tree — the
+Windows counterpart to macOS' `deploy-mac.sh` (step 6 of the macOS section).
+
+One extra tool, per-user and no admin:
+
+```powershell
+winget install -e --id JRSoftware.InnoSetup --scope user --accept-package-agreements --accept-source-agreements
+```
+
+`scripts/deploy-windows.ps1` looks for the compiler at
+`%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`, which is where the user-scope winget
+install puts it. If you installed Inno Setup machine-wide instead (Program Files), edit the
+`$iscc` path in that script.
+
+```powershell
+./scripts/deploy-windows.ps1
+```
+
+That is the whole thing — it does not reuse an existing `build/release` tree, it drives the
+full sequence itself:
+
+1. **Configure + build release with `-DPIXET_DEBUG_MENU=OFF`.** The `&Debug` menu ("Copy
+   Grid Debug Info") is deliberately kept in local release builds, but has no business in an
+   installer handed to someone else. Building through this script is the only way it gets
+   compiled out.
+2. **Stage into `build/win-deploy`** (wiped and recreated each run, so a stale DLL from a
+   previous Qt version can never leak into a build). Windows needs *two* sets of DLLs
+   carried, unlike macOS where the vcpkg triplet is static and only Qt needs bundling:
+   vcpkg's own (sqlite3, ffmpeg, libraw, libheif, ...) are already copied next to
+   `pixet.exe` by vcpkg's applocal step during every normal build, and Qt's are added here.
+   `pixet-index.exe` is staged alongside — it links only `pixet_core`, not Qt, so it needs
+   nothing extra.
+3. **Run `windeployqt`, then trim its output** to what pixet actually loads — the same
+   treatment [deploy-mac.sh](scripts/deploy-mac.sh) gives the `.app`, and for the same
+   reason: windeployqt's defaults assume an app that might render through any backend and
+   decode images with Qt, and pixet does neither. 115 MB staged becomes 73 MB, which is a
+   51 MB installer down to 40 MB:
+
+   | Dropped | Saves | Why it's safe |
+   |---|---|---|
+   | `opengl32sw.dll` (`--no-opengl-sw`) | 20 MB | Mesa's software GL rasterizer, a fallback for machines with no usable GL driver. Only a Qt Quick / `QOpenGLWidget` app can reach it; pixet links `Qt6::Widgets` alone and paints through the raster engine. |
+   | `dxcompiler.dll` + `dxil.dll` (`--no-system-dxc-compiler`) | 13.5 MB | Shader compilers for Qt RHI's D3D12 backend. Nothing here uses RHI. |
+   | `d3dcompiler_47.dll` (`--no-system-d3d-compiler`) | 4.7 MB | Same, for RHI's D3D11 backend. |
+   | `imageformats/`, `iconengines/`, `generic/`, `networkinformation/`, `tls/` | 1.3 MB | Every decode is pixet's own codec via `rgbImageToQImage`, the app icon is a `.ico`/`.png` resource, and pixet makes no network calls. Kept as an allowlist (`platforms`, `styles`) rather than a delete-list, so a future Qt adding new default plugins can't silently re-inflate the installer. |
+   | `Qt6Network.dll`, `Qt6Svg.dll` | 2.2 MB | Derived, not hardcoded: both are dead only as a *consequence* of the plugins above, so the script re-derives the answer from import tables (`dumpbin /dependents`) each run rather than naming them. |
+
+   `platforms\qwindows.dll` is what makes the app start at all and
+   `styles\qmodernwindowsstyle.dll` is the native Windows 11 look — dropping either is
+   visible immediately, so both are on the keep list. The script asserts `Qt6Core.dll` and
+   `platforms\qwindows.dll` survived, so a silently no-op'd deploy fails here rather than on
+   someone else's machine.
+4. **Compile the installer** with `ISCC.exe` from `scripts/pixet.iss`, passing the version
+   from `CMakeLists.txt` via `/DMyAppVersion=`. Output: `build/pixet-<version>-setup.exe`.
+
+What the resulting installer does, all of it per-user (`PrivilegesRequired=lowest`, so no
+UAC prompt):
+
+- Installs into `{userpf}\pixet` (`%LOCALAPPDATA%\Programs\pixet`), with a Start Menu entry
+  and an optional desktop shortcut.
+- Keeps a fixed `AppId`, so installing a newer build upgrades in place instead of leaving a
+  second copy. Don't regenerate that GUID.
+- Optionally registers pixet as an *available* handler for the still-image formats it
+  decodes (JPEG, PNG, HEIC, RAW, TIFF, WebP, AVIF — video is deliberately excluded, since
+  pixet already has a "use the system video player" preference). This does **not** steal any
+  existing default: Windows hash-protects the user's chosen default by design, so the user
+  still has to pick pixet once via Open-with or Settings. All entries are HKCU and are
+  removed on uninstall.
+- Ships `pixet-index.exe` in the same folder as the GUI, so the standalone indexer can't get
+  separated from the app it shares a database format with. It's useful on its own for
+  pre-indexing a library from Task Scheduler, or running `--render-raws` as a separate pass:
+
+  ```powershell
+  & "$env:LOCALAPPDATA\Programs\pixet\pixet-index.exe" --help
+  ```
+
+- Runs the Visual C++ redistributable installer before finishing. `pixet.exe` genuinely
+  needs it (`MSVCP140.dll`, `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` — this build's CRT is
+  dynamic, not static), and Microsoft's installer no-ops quickly when an equal-or-newer
+  runtime is already present.
+
+  Worth knowing, because nothing in this repo says so: **`vc_redist.x64.exe` is staged by
+  `windeployqt`, not by `deploy-windows.ps1`.** windeployqt copies it out of the VS install
+  alongside the Qt DLLs (look for `Updating vc_redist.x64.exe.` in its output), which is the
+  only reason `pixet.iss`' `Source: ..\build\win-deploy\vc_redist.x64.exe` line resolves.
+  So it is an implicit dependency on windeployqt's behaviour: if a future Qt stops doing
+  that, or someone adds `--no-compiler-runtime`, ISCC starts failing with a
+  missing-source-file error and `deploy-windows.ps1` is where the fetch would have to be
+  added.
+
+The recipient gets no Gatekeeper-style friction (unlike the macOS DMG), but the installer is
+unsigned, so SmartScreen will show a "Windows protected your PC" warning on first run until
+enough people install it — "More info" then "Run anyway" gets past it.
+
+### The full pre-release check
+
+```powershell
+./scripts/win-e2e.ps1
+```
+
+Chains what this project's workflow does by hand after any real change, stopping at the first
+failure: configure + build debug, run `pixet_tests.exe`, then `deploy-windows.ps1` (release
+build + installer), then the release `pixet_tests.exe`. Nothing new in it — it just calls the
+scripts above in order.
 
 ## macOS (Apple Silicon)
 
@@ -259,6 +382,8 @@ LLDB — install `vadimcn.vscode-lldb` alongside the C++ extensions. Note the de
 inside the bundle: `build/mac-debug/src/app/pixet.app/Contents/MacOS/pixet`.
 
 ### 6. Building something you can give to someone else
+
+The macOS counterpart to step 8 above (which does the same job on Windows, via Inno Setup).
 
 ```bash
 ./scripts/deploy-mac.sh
@@ -344,3 +469,13 @@ pixet reads them. Two things worth knowing so neither reads as a bug:
 - **PATH not picking up a freshly installed tool**: `winget`-installed tools update the
   registry's PATH but not your already-open shell's environment. Open a new terminal, or
   re-run the `$env:Path = [System.Environment]::GetEnvironmentVariable(...)` refresh line.
+- **`deploy-windows.ps1` says `ISCC.exe (Inno Setup) not found`**: either Inno Setup isn't
+  installed (step 8) or it went to a machine-wide location; the script only looks in
+  `%LOCALAPPDATA%\Programs\Inno Setup 6`.
+- **`deploy-windows.ps1` fails compiling the installer on a missing `vc_redist.x64.exe`**:
+  that file comes from `windeployqt`, not from the deploy script — check its output for
+  `Updating vc_redist.x64.exe.` (see step 8). Dropping a copy into `build\win-deploy` by hand
+  does not survive, since the script wipes that folder at the start of every run.
+- **The app builds but won't launch with a missing-DLL error**: a dev build is not
+  self-contained. Either put `C:\Qt\6.8.3\msvc2022_64\bin` on `PATH`, launch via F5 (step
+  7), or use the installer output (step 8), which is the only fully deployed build.

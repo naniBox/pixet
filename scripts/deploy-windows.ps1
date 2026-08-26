@@ -12,7 +12,11 @@
          normal build (see the LINK step output - `vcpkg.exe z-applocal ...`), so
          nothing new is needed for this half.
       2. Qt's - windeployqt.exe (Qt's own deployment tool, the Windows equivalent of
-         macdeployqt) adds these plus the platform/imageformats/styles plugin folders.
+         macdeployqt) adds these plus the plugin folders for every linked module.
+
+    windeployqt's default output is then trimmed to what pixet actually loads, the same
+    way deploy-mac.sh trims the .app: 115MB staged down to 73MB, a 51MB installer down
+    to 40MB. See the two prune steps below for what goes and why.
 
     Both land in a clean staging folder (build/win-deploy) rather than the raw
     build/release/src/app output, so a re-run always starts from exactly what the
@@ -95,11 +99,116 @@ try {
     Copy-Item "$repoRoot\build\release\src\app\*.dll" $stage -ErrorAction SilentlyContinue
 
     Write-Output "==> Running windeployqt (adding Qt DLLs + platform plugin)"
-    # --release: this is an MSVC Release build, don't pull in Qt's debug DLLs.
-    # --no-translations: pixet has no translation files to bundle; skips ~a dozen .qm
-    # files windeployqt would otherwise copy speculatively.
-    & $windeployqt --release --no-translations "$stage\pixet.exe"
+    # windeployqt's defaults are tuned for a Qt Quick app that might render through any
+    # backend and load any image format. pixet is a Widgets app that decodes every image
+    # with its own codecs (see QtInterop.h - not asking Qt to read image files is a
+    # deliberate design choice), so most of what it deploys by default is dead weight.
+    # These four flags skip the largest pieces at copy time rather than deleting them
+    # afterwards; the plugin prune below handles what has no flag.
+    #
+    #   --release                 MSVC Release build - don't pull in Qt's debug DLLs.
+    #   --no-translations         pixet ships no .qm files; skips ~a dozen copied
+    #                             speculatively.
+    #   --no-opengl-sw            opengl32sw.dll is Mesa's software GL rasterizer (20MB,
+    #                             the single largest file windeployqt adds). It is a
+    #                             fallback for machines with no usable GL driver, which
+    #                             only matters to a Qt Quick / QOpenGLWidget app. pixet
+    #                             links Qt6::Widgets alone (src/app/CMakeLists.txt) and
+    #                             paints through the raster engine.
+    #   --no-system-d3d-compiler  d3dcompiler_47.dll (4.7MB) - HLSL compiler for Qt RHI's
+    #                             D3D11 backend. Same reasoning: nothing here uses RHI.
+    #   --no-system-dxc-compiler  dxcompiler.dll + dxil.dll (13.5MB) - the newer DXC pair
+    #                             for RHI's D3D12 backend. Same reasoning again.
+    #
+    # NOT passed: --no-compiler-runtime. That would drop vc_redist.x64.exe, which pixet.iss
+    # requires (see its [Files]/[Run] sections) and which windeployqt is the only thing
+    # staging - see the redist note in SETUP.md step 8.
+    & $windeployqt --release --no-translations --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler "$stage\pixet.exe"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    Write-Output "==> Pruning Qt plugins this app never loads"
+    # Direct counterpart to deploy-mac.sh's own plugin prune - see that script for the
+    # longer version of this reasoning. windeployqt deploys the default plugin set for the
+    # linked modules, which is the right default and wrong for this app:
+    #
+    #   imageformats/  qgif, qico, qjpeg, qsvg - every decode is pixet's own codec via
+    #                  rgbImageToQImage, so these are loaded at startup and never used.
+    #   iconengines/   qsvgicon - only reachable through QIcon loading an .svg; the app
+    #                  icon is a .ico/.png resource (src/app/icons.qrc).
+    #   generic/       qtuiotouchplugin - TUIO tablet/touch protocol over UDP.
+    #   networkinformation/, tls/  - Qt6Network's plugins. pixet makes no network calls;
+    #                  these are here only because windeployqt saw Qt6Network, which is
+    #                  itself only here because these plugins link it.
+    #
+    # An allowlist rather than a delete-list, so a future Qt version adding new default
+    # plugins doesn't silently re-inflate the installer. platforms/qwindows.dll is what
+    # makes the app start at all; styles/qmodernwindowsstyle.dll is the native Windows 11
+    # look, and dropping it visibly regresses the UI to Qt's Fusion fallback.
+    $keepPluginDirs = @("platforms", "styles")
+    foreach ($dir in Get-ChildItem -Path $stage -Directory) {
+        if ($keepPluginDirs -contains $dir.Name) { continue }
+        $kb = [math]::Round((Get-ChildItem $dir.FullName -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1KB)
+        Write-Output "    dropping $($dir.Name)\ ($kb KB)"
+        Remove-Item -Recurse -Force $dir.FullName
+    }
+
+    Write-Output "==> Dropping Qt DLLs nothing left in the staging folder links against"
+    # Then drop any Qt DLL nothing that survived the prune actually imports. Derived rather
+    # than hardcoded, for the same reason deploy-mac.sh derives its dead-framework list:
+    # Qt6Svg and Qt6Network are dead only as a *consequence* of the plugins removed above,
+    # and naming them here would rot the moment that plugin set changed. Looped, because
+    # removing one DLL can orphan another.
+    #
+    # Scoped to Qt6*.dll on purpose. The vcpkg DLLs alongside them were placed by vcpkg's
+    # applocal step, which already derives them from import tables - re-deriving them here
+    # would at best agree and at worst delete something reached via LoadLibrary.
+    $dumpbin = (Get-Command dumpbin.exe -ErrorAction SilentlyContinue).Source
+    if (-not $dumpbin) {
+        # Should not happen: configure.ps1 entered the VS dev shell in this same process a
+        # few steps ago. Fall back to locating it the way configure.ps1 locates the shell.
+        $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+        $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        $dumpbin = Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" -Filter dumpbin.exe -Recurse -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -like "*\Hostx64\x64\*" } |
+                   Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $dumpbin) {
+        Write-Error "dumpbin.exe not found - cannot determine which Qt DLLs are unused"
+        exit 1
+    }
+
+    # One dumpbin pass over everything staged - the two executables, the surviving plugins,
+    # and the Qt DLLs themselves (Qt6Widgets imports Qt6Gui, so inter-DLL edges count).
+    # Read once into a map rather than per candidate: deleting a file never changes what
+    # the *others* import, so the graph is fixed and re-running dumpbin per pass would just
+    # be the same answer at ~10x the process spawns.
+    $imports = @{}
+    foreach ($bin in Get-ChildItem -Path $stage -Recurse -File -Include *.exe, *.dll) {
+        # vc_redist.x64.exe is a self-extracting installer, not something that links Qt.
+        if ($bin.Name -eq "vc_redist.x64.exe") { continue }
+        $imports[$bin.FullName] = (& $dumpbin /nologo /dependents $bin.FullName 2>$null) -join "`n"
+    }
+
+    while ($true) {
+        $dropped = $false
+        foreach ($qtDll in Get-ChildItem -Path $stage -Filter "Qt6*.dll") {
+            $used = $false
+            foreach ($binPath in $imports.Keys) {
+                # Skip the candidate itself, and anything already dropped by an earlier
+                # pass - an orphan's own imports must not keep its dependencies alive.
+                if ($binPath -eq $qtDll.FullName) { continue }
+                if (-not (Test-Path $binPath)) { continue }
+                if ($imports[$binPath] -match [regex]::Escape($qtDll.Name)) { $used = $true; break }
+            }
+            if (-not $used) {
+                $kb = [math]::Round($qtDll.Length / 1KB)
+                Write-Output "    dropping $($qtDll.Name) ($kb KB)"
+                Remove-Item -Force $qtDll.FullName
+                $dropped = $true
+            }
+        }
+        if (-not $dropped) { break }
+    }
 
     # Cheap guard against the classic "works only on the machine that built it" mistake -
     # confirms windeployqt actually did something rather than silently no-op'ing (e.g.
