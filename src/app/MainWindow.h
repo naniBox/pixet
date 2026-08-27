@@ -36,6 +36,7 @@ class FolderIndexer;
 class BackgroundReconciler;
 class RawRenderer;
 class FullscreenViewer;
+class RawCacheWarmer;
 
 namespace pixet {
 class Database;
@@ -404,6 +405,10 @@ private:
     std::unique_ptr<ThumbLoader> thumbLoader_;
     std::unique_ptr<PreviewDecoder> previewDecoder_;
     std::unique_ptr<FolderIndexer> folderIndexer_;
+    // Warms the RAW cache's memory tier for whatever the grid is showing - see
+    // RawCacheWarmer.h. Per window, unlike BackgroundReconciler/RawRenderer below, because
+    // what is on screen is exactly the thing that differs between windows.
+    std::unique_ptr<RawCacheWarmer> rawCacheWarmer_;
     // BackgroundReconciler (the low-priority sweep that keeps indexed folders honest against
     // on-disk changes) and RawRenderer (the background upgrade of RAW files from a fast
     // embedded preview to a full demosaic render) are deliberately *not* owned here. Both are

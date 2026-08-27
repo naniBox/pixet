@@ -111,6 +111,9 @@ add_executable(pixet ${PIXET_APP_TYPE}
     LicenseDialog.h
     LicenseDialog.cpp
 
+    RawCacheWarmer.h
+    RawCacheWarmer.cpp
+
     icons.qrc
 )
 

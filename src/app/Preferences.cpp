@@ -20,6 +20,37 @@ QString settingsFilePath() {
 
 QSettings settingsStore() { return QSettings(settingsFilePath(), QSettings::IniFormat); }
 
+QString rawCacheDir() { return QString::fromStdString(pixet::appDataDir()) + QStringLiteral("/rawcache"); }
+
+int rawCacheLongEdge() {
+    int v = settingsStore().value(QStringLiteral("rawCacheLongEdge"), kDefaultRawCacheLongEdge).toInt();
+    // Clamped rather than snapped to a preset: any sane size works, and refusing to honour
+    // a hand-edited ini would be surprising for no gain.
+    return std::clamp(v, 640, 8192);
+}
+
+void setRawCacheLongEdge(int px) { settingsStore().setValue(QStringLiteral("rawCacheLongEdge"), px); }
+
+qint64 rawCacheMaxBytes() {
+    qint64 v = settingsStore().value(QStringLiteral("rawCacheMaxBytes"), (qint64)kDefaultRawCacheMaxBytes).toLongLong();
+    return std::max<qint64>(0, v); // 0 is meaningful: cache disabled
+}
+
+void setRawCacheMaxBytes(qint64 bytes) {
+    settingsStore().setValue(QStringLiteral("rawCacheMaxBytes"), std::max<qint64>(0, bytes));
+}
+
+qint64 rawCacheMemoryBytes() {
+    qint64 v = settingsStore()
+                    .value(QStringLiteral("rawCacheMemoryBytes"), (qint64)kDefaultRawCacheMemoryBytes)
+                    .toLongLong();
+    return std::max<qint64>(0, v);
+}
+
+void setRawCacheMemoryBytes(qint64 bytes) {
+    settingsStore().setValue(QStringLiteral("rawCacheMemoryBytes"), std::max<qint64>(0, bytes));
+}
+
 bool licenseAccepted() { return settingsStore().value(QStringLiteral("licenseAccepted"), false).toBool(); }
 
 void setLicenseAccepted(bool accepted) { settingsStore().setValue(QStringLiteral("licenseAccepted"), accepted); }

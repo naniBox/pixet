@@ -13,6 +13,7 @@ add_executable(pixet_tests
     test_dirrows.cpp
     test_thumbgen.cpp
     test_pngcodec.cpp
+    test_rawcache.cpp
     test_rawcodec.cpp
     test_videocodec.cpp
     test_tiffcodec.cpp

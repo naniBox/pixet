@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHBoxLayout>
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
@@ -25,6 +26,16 @@
 
 #include "KeyBindings.h"
 #include "Preferences.h"
+#include "cache/RawCache.h"
+
+namespace {
+// One shape for both RAW-cache budget drop-downs: a label and the exact byte count it
+// means, so a preset that is still selected never has to be re-parsed from its own text.
+struct BudgetPreset {
+    const char *label;
+    qint64 bytes;
+};
+} // namespace
 
 PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     setWindowTitle(QStringLiteral("Preferences"));
@@ -76,6 +87,99 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
         thumbnailSizeCombo_->findData(originalThumbnailSize_));
     thumbLayout->addRow(QStringLiteral("Grid thumbnail size:"), thumbnailSizeCombo_);
     generalLayout->addWidget(thumbGroup);
+
+    // --- RAW decode cache -------------------------------------------------------------
+    // A full demosaic is the one decode slow enough to be worth keeping on disk - seconds
+    // per file, repeated every time the same RAW is looked at. See core/cache/RawCache.h.
+    auto *rawGroup = new QGroupBox(QStringLiteral("RAW decode cache"), generalTab);
+    auto *rawLayout = new QFormLayout(rawGroup);
+
+    rawCacheSizeCombo_ = new QComboBox(rawGroup);
+    const int currentEdge = prefs::rawCacheLongEdge();
+    bool edgeListed = false;
+    for (int px : prefs::kRawCacheSizePresets) {
+        rawCacheSizeCombo_->addItem(QStringLiteral("%1 px").arg(px), px);
+        if (px == currentEdge) edgeListed = true;
+    }
+    // A size from a hand-edited ini (or a future build's longer list) is kept as its own
+    // entry rather than being silently rounded to a neighbour - same courtesy the grid
+    // thumbnail list extends to its own out-of-list values.
+    if (!edgeListed) rawCacheSizeCombo_->insertItem(0, QStringLiteral("%1 px").arg(currentEdge), currentEdge);
+    rawCacheSizeCombo_->setCurrentIndex(rawCacheSizeCombo_->findData(currentEdge));
+    rawLayout->addRow(QStringLiteral("Cached decode size:"), rawCacheSizeCombo_);
+
+    rawCacheBudgetCombo_ = new QComboBox(rawGroup);
+    rawCacheBudgetCombo_->setEditable(true);
+    rawCacheBudgetCombo_->setInsertPolicy(QComboBox::NoInsert);
+    static const BudgetPreset kBudgets[] = {
+        {"Off (don't cache)", 0},
+        {"512 MB", 512LL * 1024 * 1024},
+        {"1 GB", 1LL * 1024 * 1024 * 1024},
+        {"2 GB", 2LL * 1024 * 1024 * 1024},
+        {"5 GB", 5LL * 1024 * 1024 * 1024},
+        {"10 GB", 10LL * 1024 * 1024 * 1024},
+        {"20 GB", 20LL * 1024 * 1024 * 1024},
+    };
+    for (const BudgetPreset &b : kBudgets) {
+        rawCacheBudgetCombo_->addItem(QString::fromLatin1(b.label), (qint64)b.bytes);
+    }
+    const qint64 currentBudget = prefs::rawCacheMaxBytes();
+    int budgetIndex = rawCacheBudgetCombo_->findData(currentBudget);
+    if (budgetIndex >= 0) {
+        rawCacheBudgetCombo_->setCurrentIndex(budgetIndex);
+    } else {
+        // Editable, so a value that isn't a preset shows as text the user can edit rather
+        // than snapping to the nearest one - the whole point of it being free choice.
+        rawCacheBudgetCombo_->setCurrentText(
+            QStringLiteral("%1 GB").arg(currentBudget / double(1024 * 1024 * 1024), 0, 'g', 3));
+    }
+    rawCacheBudgetCombo_->setToolTip(
+        QStringLiteral("Pick a preset or type your own, e.g. \"3 GB\", \"750 MB\". "
+                        "When the cache goes over this, the least recently used entries are deleted."));
+    rawLayout->addRow(QStringLiteral("Maximum cache size:"), rawCacheBudgetCombo_);
+
+    // The memory tier. Same editable-combo treatment as the disk budget, and for the same
+    // reason: how much RAM to spend is a personal number. Entries here are decoded images
+    // rather than JPEGs, so the useful range is much smaller than the disk one.
+    rawCacheMemoryCombo_ = new QComboBox(rawGroup);
+    rawCacheMemoryCombo_->setEditable(true);
+    rawCacheMemoryCombo_->setInsertPolicy(QComboBox::NoInsert);
+    static const BudgetPreset kMemBudgets[] = {
+        {"Off (always read from disk)", 0},
+        {"128 MB", 128LL * 1024 * 1024},
+        {"256 MB", 256LL * 1024 * 1024},
+        {"512 MB", 512LL * 1024 * 1024},
+        {"1 GB", 1LL * 1024 * 1024 * 1024},
+        {"2 GB", 2LL * 1024 * 1024 * 1024},
+    };
+    for (const BudgetPreset &b : kMemBudgets) {
+        rawCacheMemoryCombo_->addItem(QString::fromLatin1(b.label), (qint64)b.bytes);
+    }
+    const qint64 currentMem = prefs::rawCacheMemoryBytes();
+    int memIndex = rawCacheMemoryCombo_->findData(currentMem);
+    if (memIndex >= 0) {
+        rawCacheMemoryCombo_->setCurrentIndex(memIndex);
+    } else {
+        rawCacheMemoryCombo_->setCurrentText(
+            QStringLiteral("%1 MB").arg(currentMem / (1024 * 1024)));
+    }
+    rawCacheMemoryCombo_->setToolTip(
+        QStringLiteral("Decoded images held in RAM, so what's on screen opens with no disk read "
+                        "and no decode. A 2560 px decode is about 13 MB."));
+    rawLayout->addRow(QStringLiteral("Keep in memory:"), rawCacheMemoryCombo_);
+
+    auto *usageRow = new QWidget(rawGroup);
+    auto *usageLayout = new QHBoxLayout(usageRow);
+    usageLayout->setContentsMargins(0, 0, 0, 0);
+    rawCacheUsageLabel_ = new QLabel(usageRow);
+    usageLayout->addWidget(rawCacheUsageLabel_, /*stretch=*/1);
+    auto *clearRawButton = new QPushButton(QStringLiteral("Clear Cache"), usageRow);
+    connect(clearRawButton, &QPushButton::clicked, this, &PreferencesDialog::onClearRawCacheClicked);
+    usageLayout->addWidget(clearRawButton);
+    rawLayout->addRow(QStringLiteral("Currently using:"), usageRow);
+    refreshRawCacheUsage();
+
+    generalLayout->addWidget(rawGroup);
     generalLayout->addStretch(1);
     tabs->addTab(generalTab, QStringLiteral("General"));
 
@@ -240,6 +344,52 @@ void PreferencesDialog::onReindexClicked() {
         QStringLiteral("Re-index started - already-known folders will catch up in the background."));
 }
 
+void PreferencesDialog::refreshRawCacheUsage() {
+    const pixet::rawcache::Stats s = pixet::rawcache::stats();
+    rawCacheUsageLabel_->setText(QStringLiteral("%1 MB in %2 file%3  ·  %4 MB resident")
+                                      .arg(s.bytes / double(1024 * 1024), 0, 'f', 1)
+                                      .arg(s.entries)
+                                      .arg(s.entries == 1 ? QString() : QStringLiteral("s"))
+                                      .arg(s.memoryBytes / double(1024 * 1024), 0, 'f', 1));
+}
+
+void PreferencesDialog::onClearRawCacheClicked() {
+    // No confirmation: this is a cache. The worst case is that the next RAW takes as long
+    // to open as it did the first time, which is not a loss worth a modal dialog.
+    pixet::rawcache::clear();
+    refreshRawCacheUsage();
+}
+
+qint64 PreferencesDialog::parseRawCacheBudget(const QComboBox *combo, bool bareNumberIsGb) const {
+    // A preset that is still selected as-is carries its exact byte count, so prefer that
+    // over re-parsing our own label and risking a rounding difference.
+    const int idx = combo->currentIndex();
+    if (idx >= 0 && combo->itemText(idx) == combo->currentText()) {
+        return combo->itemData(idx).toLongLong();
+    }
+
+    QString text = combo->currentText().trimmed().toLower();
+    if (text.isEmpty()) return -1;
+    if (text.startsWith(QStringLiteral("off"))) return 0;
+
+    // Accepts "3 gb", "3g", "750mb", "1.5 GB" - a deliberately forgiving parse, because the
+    // field is free text and the units are the part people leave off or abbreviate.
+    qint64 multiplier = bareNumberIsGb ? 1024LL * 1024 * 1024 : 1024LL * 1024;
+    if (text.contains(QStringLiteral("t"))) multiplier = 1024LL * 1024 * 1024 * 1024;
+    else if (text.contains(QStringLiteral("m"))) multiplier = 1024LL * 1024;
+    else if (text.contains(QStringLiteral("k"))) multiplier = 1024LL;
+
+    QString number;
+    for (QChar c : text) {
+        if (c.isDigit() || c == QLatin1Char('.')) number += c;
+        else if (!number.isEmpty()) break;
+    }
+    bool ok = false;
+    const double value = number.toDouble(&ok);
+    if (!ok || value < 0) return -1;
+    return (qint64)(value * multiplier);
+}
+
 void PreferencesDialog::onNukeClicked() {
     auto choice = QMessageBox::warning(
         this, QStringLiteral("Reset Index?"),
@@ -307,6 +457,20 @@ void PreferencesDialog::accept() {
     int newSize = thumbnailSizeCombo_->currentData().toInt();
     prefs::setThumbnailIconSize(newSize);
     if (newSize != originalThumbnailSize_) emit thumbnailSizeChanged();
+
+    prefs::setRawCacheLongEdge(rawCacheSizeCombo_->currentData().toInt());
+    // -1 means the text couldn't be parsed as a size. Leaving the old value alone beats
+    // both alternatives: writing 0 would silently disable the cache over a typo, and
+    // refusing to close the dialog would be a lot of ceremony for one malformed field.
+    const qint64 budget = parseRawCacheBudget(rawCacheBudgetCombo_, /*bareNumberIsGb=*/true);
+    if (budget >= 0) prefs::setRawCacheMaxBytes(budget);
+    // Bare numbers here mean MB, not GB: the presets are in MB and "512" typed into a field
+    // labelled in megabytes should not silently become half a terabyte of RAM.
+    const qint64 memBudget = parseRawCacheBudget(rawCacheMemoryCombo_, /*bareNumberIsGb=*/false);
+    if (memBudget >= 0) prefs::setRawCacheMemoryBytes(memBudget);
+    // Applied immediately rather than at next launch, and this is also what trims the
+    // cache when the budget was lowered - see rawcache::configure().
+    emit rawCacheSettingsChanged();
 
     for (auto it = keyBindingEdits_.constBegin(); it != keyBindingEdits_.constEnd(); ++it) {
         keybindings::setBinding(it.key(), it.value()->keySequence());

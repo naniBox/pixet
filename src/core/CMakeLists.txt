@@ -48,6 +48,9 @@ add_library(pixet_core STATIC
 
     decode/RgbImage.h
     decode/RgbImage.cpp
+
+    cache/RawCache.h
+    cache/RawCache.cpp
     decode/JpegCodec.h
     decode/JpegCodec.cpp
     decode/PngCodec.h

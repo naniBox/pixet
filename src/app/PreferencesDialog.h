@@ -44,11 +44,17 @@ signals:
     // reason nukeDatabaseRequested() exists: it owns the live Database connection, which
     // this dialog deliberately never touches directly.
     void databaseStatsRequested();
+    // OK was clicked - MainWindow re-applies the RAW cache settings to pixet_core (see
+    // rawcache::configure()). Emitted unconditionally rather than only on a change: the
+    // call is cheap, and configure() is also what trims the cache when the budget was
+    // lowered, so skipping it when "nothing changed" would be the one case that matters.
+    void rawCacheSettingsChanged();
 
 private slots:
     void onBrowseCustomPlayer();
     void onReindexClicked();
     void onNukeClicked();
+    void onClearRawCacheClicked();
     void accept() override;
 
 private:
@@ -62,6 +68,13 @@ private:
     // Only affects on-demand navigation (FolderIndexer) and pixet-index's default;
     // BackgroundReconciler/RawRenderer stay pinned to 1 regardless of this setting.
     QSpinBox *indexerThreadsSpin_;
+    // RAW decode cache - see core/cache/RawCache.h. The size combo is a fixed list; the
+    // budget combo is editable, because "how much disk am I willing to spend" is a
+    // genuinely personal number that no list of presets can cover.
+    QComboBox *rawCacheSizeCombo_;
+    QComboBox *rawCacheBudgetCombo_;
+    QComboBox *rawCacheMemoryCombo_;
+    QLabel *rawCacheUsageLabel_;
     QLabel *reindexStatusLabel_;
     QLabel *nukeStatusLabel_;
     QMap<keybindings::Action, QKeySequenceEdit *> keyBindingEdits_;
@@ -69,6 +82,13 @@ private:
     int originalThumbnailSize_ = 0;
 
     void updateCustomPlayerEnabled();
+    // Re-reads the cache directory and puts the total in rawCacheUsageLabel_. Walks the
+    // directory, so it is called on open and after a clear, not on every keystroke.
+    void refreshRawCacheUsage();
+    // Parses the budget combo's current text - a preset's own data, or something the user
+    // typed like "3 GB" / "500mb" / "1.5g". Returns -1 if it can't be read as a size, which
+    // accept() treats as "leave the setting alone" rather than as zero.
+    qint64 parseRawCacheBudget(const QComboBox *combo, bool bareNumberIsGb) const;
     void onResetKeyBindings();
     // Checks every keyBindingEdits_ entry against reservedSequences() and against
     // each other; on conflict, shows a QMessageBox naming both actions involved and

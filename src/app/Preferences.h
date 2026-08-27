@@ -26,6 +26,36 @@ QSettings settingsStore();
 // worth nothing if nothing ever tells the user where it is.
 QString settingsFilePath();
 
+// The on-disk cache of decoded RAW images - see core/cache/RawCache.h for what it stores
+// and why it isn't in the database. These three are the whole of its configuration.
+//
+// Long edge is the size entries are stored at, and is part of every cache key, so changing
+// it ages the old size out rather than invalidating anything. Max bytes of 0 turns the
+// cache off without deleting what's already there.
+//
+// kRawCacheSizePresets is what the drop-down offers; the stored value is a plain int, so a
+// value from a future build (or a hand-edited ini) still loads rather than being snapped to
+// the nearest preset.
+constexpr int kRawCacheSizePresets[] = {1440, 1600, 1920, 2560, 3840};
+constexpr int kDefaultRawCacheLongEdge = 2560;
+constexpr qint64 kDefaultRawCacheMaxBytes = 2LL * 1024 * 1024 * 1024; // 2 GiB
+
+int rawCacheLongEdge();
+void setRawCacheLongEdge(int px);
+qint64 rawCacheMaxBytes();
+void setRawCacheMaxBytes(qint64 bytes);
+
+// How much RAM the decoded tier in front of those files may hold. A decoded 2560px image
+// is ~13MB, so the default is roughly 40 of them - a screenful plus room to scroll back
+// through. 0 keeps the files but serves every hit from disk.
+constexpr qint64 kDefaultRawCacheMemoryBytes = 512LL * 1024 * 1024;
+qint64 rawCacheMemoryBytes();
+void setRawCacheMemoryBytes(qint64 bytes);
+
+// Absolute path of the cache directory, alongside index.db/thumbs.db in the same per-user
+// app data folder - one place to look for everything pixet stores.
+QString rawCacheDir();
+
 // Whether the license has been accepted on this machine. Only ever consulted where no
 // installer presented it - see LicenseDialog.h, which owns the whole of that decision and is
 // the only thing that should be writing this.
