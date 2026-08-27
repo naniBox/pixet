@@ -5,6 +5,131 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-27 — mac — pixet was crawling the whole disk, and macOS was telling us so
+
+Reported as "I keep getting *pixet.app would like to access your Downloads / Photo
+Library*, at random times - I put the machine to sleep and got one on waking". The guess in
+the report was right: it was indexing the entire drive.
+
+**The code was clean.** There is exactly one filesystem walker (`listDir` in
+`DirWalker_mac.cpp`) with exactly one caller (`Indexer.cpp`). No `QDirIterator`, no
+`entryList`, no `recursive_directory_iterator`. Its filters work - checked against the live
+index, which had **zero** rows inside a macOS package or a dot-directory. Every worker
+thread reaches exactly as far as its class comment says. No thread went anywhere it
+shouldn't; the worklist it was given was wrong.
+
+### Three reasonable decisions that composed into a disk crawl
+
+1. Pass A wrote a `dirs` row for every subdirectory it *listed*, not every one it indexed.
+   On a non-recursive run those rows were never read back at all - `run()` ignores
+   `subdirsOut` entirely when it isn't descending.
+2. `BackgroundReconciler`'s worklist was `SELECT id, path FROM dirs` - every row.
+3. Nothing ever deleted a `dirs` row. Vanished *files* were pruned; directories were
+   append-only.
+
+So each sweep listed a directory, which registered its children, which the next pass swept.
+A breadth-first crawl gaining one level per rotation, forever.
+
+The rowids date the start of it exactly:
+
+```
+rowid    1..4945   /Users/...        normal browsing
+rowid      4946    /                 ← one navigation to the filesystem root
+rowid 4947..4955   /usr /nix /bin /sbin /Library /System /private /Applications
+rowid 4956..41349  everything under those, added by the reconciler
+```
+
+One visit to `/` - which the Up button added on the 24th makes reachable by holding Alt+Up
+- did it. `/nix` shows the frontier plainly: depth 1 → 1 dir, 2 → 2, 3 → 4,303, 4 → 9,080,
+5 → 7,207. The library had reached **41,349 directory rows for 7,264 media files**, 99.4%
+of them holding no media; 17,139 had never been scanned; a full rotation at the (correctly
+gentle) 1.5s per directory took **17.2 hours**.
+
+The prompts follow from that: `~/Downloads`, `~/Documents`, `~/Desktop`, `~/Movies` and
+`~/Pictures` were all in the rotation, so one fires whenever the cursor reaches one.
+`~/Pictures` is **rowid 1** - `restoreLastDirectory()`'s first-run default, in since the
+very first launch. The sleep case is a `QTimer` that expired while the machine was asleep
+firing the moment it wakes.
+
+And why answering a prompt didn't make it stop: `codesign` reports
+`flags=0x20002(adhoc,linker-signed)`, `TeamIdentifier=not set`. TCC keys decisions on code
+identity, so every relink is a new app and every previously-answered prompt comes back.
+That part is a property of developing the app, not a bug in it.
+
+### The fix
+
+Two changes, and the third and fourth ideas from the original write-up turned out to be
+unnecessary once these landed:
+
+- **`Indexer` only registers a directory it is going to index** (`if (opts_.recursive)`).
+  Navigating to `/` now creates exactly one row. `pixet-index`'s whole-tree pre-warm is
+  untouched: it runs recursive, so it still registers and descends everything.
+- **`BackgroundReconciler` sweeps only directories that hold indexed media.** Drift is a
+  property of files; a directory with no `files` rows has nothing to detect. A folder that
+  later gains photos is picked up when the user browses to it, which is the same
+  "browsing is what indexes" contract the rest of the app runs on.
+
+A configurable library root and a TCC-location blocklist were both on the list and are both
+now pointless - with the two changes above, nothing can enlist a directory the user hasn't
+opened, so there is no boundary left to enforce. Worth recording that the simpler fix
+subsumed the more elaborate ones rather than being a compromise against them.
+
+- **`pruneDirs()`** (new, in `DirRows` next to `upsertDir` - same lifecycle) clears what's
+  already there: barren rows first by pure SQL to a fixpoint, then the survivors stat'd and
+  the provably-gone ones removed with their files and thumbnail blobs, then an orphan sweep.
+  Called by the reconciler at the start of each cycle. Needed a new
+  `idx_dirs_parent` index: the "does anything call me parent?" subquery is a full scan
+  without it, which on 41,349 rows is quadratic and takes the prune from milliseconds to
+  minutes.
+
+### `DirPresence`, and the way this could have destroyed data
+
+The prune has to ask "is this directory still there?", and the obvious `bool` is wrong. On
+macOS a TCC-protected folder cannot be `stat`'d at all - `EACCES`, not `ENOENT`. Flattening
+those two into one answer would have deleted the index for every folder the user hadn't
+granted access to: exactly the folders this bug was pestering them about, deleted as a
+consequence of fixing it.
+
+So `dirPresence()` returns `Present`/`Missing`/`Unreadable`, and only `Missing` (ENOENT,
+ENOTDIR - and on Windows the two not-found codes, so an unmounted share doesn't read as
+deleted) ever removes anything. `PruneKeepsDirectoriesItCannotReachRatherThanAssumingTheyAreGone`
+pins it down with a mode-000 parent, which is the same errno by the same mechanism, and
+bails out rather than falsely failing if run as root.
+
+Ordering matters for the same reason: barren rows go first, by SQL, because stat'ing tens
+of thousands of paths across the whole disk is itself a way to trip the prompts this exists
+to stop.
+
+### Measured on the live library
+
+| | before | after |
+|---|---|---|
+| `dirs` rows | 41,349 | **272** |
+| in the sweep rotation | 41,349 | **179** |
+| full rotation time | 17.2 hours | ~4.5 minutes |
+| directories outside `~/data` | thousands, incl. `/nix`, `/System`, `/usr` | the ancestor spine only |
+
+The prune reported `40,978 barren and 74 missing directories, 1,976 file rows, 1,976
+thumbnails`. Verified against a pre-prune `sqlite3 .backup`: 44 directories that had held
+media lost their row, and **all 44 were confirmed gone from disk** (a deleted offline
+website mirror). Zero directories that still exist lost their index.
+
+`/System/Library/Desktop Pictures`, `/Library/User Pictures`, `/usr/share/httpd/icons` and
+`/nix/store/…` genuinely contain images, so they survived the "holds media" rule on their
+own merits - 179 files of macOS wallpapers, CUPS test pages and Apache icons. Removed by
+hand, on the user's call; nothing in the code would have re-added them. `~/Downloads`,
+`~/Movies` and `~/Pictures/Greenshot` were kept deliberately - they're browsed on purpose,
+and they are now the only TCC-gated folders left in the rotation.
+
+### Note for the next person who wonders why it came back
+
+`/Applications/pixet.app` is a separate install from the build tree and had the old binary.
+Until it was replaced, running it would have re-seeded the crawl from the `/`, `/nix` and
+`/System` spine rows the prune leaves alive as ancestors. Rebuilt via `scripts/mac-e2e.sh`
+and installed; the previous bundle is parked at `/Applications/pixet.app.old-2026-08-27`.
+
+---
+
 ## 2026-08-24 — mac — Thumbnail what's on screen first
 
 The first of the three levers listed as "not done" under the profiler entry below, and by
