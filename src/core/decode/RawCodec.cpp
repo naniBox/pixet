@@ -4,6 +4,10 @@
 
 #include <libraw/libraw.h>
 
+#ifdef _WIN32
+#include "../util/StringUtil.h"
+#endif
+
 #include "JpegCodec.h"
 #include "RgbImage.h"
 
@@ -35,13 +39,20 @@ int exifOrientationForFlip(int flip) {
     }
 }
 
-} // namespace
+// Dimensions from an already-opened LibRaw. open_file()/open_buffer() alone (no unpack())
+// has already parsed the header, so this is pure field reading.
+bool dimensionsFrom(LibRaw &raw, int &width, int &height) {
+    width = raw.imgdata.sizes.width;
+    height = raw.imgdata.sizes.height;
+    // sizes.flip uses LibRaw's own encoding (0 = none, 3 = 180, 5 = 90 CCW, 6 = 90 CW),
+    // not EXIF's - a 90-degree rotation swaps which dimension is "long".
+    if (raw.imgdata.sizes.flip == 5 || raw.imgdata.sizes.flip == 6) std::swap(width, height);
+    return width > 0 && height > 0;
+}
 
-bool decodeRawThumb(const uint8_t *data, size_t size, int targetLongEdge, RgbImage &out) {
-    LibRaw raw;
-    if (raw.open_buffer(nonConst(data), size) != LIBRAW_SUCCESS) return false;
-    if (raw.unpack_thumb() != LIBRAW_SUCCESS) return false;
-
+// Everything after unpack_thumb(), shared by the buffer and file entry points so the two
+// can never drift on orientation handling or on which thumbnail types are accepted.
+bool extractUnpackedThumb(LibRaw &raw, int targetLongEdge, RgbImage &out) {
     int err = 0;
     libraw_processed_image_t *thumb = raw.dcraw_make_mem_thumb(&err);
     if (!thumb) return false;
@@ -82,6 +93,40 @@ bool decodeRawThumb(const uint8_t *data, size_t size, int targetLongEdge, RgbIma
     if (ok) applyOrientation(out, exifOrientationForFlip(raw.imgdata.sizes.flip));
 
     return ok;
+}
+
+// LibRaw's own wide-character overload on Windows. Its narrow open_file() interprets the
+// path in the active ANSI codepage, not UTF-8 - the same trap FileIO_win.cpp exists to
+// avoid - so a photo under a non-ASCII folder name would simply fail to open.
+int openRawFile(LibRaw &raw, const std::string &pathUtf8) {
+#ifdef _WIN32
+    return raw.open_file(toUtf16(pathUtf8).c_str());
+#else
+    return raw.open_file(pathUtf8.c_str());
+#endif
+}
+
+} // namespace
+
+bool decodeRawThumb(const uint8_t *data, size_t size, int targetLongEdge, RgbImage &out) {
+    LibRaw raw;
+    if (raw.open_buffer(nonConst(data), size) != LIBRAW_SUCCESS) return false;
+    if (raw.unpack_thumb() != LIBRAW_SUCCESS) return false;
+    return extractUnpackedThumb(raw, targetLongEdge, out);
+}
+
+bool decodeRawThumbFromFile(const std::string &pathUtf8, int targetLongEdge, RgbImage &out, int &width,
+                            int &height) {
+    width = height = 0;
+
+    LibRaw raw;
+    if (openRawFile(raw, pathUtf8) != LIBRAW_SUCCESS) return false;
+    // Before unpack_thumb(), so the caller still learns the file's real dimensions even when
+    // there turns out to be no usable preview and it has to fall back to a full decode.
+    dimensionsFrom(raw, width, height);
+
+    if (raw.unpack_thumb() != LIBRAW_SUCCESS) return false;
+    return extractUnpackedThumb(raw, targetLongEdge, out);
 }
 
 bool decodeRaw(const uint8_t *data, size_t size, RgbImage &out) {
@@ -126,13 +171,7 @@ bool readRawDimensions(const uint8_t *data, size_t size, int &width, int &height
 
     // open_buffer() alone (no unpack()) already parses the file's metadata/header,
     // including sizes.width/height - a genuine header-only read, no pixel decode.
-    width = raw.imgdata.sizes.width;
-    height = raw.imgdata.sizes.height;
-    // sizes.flip uses LibRaw's own encoding (0 = none, 3 = 180, 5 = 90 CCW, 6 = 90 CW),
-    // not EXIF's - a 90-degree rotation swaps which dimension is "long".
-    if (raw.imgdata.sizes.flip == 5 || raw.imgdata.sizes.flip == 6) std::swap(width, height);
-
-    return width > 0 && height > 0;
+    return dimensionsFrom(raw, width, height);
 }
 
 } // namespace pixet

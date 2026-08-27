@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <string>
+
 #include "RgbImage.h"
 
 namespace pixet {
@@ -33,5 +35,25 @@ bool decodeRaw(const uint8_t *data, size_t size, RgbImage &out);
 // what decodeRawThumb()/decodeRaw() actually produce (LibRaw auto-rotates its output
 // to match, unlike JPEG where orientation is applied as a separate explicit step).
 bool readRawDimensions(const uint8_t *data, size_t size, int &width, int &height);
+
+// decodeRawThumb() + readRawDimensions() in one, reading through LibRaw's own file
+// datastream instead of being handed the file's bytes up front.
+//
+// This is not a convenience overload, it is the difference between reading ~0.4MB and ~24MB
+// per file. A RAW's embedded preview lives near the front (measured on Sony ARW: a 5KB
+// thumbnail at 39KB in and a 229KB preview ending 0.36MB into a 23.6MB file), so LibRaw
+// needs only the header, the metadata and the preview's own bytes. Handing it a buffer
+// instead forces the caller to read all 24MB first, and on a spinning disk that read *is*
+// the thumbnailing time - a 335-file folder of ARWs costs 7.8GB of I/O to extract 120MB of
+// previews.
+//
+// Both dimensions and preview come from one open, so a caller that wants both doesn't pay
+// for a second header parse. Returns false if there is no usable embedded preview (the
+// caller should fall back to reading the file and calling decodeRaw()) or on any error;
+// width/height may still have been filled in when it does.
+//
+// `pathUtf8` is UTF-8, converted to UTF-16 on Windows so non-ASCII paths open correctly.
+bool decodeRawThumbFromFile(const std::string &pathUtf8, int targetLongEdge, RgbImage &out, int &width,
+                            int &height);
 
 } // namespace pixet

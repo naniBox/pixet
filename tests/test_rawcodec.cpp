@@ -8,6 +8,12 @@
 // forceFullRender -> Done) against a real Sony ARW file - not committed here, since a
 // test depending on a specific absolute path on one machine isn't portable/
 // reproducible.
+//
+// decodeRawThumbFromFile() is covered the same way and for the same reason. What can be
+// asserted here is its failure contract, which is what generateThumb()'s fallback depends
+// on: false must mean "no usable embedded preview", so that a miss falls through to the
+// whole-file read rather than losing the file. Its success path was verified against a real
+// 335-file Sony ARW folder, cross-checked against the camera JPEG sitting beside each RAW.
 #include "TestHarness.h"
 #include "TestPaths.h"
 
@@ -33,6 +39,29 @@ PIXET_TEST(ReadRawDimensionsFailsOnGarbageData) {
     std::vector<uint8_t> garbage = {1, 2, 3, 4, 5, 6, 7, 8};
     int w = 0, h = 0;
     PIXET_CHECK(!readRawDimensions(garbage.data(), garbage.size(), w, h));
+}
+
+PIXET_TEST(RawCodecThumbFromFileFailsOnAMissingFile) {
+    RgbImage img;
+    int w = -1, h = -1;
+    PIXET_CHECK(!decodeRawThumbFromFile(nonexistentPath("arw"), 320, img, w, h));
+    // Zeroed rather than left at whatever the caller had, so a caller that ignores the
+    // return value can't mistake stale stack values for real dimensions.
+    PIXET_CHECK(w == 0);
+    PIXET_CHECK(h == 0);
+}
+
+PIXET_TEST(RawCodecThumbFromFileFailsOnGarbageContent) {
+    // A file that exists and opens fine but is not a RAW at all - distinct from the
+    // missing-file case above, and the one that matters for the fallback in
+    // generateThumb(): a false here has to mean "no usable preview, go read the whole
+    // file", not "this file is unreadable".
+    std::vector<uint8_t> garbage = {1, 2, 3, 4, 5, 6, 7, 8};
+    std::string path = testTempPath("rawcodec_garbage.arw");
+    writeTestFile(path, garbage);
+    RgbImage img;
+    int w = -1, h = -1;
+    PIXET_CHECK(!decodeRawThumbFromFile(path, 320, img, w, h));
 }
 
 PIXET_TEST(ThumbGeneratorRawIsNoLongerUnsupported) {

@@ -311,6 +311,36 @@ ThumbResult generateRawThumb(const std::vector<uint8_t> &fileBytes, int targetLo
     return result;
 }
 
+// The embedded-preview rung for RAW, taking the path rather than a pre-read buffer so
+// LibRaw reads only the header and the preview itself. See decodeRawThumbFromFile() for the
+// numbers; on a spinning disk this is where nearly all of a RAW folder's indexing time goes.
+//
+// Returns Failed when there is no usable embedded preview, which is a signal rather than an
+// error: the caller falls back to the whole-file path, whose full demosaic needs every byte
+// anyway.
+ThumbResult generateRawThumbFromFile(const std::string &filePath, int targetLongEdge, int quality) {
+    ThumbResult result;
+
+    RgbImage img;
+    if (!decodeRawThumbFromFile(filePath, targetLongEdge, img, result.origWidth, result.origHeight)) {
+        result.tier = ThumbTier::Failed;
+        return result;
+    }
+
+    RgbImage resized;
+    resizeBoxDownscale(img, targetLongEdge, resized);
+
+    if (!encodeJpeg(resized, quality, result.jpegBytes)) {
+        result.tier = ThumbTier::Failed;
+        return result;
+    }
+
+    result.tier = ThumbTier::EmbeddedPreview;
+    result.width = resized.w;
+    result.height = resized.h;
+    return result;
+}
+
 // Unlike the image formats above, takes the path directly rather than a pre-read
 // buffer - see VideoCodec.h for why (video files are too large to read wholesale just
 // to grab a poster frame a few seconds in).
@@ -367,6 +397,16 @@ ThumbResult generateThumb(const std::string &filePath, Format fmt, int targetLon
             result.tier = ThumbTier::Unsupported;
             return result;
         }
+    }
+
+    // RAW takes the path rather than a pre-read buffer, for the same reason video does just
+    // above and to a far greater degree: the embedded preview sits in the first fraction of
+    // the file, so reading the whole thing to reach it costs ~65x the I/O it needs. A miss
+    // here (no usable preview, or an unreadable file) falls through to the whole-file read
+    // below, which the full-demosaic fallback needs anyway - so nothing is lost by trying.
+    if (fmt == Format::Raw && !forceFullRender) {
+        ThumbResult result = generateRawThumbFromFile(filePath, targetLongEdge, quality);
+        if (result.tier != ThumbTier::Failed) return result;
     }
 
     std::vector<uint8_t> fileBytes;
