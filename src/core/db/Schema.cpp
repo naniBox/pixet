@@ -93,6 +93,12 @@ CREATE TABLE IF NOT EXISTS files(
 
 CREATE INDEX IF NOT EXISTS idx_files_dir_state ON files(dir_id, state);
 
+-- pruneDirs() asks "does any row name this one as its parent?" once per candidate, per
+-- pass. Without this that correlated subquery is a full table scan each time, which on a
+-- table that had grown to 41,349 rows is quadratic and takes the prune from milliseconds
+-- to minutes. Also used by Indexer's fresh-directory recursion shortcut.
+CREATE INDEX IF NOT EXISTS idx_dirs_parent ON dirs(parent_id);
+
 CREATE TABLE IF NOT EXISTS claims(
     dir_id INTEGER PRIMARY KEY,
     owner TEXT NOT NULL,

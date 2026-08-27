@@ -109,6 +109,21 @@ std::vector<DirEntry> listDir(const std::string &path) {
     return entries;
 }
 
+DirPresence dirPresence(const std::string &path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) {
+        // A path that now resolves to a file rather than a directory is gone as far as
+        // anything here is concerned - whatever replaced it isn't the folder we indexed.
+        return S_ISDIR(st.st_mode) ? DirPresence::Present : DirPresence::Missing;
+    }
+    // ENOENT: nothing of that name. ENOTDIR: something along the path is a file, so the
+    // full name can't resolve. Both are definitive. Everything else - EACCES and EPERM
+    // (TCC, most often), ENXIO/EIO on a dead volume, ELOOP, ENAMETOOLONG - means we
+    // couldn't find out, which is not the same as "it isn't there".
+    if (errno == ENOENT || errno == ENOTDIR) return DirPresence::Missing;
+    return DirPresence::Unreadable;
+}
+
 int64_t dirMtimeUnix(const std::string &path) {
     // stat, not lstat: the caller is asking about the directory it is going to walk, and if
     // the user navigated in via a symlink then the target's mtime is the one that reflects

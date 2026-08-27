@@ -5,6 +5,7 @@
 
 #include "Preferences.h"
 #include "db/Database.h"
+#include "scan/DirRows.h"
 #include "scan/Indexer.h"
 #include "util/AppPaths.h"
 #include "util/ProcessId.h"
@@ -63,9 +64,32 @@ void BackgroundReconciler::beginLoop() {
 }
 
 void BackgroundReconciler::loadDirList() {
+    // Clear out directories that have stopped describing anything before deciding what to
+    // sweep - otherwise the list below is rebuilt from junk this pass would then go and
+    // re-list. See pruneDirs() for what counts as junk and why there was so much of it.
+    try {
+        pixet::PruneStats pruned = pixet::pruneDirs(*db_);
+        if (pruned.dirsBarren > 0 || pruned.dirsMissing > 0 || pruned.filesRemoved > 0) {
+            qInfo() << "pixet: pruned" << pruned.dirsBarren << "barren and" << pruned.dirsMissing
+                    << "missing directories," << pruned.filesRemoved << "file rows," << pruned.thumbsRemoved
+                    << "thumbnails";
+        }
+    } catch (const std::exception &e) {
+        // Same rule as sweepNext(): nothing may escape a slot on this thread. Hygiene
+        // failing is not a reason to lose the sweep, let alone the application.
+        qWarning() << "pixet: prune failed -" << e.what();
+    }
+
     pending_.clear();
     cursor_ = 0;
-    auto sel = db_->prepare("SELECT id, path FROM dirs ORDER BY id");
+    // Only directories that actually hold indexed media. This used to be every row in
+    // `dirs`, which is what turned a table of every directory ever glimpsed into a
+    // whole-disk crawl (see pruneDirs()). Drift is a property of files, so a directory
+    // with no `files` rows has nothing for this sweep to detect - and a folder that later
+    // gains photos gets indexed the moment the user browses to it, which is the same
+    // "browsing is what indexes" contract the rest of the app runs on.
+    auto sel = db_->prepare("SELECT id, path FROM dirs WHERE EXISTS "
+                             "(SELECT 1 FROM files WHERE files.dir_id = dirs.id) ORDER BY id");
     while (sel.step()) {
         pending_.emplace_back(sel.columnInt64(0), sel.columnText(1));
     }

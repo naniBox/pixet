@@ -161,10 +161,14 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
 
     if (freshEnough) {
         stats.dirsSkippedFresh++;
-        auto sel = db_.prepare("SELECT id, path FROM dirs WHERE parent_id=?");
-        sel.bind(1, dirId);
-        while (sel.step()) {
-            subdirsOut.emplace_back(sel.columnInt64(0), sel.columnText(1));
+        // Only a recursive run has any use for the children, and on a non-recursive one
+        // there may not be rows for them at all - see the subdirectory branch of Pass A.
+        if (opts_.recursive) {
+            auto sel = db_.prepare("SELECT id, path FROM dirs WHERE parent_id=?");
+            sel.bind(1, dirId);
+            while (sel.step()) {
+                subdirsOut.emplace_back(sel.columnInt64(0), sel.columnText(1));
+            }
         }
     } else {
         std::vector<DirEntry> entries;
@@ -198,8 +202,28 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
 
         for (const auto &entry : entries) {
             if (entry.isDir) {
-                subdirsOut.emplace_back(upsertDir(db_, joinPath(dirPath, entry.name), dirId),
-                                         joinPath(dirPath, entry.name));
+                // A subdirectory earns a `dirs` row only when this run is actually going
+                // to index it. That guard used to be absent, and the row was written for
+                // every directory merely *seen* - which on a non-recursive run is pure
+                // waste, since run() ignores subdirsOut entirely in that case.
+                //
+                // It was not harmless waste. `dirs` is append-only and was also
+                // BackgroundReconciler's entire worklist, so every directory ever glimpsed
+                // became permanent background work: the sweep listed it, that registered
+                // its children, and the next pass swept those. One navigation to `/` was
+                // therefore enough to enlist the whole disk one level at a time - measured
+                // on a real library at 41,349 directory rows for 7,264 media files, with
+                // /nix and /System alone accounting for 31,598 of them. The visible symptom
+                // was macOS asking for access to Downloads/Documents/Desktop at apparently
+                // random moments, which was the rotation reaching them.
+                //
+                // pixet-index's whole-tree pre-warm is unaffected: it runs recursive, so it
+                // still registers and descends everything, and it registers a directory at
+                // the moment it commits to indexing it rather than on sight.
+                if (opts_.recursive) {
+                    subdirsOut.emplace_back(upsertDir(db_, joinPath(dirPath, entry.name), dirId),
+                                             joinPath(dirPath, entry.name));
+                }
                 continue;
             }
 
