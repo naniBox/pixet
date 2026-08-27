@@ -498,6 +498,9 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(folderIndexer_.get(), &FolderIndexer::thumbsProgress, this, &MainWindow::onThumbsProgress);
     connect(folderIndexer_.get(), &FolderIndexer::indexFailed, this, &MainWindow::onIndexFailed);
     connect(folderIndexer_.get(), &FolderIndexer::finished, this, &MainWindow::onIndexerFinished);
+    // Whatever's on screen gets thumbnailed first - see pushGridPriorityToIndexer().
+    // Connected after folderIndexer_ exists, since that's what the hint is pushed into.
+    connect(grid_, &ThumbGridView::visibleRowsChanged, this, &MainWindow::pushGridPriorityToIndexer);
 
     // Shared across every window rather than owned per-window - see
     // BackgroundReconciler::shared(). Both sweep the whole library regardless of what any
@@ -2303,6 +2306,30 @@ void MainWindow::onFilesListed(QString path) {
     updateSelectionStatus(); // folder aggregates changed (this is often the first real file list)
     updateThumbStatusIndicator(); // the file list is final, so the freshness count is meaningful now
     trySelectPendingFile(); // this folder may not have had rows loaded until just now
+}
+
+void MainWindow::pushGridPriorityToIndexer() {
+    if (currentPath_.isEmpty()) return;
+
+    const QPair<int, int> visible = grid_->visibleRowRange();
+    if (visible.first < 0) {
+        // Nothing on screen (an empty folder, or one whose file list hasn't landed yet):
+        // clear rather than leave the previous folder's ids in place, so a stale hint
+        // can't outlive the folder it was about.
+        folderIndexer_->setPriorityFiles(currentPath_, {});
+        return;
+    }
+
+    // On screen first, then a screenful below, then a screenful above. The margins are
+    // what keeps a slow scroll from spending all its time waiting: by the time a row
+    // reaches the viewport its thumbnail was usually queued a page ago. Below before
+    // above because scrolling down is the overwhelmingly common direction through a
+    // folder, and this list is a priority order, not a set.
+    const int page = visible.second - visible.first + 1;
+    QVector<qint64> ids = gridModel_->fileIdsForRows(visible.first, visible.second);
+    ids += gridModel_->fileIdsForRows(visible.second + 1, visible.second + page);
+    ids += gridModel_->fileIdsForRows(visible.first - page, visible.first - 1);
+    folderIndexer_->setPriorityFiles(currentPath_, std::move(ids));
 }
 
 void MainWindow::onThumbsProgress(QString path) {

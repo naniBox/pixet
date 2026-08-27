@@ -95,6 +95,31 @@ struct IndexCallbacks {
     // available) and once per directory visited overall. A GUI can use this to pull
     // newly-ready thumbnails into view incrementally rather than in one final jump.
     std::function<void(const IndexStats &)> onProgress;
+
+    // Asks, on the indexing thread and before every wave of Pass B work, which of this
+    // directory's files the caller most wants thumbnailed next - for a GUI, the ones
+    // actually on screen. `remaining` is every file id here still waiting for a
+    // thumbnail, in the order they would otherwise be generated; the returned ids are
+    // moved to the front of that order, in the order given, and everything else keeps
+    // its existing relative order behind them.
+    //
+    // This exists because Pass B's natural order is readdir order, which has nothing to
+    // do with the order the grid displays files in. The user looks at roughly a
+    // screenful and waits for the whole folder: on a real 1280-file folder that is ~18
+    // cells and 8.5 seconds. Serving the visible ones first makes that feel roughly 50x
+    // faster without generating a single thumbnail less.
+    //
+    // Returned ids that aren't in `remaining` - already done, in another directory, or
+    // simply unknown - are ignored rather than being an error, so a caller can hand over
+    // whatever it has on screen without tracking indexing state itself. Nothing is ever
+    // skipped: this reorders the queue, it doesn't shorten it.
+    //
+    // Installing this hook also shrinks a Pass B wave to the thread pool's own size (see
+    // Indexer.cpp), since a wave boundary is the only point at which the remaining work
+    // can be reordered - the hook is worth little if it's only consulted every 64 files.
+    std::function<std::vector<int64_t>(int64_t dirId, const std::string &dirPath,
+                                       const std::vector<int64_t> &remaining)>
+        onWantFirst;
 };
 
 // Walks and thumbnails a directory tree, reusing the exact same code path the GUI's

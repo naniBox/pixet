@@ -12,11 +12,13 @@
 #include "TestHarness.h"
 #include "TestPaths.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <vector>
 
 #include "db/Database.h"
+#include "db/Schema.h"
 #include "decode/RgbImage.h"
 #include "scan/Indexer.h"
 #include "util/PathUtil.h"
@@ -163,4 +165,89 @@ PIXET_TEST(ParallelPassBHandlesAPoolLargerThanTheFileCount) {
 
     PIXET_CHECK(stats.filesNew == 1);
     PIXET_CHECK(stats.thumbsDecoded == 1);
+}
+
+// IndexCallbacks::onWantFirst - the hook that lets the GUI put the screenful the user is
+// actually looking at at the front of Pass B's queue (Pass B's own order is readdir
+// order, which has nothing to do with the grid's sort). Two properties matter and both
+// are checked here: the wanted ids really do jump the queue, in the order asked for, and
+// nothing is lost doing it - the rest of the folder still gets thumbnailed, in its
+// original relative order, and ids that match no pending file are simply ignored.
+//
+// threadCount=1 is what makes this observable rather than a race: with the hook installed
+// a Pass B wave is the pool's own size (see Indexer.cpp), so one thread means one file
+// per wave and therefore one onWantFirst call per file, with `remaining` front()
+// naming the file about to be generated.
+PIXET_TEST(PassBGeneratesWantedFilesFirst) {
+    std::filesystem::path base = std::filesystem::temp_directory_path() / "pixet_tests" / "indexer_want_first";
+    std::error_code ec;
+    std::filesystem::remove_all(base, ec);
+    std::string dir = base.string();
+    populateTestLibrary(dir);
+
+    Database db(testTempPath("indexer_want_first_index.db"), testTempPath("indexer_want_first_thumbs.db"));
+    IndexOptions opts;
+    opts.recursive = false;
+    opts.owner = "test";
+    opts.threadCount = 1;
+    Indexer indexer(db, opts);
+    IndexStats stats;
+
+    std::vector<int64_t> originalOrder; // the queue as it stood before any reordering
+    std::vector<int64_t> nextUp;        // remaining.front() at each wave - i.e. the actual work order
+    std::vector<int64_t> wanted;        // what we asked for, fixed after the first call
+
+    IndexCallbacks callbacks;
+    callbacks.onWantFirst = [&](int64_t, const std::string &,
+                                 const std::vector<int64_t> &remaining) -> std::vector<int64_t> {
+        if (remaining.empty()) return {};
+        nextUp.push_back(remaining.front());
+        if (originalOrder.empty()) {
+            originalOrder = remaining;
+            // A file id that can't exist, ahead of the three files that would otherwise
+            // be generated *last* - the bogus one must be ignored without displacing or
+            // dropping anything.
+            wanted.push_back(-1);
+            wanted.insert(wanted.end(), remaining.end() - 3, remaining.end());
+        }
+        return wanted;
+    };
+
+    indexer.run(dir, stats, callbacks);
+
+    PIXET_CHECK(originalOrder.size() == 25); // 24 real photos + 1 corrupt
+    PIXET_CHECK(wanted.size() == 4);         // one bogus id + the three real ones
+    PIXET_CHECK(nextUp.size() == originalOrder.size()); // one ask per file
+
+    // What each entry of nextUp means, precisely, because it isn't uniform: the hook is
+    // asked *before* the reorder it triggers, so nextUp[0] is still the untouched
+    // queue's head. From then on the answer never changes, so no further reordering
+    // happens and nextUp[k] is exactly the file wave k generates.
+    PIXET_CHECK(nextUp[0] == originalOrder[0]);
+
+    // wanted[1] was dead last in the queue and is generated in wave 0 - it's gone from
+    // the queue before the hook is ever asked again, which is the whole property: last
+    // in line to first, in one step.
+    PIXET_CHECK(wanted[1] == originalOrder[originalOrder.size() - 3]);
+    PIXET_CHECK(std::find(nextUp.begin() + 1, nextUp.end(), wanted[1]) == nextUp.end());
+
+    // The other two follow it, in the order asked for...
+    PIXET_CHECK(nextUp[1] == wanted[2]);
+    PIXET_CHECK(nextUp[2] == wanted[3]);
+    // ...and then the rest of the folder resumes at its own head, in its own order -
+    // reordering must not shuffle anything it wasn't asked about. (wanted[0] is a file
+    // id that can't exist; had it displaced anything, originalOrder[0] wouldn't be here.)
+    PIXET_CHECK(nextUp[3] == originalOrder[0]);
+    PIXET_CHECK(nextUp[4] == originalOrder[1]);
+
+    // Nothing skipped - a reorder must not lose work. FileState::New is what Pass A
+    // writes and Pass B clears, so a row still sitting at 0 is one that never got looked
+    // at, whatever the counters say.
+    auto sel = db.prepare("SELECT COUNT(*) FROM files WHERE state=?");
+    sel.bind(1, (int64_t)FileState::New);
+    PIXET_CHECK(sel.step());
+    PIXET_CHECK(sel.columnInt64(0) == 0);
+    PIXET_CHECK(stats.filesNew == 25);
+    PIXET_CHECK(stats.thumbsDecoded == 24);
+    PIXET_CHECK(stats.thumbsFailed == 1);
 }

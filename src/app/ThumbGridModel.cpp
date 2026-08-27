@@ -323,6 +323,16 @@ int ThumbGridModel::rowForName(const QString &name) const {
     return it == rowByName_.end() ? -1 : it.value();
 }
 
+QVector<qint64> ThumbGridModel::fileIdsForRows(int first, int last) const {
+    first = qMax(0, first);
+    last = qMin(last, rows_.size() - 1);
+    QVector<qint64> ids;
+    if (first > last) return ids;
+    ids.reserve(last - first + 1);
+    for (int row = first; row <= last; ++row) ids.push_back(rows_[row].id);
+    return ids;
+}
+
 qint64 ThumbGridModel::sizeForRows(const QList<int> &rows) const {
     qint64 total = 0;
     for (int r : rows) {

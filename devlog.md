@@ -5,6 +5,115 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-24 — mac — Thumbnail what's on screen first
+
+The first of the three levers listed as "not done" under the profiler entry below, and by
+some distance the most valuable one: a cold folder still generates exactly as many
+thumbnails as before and takes exactly as long, but the ~18 cells the user is looking at
+now arrive in the first fraction of a second instead of whenever readdir order happens to
+reach them.
+
+Pass B walked `pending` in rowid order - readdir order - which has nothing to do with the
+order the grid sorts by. On the 1280-file folder measured below, the files filling the
+opening screenful sat at readdir positions **230 to 1262**, median 618. So the user stared
+at empty cells for most of the 8.5 seconds while the machine thumbnailed, at full speed,
+photos that were nowhere near the viewport.
+
+### The hook
+
+`IndexCallbacks::onWantFirst(dirId, dirPath, remaining) -> ids to do first`. `pixet_core`
+stays entirely ignorant of the GUI: it hands over the file ids still queued for this
+directory, in the order it would otherwise do them, and moves whatever comes back to the
+front (a `stable_sort` on a rank map, so the caller's own ordering is honoured and
+everything it didn't mention keeps its existing relative order). Ids that aren't pending -
+already done, another directory, or simply wrong - are ignored rather than being an error,
+which is what lets the GUI hand over whatever is on screen without tracking indexing
+state. Nothing is ever dropped: this reorders the queue, it never shortens it.
+
+`MainWindow::pushGridPriorityToIndexer()` supplies the visible rows, then a screenful
+below, then a screenful above - a priority order, not a set, and below-first because
+that's the direction folders get scrolled. It fires on `ThumbGridView::visibleRowsChanged`
+(scroll, resize, icon-size change, model reset), so the queue tracks the viewport
+continuously rather than being aimed once per navigation.
+
+### Waves and batches are now two different sizes
+
+Pass B used to have one chunk size doing two jobs. It now has two, because the hook can
+only be re-asked at a dispatch boundary and 64 files is far too coarse to track scrolling:
+
+- A **wave** is how many `generateThumb()` calls are in flight, and how often
+  `onWantFirst` is consulted. With the hook installed it's the pool's own thread count -
+  the smallest wave that still keeps every thread busy.
+- A **batch** is how many results go into one transaction, and stays at 64. Commits aren't
+  free and there was no reason to make 8x more of them.
+
+`--render-raws` keeps its old flush-every-wave behaviour, which is now expressed directly
+as a batch size of 1 rather than by shrinking the chunk.
+
+The answer only changes when the user scrolls, so a wave whose answer matches the last one
+skips the sort entirely - otherwise this would be ~160 sorts of ~1300 rows on that folder,
+for nothing. Skipping is safe because sorting `[from, end)` and then advancing `from`
+leaves the remainder already in the order that was asked for.
+
+### The part that would have silently not worked
+
+`FolderIndexer::setPriorityFiles()` is a plain mutex-guarded method, **not a slot**. The UI
+thread calls it while the worker thread is sitting inside `indexFolder()` for the entire
+duration of the folder - so a queued signal would have been delivered when that returned,
+i.e. precisely when the answer had stopped mattering. It would have compiled, connected,
+run, and done absolutely nothing observable except on the next folder. The hint carries
+its folder path and is checked against the folder being indexed, so one set just before a
+navigation can't reorder the next folder's work by stale ids.
+
+### Verified
+
+Unit test (`PassBGeneratesWantedFilesFirst`, `threadCount=1` so one file per wave makes
+the order directly observable): the three files last in the queue jump to the front in the
+order requested, the rest resumes at its own head in its own order, a deliberately
+nonexistent id displaces nothing, and no row is left at `FileState::New`. 105/105 pass.
+
+End to end, against `/Users/david.morris/data/photos` (1280 files) with `HOME` pointed at a
+scratch directory so it was genuinely cold and the real library index was untouched. Ran
+the app for 8s, then decomposed what had been thumbnailed:
+
+| | |
+|---|---|
+| thumbnails generated | 192 |
+| unbroken prefix of readdir order among them | 167 |
+| the rest | **25** |
+| those 25, by position in the grid's own (name) order | 0-29, i.e. the opening screenful |
+| those same 25, by position in readdir order | min 230, median 618, **max 1262** |
+
+That last row is the whole feature in one number: without this, one of the cells in the
+first visible row of the grid was 1262nd of 1280 in line.
+
+### Not done
+
+- **The background sweeps don't get the hint.** `BackgroundReconciler` and `RawRenderer`
+  run their own `Indexer` with no `onWantFirst`, so when a sweep happens to reach the
+  folder on screen it still works in readdir order. `RawRenderer::prioritize()` already
+  moves the right *directory* to the front; ordering within it is the same idea again.
+- **`gridSortKey=TakenDate` still interacts badly** (item 4 of the profiler entry's list).
+  On a first visit `taken_at` is 0 for every row, so the grid's order - and therefore what
+  this prioritizes - is arbitrary until thumbnailing fills the column in, at which point
+  rows re-sort under the user. This feature makes the arbitrary order *fast*, which is
+  arguably worse than before: work gets done for cells that are about to move. Sorting a
+  not-yet-dated folder by name until the dates exist would fix both.
+- Levers 2 (a fast blurry EXIF-thumbnail first pass) and 3 (denormalising the thumbnail
+  long edge into `files`) from the profiler entry are still open and unaffected.
+
+### Housekeeping
+
+The repo moved on this machine (`data/private` -> `data/_PRV`), which leaves every
+`build/*` directory holding absolute paths to somewhere that no longer exists - CMake
+refuses with "the current CMakeCache.txt directory ... is different than the directory
+where CMakeCache.txt was created". The fix is `rm -rf build/<preset>` and reconfigure; the
+vcpkg binary cache lives in `~/.cache/vcpkg/archives`, not in the build tree, so nothing
+gets rebuilt from source. Also: `.DS_Store` is now gitignored, and `scripts/e2e-mac.sh`
+was renamed `scripts/mac-e2e.sh` to pair with `win-e2e.ps1`.
+
+---
+
 ## 2026-08-24 — mac — Up button, nav tooltips, About box rework, build timestamp
 
 Four small things, one of which turned out to be a real bug.

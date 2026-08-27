@@ -70,3 +70,6 @@ CMakeUserPresets.json
 # test output & cache
 Testing/
 .cache/
+
+# macOS Finder metadata - written into any directory the user browses in Finder
+.DS_Store
