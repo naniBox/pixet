@@ -57,6 +57,24 @@ std::vector<DirEntry> listDir(const std::string &path) {
     return entries;
 }
 
+DirPresence dirPresence(const std::string &path) {
+    std::wstring wide = toUtf16(path);
+    DWORD attrs = GetFileAttributesW(wide.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES) {
+        return (attrs & FILE_ATTRIBUTE_DIRECTORY) ? DirPresence::Present : DirPresence::Missing;
+    }
+    // The macOS side of this distinction is load-bearing (see DirPresence) and Windows
+    // has the same shape for different reasons: a disconnected network share or an
+    // unmounted removable drive must not read as "this folder was deleted". Only the
+    // two not-found codes are definitive; ERROR_ACCESS_DENIED and everything else means
+    // the question went unanswered.
+    DWORD err = GetLastError();
+    if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND || err == ERROR_INVALID_NAME) {
+        return DirPresence::Missing;
+    }
+    return DirPresence::Unreadable;
+}
+
 int64_t dirMtimeUnix(const std::string &path) {
     std::wstring wide = toUtf16(path);
     WIN32_FILE_ATTRIBUTE_DATA data;
