@@ -9,7 +9,9 @@
 #include "TestHarness.h"
 #include "TestPaths.h"
 
-#include <sys/stat.h>
+#ifndef _WIN32
+#include <sys/stat.h> // chmod, for the unreadable-directory test below
+#endif
 
 #include <filesystem>
 #include <string>
@@ -173,6 +175,15 @@ PIXET_TEST(PruneRemovesDirectoriesThatAreGoneAlongWithTheirThumbnails) {
 // not absent - and its index must survive untouched. Modelled here with a parent
 // directory the process can't traverse, which is the same errno (EACCES) by the same
 // mechanism.
+//
+// POSIX-only, because the mechanism is: Windows traversal rights come from ACLs, and its
+// _chmod only toggles the read-only attribute, which does not stop a directory being
+// opened. Reproducing this on Windows would mean denying FILE_TRAVERSE through a real ACL
+// (SetNamedSecurityInfo or icacls), which tests neither dirPresence()'s logic nor
+// pruneDirs(). dirPresence() answers Unreadable on Windows too - see DirWalker_win.cpp,
+// where a disconnected share or an unmounted drive lands in the same branch - so the
+// behaviour this guards is not Windows-specific even though this test is.
+#ifndef _WIN32
 PIXET_TEST(PruneKeepsDirectoriesItCannotReachRatherThanAssumingTheyAreGone) {
     std::string root = freshDir("dirrows_prune_unreadable");
     std::string locked = joinPath(root, "locked");
@@ -207,6 +218,7 @@ PIXET_TEST(PruneKeepsDirectoriesItCannotReachRatherThanAssumingTheyAreGone) {
     files.step();
     PIXET_CHECK(files.columnInt64(0) == 1);
 }
+#endif // !_WIN32
 
 // A directory some other indexer is working in right now is off limits, whatever it
 // currently looks like - the claim is the existing mechanism for exactly that.
