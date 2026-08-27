@@ -20,6 +20,10 @@ QString settingsFilePath() {
 
 QSettings settingsStore() { return QSettings(settingsFilePath(), QSettings::IniFormat); }
 
+bool licenseAccepted() { return settingsStore().value(QStringLiteral("licenseAccepted"), false).toBool(); }
+
+void setLicenseAccepted(bool accepted) { settingsStore().setValue(QStringLiteral("licenseAccepted"), accepted); }
+
 int thumbnailIconSize() {
     int cached = g_thumbnailIconSize.load(std::memory_order_relaxed);
     if (cached >= 0) return cached;

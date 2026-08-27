@@ -108,6 +108,9 @@ add_executable(pixet ${PIXET_APP_TYPE}
     SortIcons.h
     SortIcons.cpp
 
+    LicenseDialog.h
+    LicenseDialog.cpp
+
     icons.qrc
 )
 

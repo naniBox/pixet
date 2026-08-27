@@ -26,6 +26,12 @@ QSettings settingsStore();
 // worth nothing if nothing ever tells the user where it is.
 QString settingsFilePath();
 
+// Whether the license has been accepted on this machine. Only ever consulted where no
+// installer presented it - see LicenseDialog.h, which owns the whole of that decision and is
+// the only thing that should be writing this.
+bool licenseAccepted();
+void setLicenseAccepted(bool accepted);
+
 // Grid thumbnail on-screen size (long edge, pixels) - both what ThumbGridView lays
 // cells out at and what ThumbLoader decodes stored blobs down to for display.
 // Cached after first read (see Preferences.cpp) since sizeHint()/paint() call this

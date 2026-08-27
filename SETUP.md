@@ -267,6 +267,10 @@ full sequence itself:
 What the resulting installer does, all of it per-user (`PrivilegesRequired=lowest`, so no
 UAC prompt):
 
+- Presents the Apache 2.0 license from the repo root `LICENSE` and will not continue until
+  it is accepted — "I do not accept" is preselected and Next stays disabled. This is the
+  Windows half of showing the license; macOS has no installer to host a page like it and
+  asks on first run instead (see [src/app/LicenseDialog.h](src/app/LicenseDialog.h)).
 - Installs into `{userpf}\pixet` (`%LOCALAPPDATA%\Programs\pixet`), with a Start Menu entry
   and an optional desktop shortcut.
 - Keeps a fixed `AppId`, so installing a newer build upgrades in place instead of leaving a

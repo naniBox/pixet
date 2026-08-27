@@ -40,6 +40,13 @@ PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile=..\src\app\pixet.ico
+; The license page. Inno Setup shows this before the install location is chosen, with
+; "I accept"/"I do not accept" radio buttons and Next disabled until one is picked, so
+; setup cannot proceed unaccepted. This is the Windows half of presenting the license;
+; macOS has no installer to host a page like this and does it on first run instead (see
+; src/app/LicenseDialog.h). Plain text, not RTF - Inno detects which by looking for an
+; {\rtf header, so the extensionless LICENSE at the repo root works as-is.
+LicenseFile=..\LICENSE
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

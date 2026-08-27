@@ -5,6 +5,7 @@
 #include <QIcon>
 #include <QObject>
 
+#include "LicenseDialog.h"
 #include "MainWindow.h"
 #include "WindowRegistry.h"
 #include "version.h"
@@ -109,6 +110,19 @@ int main(int argc, char *argv[]) {
     // arguments at all (Qt strips the legacy -psn_* argument itself), and file opens come
     // through FileOpenForwarder rather than argv.
     parser.process(app);
+
+#ifdef Q_OS_MACOS
+    // macOS ships as a DMG the user drags to /Applications, so there is no installer to put
+    // the license in front of anyone - first run is the only opportunity. Windows users have
+    // already accepted it during setup (scripts/pixet.iss's LicenseFile), which is why this
+    // is platform-gated rather than universal: asking again there would be a second prompt
+    // for an agreement already made.
+    //
+    // Placed after parser.process() so --help and --version still answer without a licence
+    // prompt, and before the first window so that declining leaves nothing behind - no
+    // window, no database connection, no indexing thread.
+    if (!license::ensureAccepted()) return 0;
+#endif
 
     // Heap-allocated and owned by Qt (Qt::WA_DeleteOnClose) rather than a by-value local:
     // a local makes main() the owner of the one and only MainWindow, and nothing else can

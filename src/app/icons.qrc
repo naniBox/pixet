@@ -8,5 +8,10 @@
              .ico stays for pixet.rc, which is a native Win32 resource and doesn't involve Qt
              at all. -->
         <file>pixet.png</file>
+        <!-- The license shown on first run where no installer presented it (see
+             LicenseDialog.cpp). Compiled in rather than shipped beside the app, because a
+             macOS bundle is dragged around as one unit and a loose file next to it would
+             not survive the trip. -->
+        <file alias="LICENSE">../../LICENSE</file>
     </qresource>
 </RCC>
