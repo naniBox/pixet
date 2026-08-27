@@ -178,6 +178,120 @@ PIXET_TEST(ParallelPassBHandlesAPoolLargerThanTheFileCount) {
 // a Pass B wave is the pool's own size (see Indexer.cpp), so one thread means one file
 // per wave and therefore one onWantFirst call per file, with `remaining` front()
 // naming the file about to be generated.
+// Nothing reaches the screen until a batch commits, so how soon the *first* batch commits
+// is the whole of "does this folder feel progressive or does it arrive in one lump".
+// Committing every 64 files - the steady-state size - means the first screenful is
+// generated early by the priority hook above and then sits invisible behind 44 files
+// nobody is looking at. So the commit size ramps from one wave up to kBatchSize.
+//
+// threadCount=1 makes a wave one file, which pins the ramp exactly: commits after file
+// 1, 2, 4, 8, 16... rather than nothing until 64.
+PIXET_TEST(PassBCommitsEarlyThenRampsUpTheBatchSize) {
+    std::filesystem::path base = std::filesystem::temp_directory_path() / "pixet_tests" / "indexer_flush_ramp";
+    std::error_code ec;
+    std::filesystem::remove_all(base, ec);
+    std::string dir = base.string();
+    populateTestLibrary(dir);
+
+    Database db(testTempPath("indexer_ramp_index.db"), testTempPath("indexer_ramp_thumbs.db"));
+    IndexOptions opts;
+    opts.recursive = false;
+    opts.owner = "test";
+    opts.threadCount = 1;
+    Indexer indexer(db, opts);
+    IndexStats stats;
+
+    std::vector<int64_t> committedAt; // cumulative thumbnails at each commit
+
+    IndexCallbacks callbacks;
+    // Installed because the ramp only applies when something is watching - without a
+    // priority hook a wave is already a whole batch and there is nothing to ramp from.
+    callbacks.onWantFirst = [](int64_t, const std::string &, const std::vector<int64_t> &) {
+        return std::vector<int64_t>{};
+    };
+    callbacks.onProgress = [&](const IndexStats &s) {
+        committedAt.push_back(s.thumbsEmbedded + s.thumbsDecoded + s.thumbsUnsupported + s.thumbsFailed);
+    };
+
+    indexer.run(dir, stats, callbacks);
+
+    PIXET_CHECK(!committedAt.empty());
+    // The point of the whole change: the first commit lands after a single wave, not after
+    // 64 files. With 25 files in the fixture a flat kBatchSize would have produced exactly
+    // one commit, at the end.
+    PIXET_CHECK(committedAt.front() == 1);
+    PIXET_CHECK(committedAt.size() > 1);
+    // And it genuinely ramps rather than committing per file forever - each gap is at least
+    // as large as the one before it.
+    int64_t prevGap = 0;
+    for (size_t i = 0; i < committedAt.size(); ++i) {
+        int64_t gap = committedAt[i] - (i == 0 ? 0 : committedAt[i - 1]);
+        // The final commit is whatever is left over, so it is allowed to be short.
+        if (i + 1 < committedAt.size()) PIXET_CHECK(gap >= prevGap);
+        prevGap = gap;
+    }
+}
+
+// Cancelling is not an abort: the run stops early but leaves the directory consistent, and
+// everything it did finish is committed rather than discarded. The GUI depends on both
+// halves - it cancels on every navigation, so a folder the user passes through must not end
+// up corrupt, and must not lose the thumbnails it did manage.
+PIXET_TEST(CancellingPassBKeepsWhatItFinishedAndLeavesTheRestPending) {
+    std::filesystem::path base = std::filesystem::temp_directory_path() / "pixet_tests" / "indexer_cancel";
+    std::error_code ec;
+    std::filesystem::remove_all(base, ec);
+    std::string dir = base.string();
+    populateTestLibrary(dir);
+
+    Database db(testTempPath("indexer_cancel_index.db"), testTempPath("indexer_cancel_thumbs.db"));
+    IndexOptions opts;
+    opts.recursive = false;
+    opts.owner = "test";
+    opts.threadCount = 1;
+    IndexStats stats;
+
+    int waves = 0;
+    IndexCallbacks callbacks;
+    callbacks.onWantFirst = [](int64_t, const std::string &, const std::vector<int64_t> &) {
+        return std::vector<int64_t>{};
+    };
+    // Ask to stop after a few files, well short of the fixture's 25.
+    callbacks.shouldCancel = [&]() { return ++waves > 3; };
+
+    {
+        Indexer indexer(db, opts);
+        indexer.run(dir, stats, callbacks);
+    }
+
+    int64_t done = stats.thumbsEmbedded + stats.thumbsDecoded + stats.thumbsUnsupported + stats.thumbsFailed;
+    PIXET_CHECK(done > 0);  // it did some work
+    PIXET_CHECK(done < 25); // and stopped early rather than finishing the folder
+
+    // Committed, not rolled back: the rows it finished have real thumbnails on disk. Only
+    // the successful tiers, since an Unsupported or Failed file is finished work too but
+    // deliberately has no thumbnail row to point at.
+    auto sel = db.prepare("SELECT COUNT(*) FROM files WHERE thumb_id IS NOT NULL");
+    sel.step();
+    PIXET_CHECK(sel.columnInt64(0) == stats.thumbsEmbedded + stats.thumbsDecoded);
+
+    // The claim is released, so the next run isn't locked out by a directory that was
+    // abandoned mid-flight.
+    auto claim = db.prepare("SELECT COUNT(*) FROM claims");
+    claim.step();
+    PIXET_CHECK(claim.columnInt64(0) == 0);
+
+    // And re-running with no cancellation finishes the rest, rather than the folder being
+    // stuck at whatever the cancelled run left behind.
+    IndexOptions again = opts;
+    Indexer resumed(db, again);
+    IndexStats stats2;
+    resumed.run(dir, stats2, {});
+
+    auto after = db.prepare("SELECT COUNT(*) FROM files WHERE thumb_id IS NOT NULL");
+    after.step();
+    PIXET_CHECK(after.columnInt64(0) == 24); // every real photo; the corrupt one has no thumbnail
+}
+
 PIXET_TEST(PassBGeneratesWantedFilesFirst) {
     std::filesystem::path base = std::filesystem::temp_directory_path() / "pixet_tests" / "indexer_want_first";
     std::error_code ec;

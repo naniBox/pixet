@@ -120,6 +120,25 @@ struct IndexCallbacks {
     std::function<std::vector<int64_t>(int64_t dirId, const std::string &dirPath,
                                        const std::vector<int64_t> &remaining)>
         onWantFirst;
+
+    // Asked between Pass B waves and between directories: return true to stop this run
+    // early. Exists for the GUI, where the user navigating to another folder makes the
+    // rest of this folder's work worthless *and* actively harmful - FolderIndexer runs one
+    // folder at a time on one thread, so until this run returns, the new folder's Pass A
+    // hasn't started and the grid stays empty. A big RAW folder can hold a two-JPEG folder
+    // hostage for a minute that way.
+    //
+    // Cancelling is not an abort: whatever the current wave already produced is committed,
+    // the claim is released and the directory is left consistent, exactly as a completed
+    // run would. The only difference is that some files keep state=New and get picked up by
+    // the next scan - which is the normal resting state for a folder nobody has browsed
+    // yet, so nothing downstream needs to know this happened.
+    //
+    // Checked between waves rather than inside generateThumb(), so the granularity is one
+    // wave of decodes. That is deliberate: a half-decoded thumbnail has nothing to commit,
+    // and tearing down mid-decode would mean threading cancellation through every codec for
+    // no user-visible gain.
+    std::function<bool()> shouldCancel;
 };
 
 // Walks and thumbnails a directory tree, reusing the exact same code path the GUI's

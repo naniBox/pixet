@@ -867,6 +867,12 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
     }
 
     saveLastDirectory(normalized);
+    // Drop whatever folder the indexer is still working through before asking for this one.
+    // The worker handles one folder at a time, so without this the new folder's file list -
+    // Pass A, a fraction of a second's work - waits behind the *whole* of the previous
+    // folder's thumbnailing, and the grid the user is looking at stays empty meanwhile.
+    // See FolderIndexer::cancelCurrent() for why the abandoned folder loses nothing.
+    folderIndexer_->cancelCurrent();
     emit requestIndex(normalized, forceReindex, forceRethumbnail);
     // Whatever RAW files here still need a full render jump ahead of any unrelated
     // backlog elsewhere in the library - see RawRenderer::prioritize().

@@ -6,6 +6,7 @@
 #include <QThread>
 #include <QVector>
 
+#include <atomic>
 #include <memory>
 
 namespace pixet {
@@ -40,6 +41,23 @@ public:
     // user navigated away can't reorder the next folder's work by stale file ids.
     // Passing a folder that isn't being indexed is harmless; the hint is simply ignored.
     void setPriorityFiles(const QString &folderPath, QVector<qint64> fileIds);
+
+    // Abandons whatever folder is being indexed right now, as soon as the current wave of
+    // thumbnails finishes. Call this when the user navigates somewhere else.
+    //
+    // Without it the grid appears to hang on the *new* folder: indexFolder() is a queued
+    // slot on one worker thread, so a second call sits in that thread's event queue until
+    // the first returns. A folder of 335 RAWs therefore blocks a folder of two JPEGs for as
+    // long as the RAWs take, and the two JPEGs are what the user is actually looking at.
+    //
+    // Thread-safe and a plain method for the same reason setPriorityFiles() is: the worker
+    // is *inside* indexFolder() when this is called, so a queued connection would only be
+    // delivered once the thing it was meant to interrupt had already finished.
+    //
+    // Nothing is lost. The cancelled folder keeps whatever thumbnails it committed and its
+    // remaining files stay state=New, which is exactly where an un-browsed folder sits
+    // anyway - navigating back re-indexes only what's left.
+    void cancelCurrent();
 
 public slots:
     // force=true is the explicit "Refresh" action - bypasses the mtime freshness
@@ -77,4 +95,10 @@ private:
     QMutex priorityMutex_;
     QString priorityPath_;
     QVector<qint64> priorityIds_;
+
+    // Set by the UI thread (cancelCurrent), polled by the worker from inside the run it is
+    // cancelling. Cleared at the start of every indexFolder() so a cancellation can only
+    // ever apply to the run it was aimed at, never to the next one - the race that would
+    // otherwise leave a folder half-indexed for no reason the user could see.
+    std::atomic<bool> cancelRequested_{false};
 };

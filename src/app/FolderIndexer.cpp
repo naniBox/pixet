@@ -25,7 +25,14 @@ void FolderIndexer::setPriorityFiles(const QString &folderPath, QVector<qint64> 
     priorityIds_ = std::move(fileIds);
 }
 
+void FolderIndexer::cancelCurrent() { cancelRequested_.store(true, std::memory_order_relaxed); }
+
 void FolderIndexer::indexFolder(QString path, bool force, bool forceRethumbnail) {
+    // Cleared here rather than when the run ends: a cancelCurrent() that arrives while this
+    // slot is still queued is aimed at the *previous* run, which has already returned, and
+    // must not silently cancel this one before it has done anything.
+    cancelRequested_.store(false, std::memory_order_relaxed);
+
     emit started(path);
 
     if (!db_) db_ = std::make_unique<pixet::Database>(pixet::indexDbPath(), pixet::thumbsDbPath(), false);
@@ -59,6 +66,8 @@ void FolderIndexer::indexFolder(QString path, bool force, bool forceRethumbnail)
         if (priorityPath_ != path) return {};
         return std::vector<int64_t>(priorityIds_.begin(), priorityIds_.end());
     };
+
+    callbacks.shouldCancel = [this]() { return cancelRequested_.load(std::memory_order_relaxed); };
 
     // Guarded for the same reason as BackgroundReconciler::sweepNext() - an exception on this
     // QThread has no handler above it and reaches std::terminate() - plus one specific to

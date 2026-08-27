@@ -426,7 +426,22 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
     // under concurrent dispatch.
     const size_t poolWave = std::max<size_t>(1, std::min(kBatchSize, resolveThreadCount(opts_.threadCount)));
     const size_t waveCap = (opts_.renderRaws || callbacks.onWantFirst) ? poolWave : kBatchSize;
-    const size_t flushAfter = opts_.renderRaws ? 1 : kBatchSize;
+
+    // Commit granularity ramps rather than being one number, because the first commit and
+    // the hundredth are worth completely different things.
+    //
+    // Nothing reaches the screen until a batch commits, so a flat kBatchSize means the user
+    // waits for 64 files before seeing *any* thumbnail - and the on-screen-first ordering
+    // above buys nothing, because the screenful it carefully generated first sits
+    // uncommitted behind 44 more files nobody is looking at. Starting at one wave makes the
+    // first paint land as soon as the first screenful exists.
+    //
+    // Doubling from there back up to kBatchSize keeps the steady state cheap: a long folder
+    // still ends up committing in 64s, so this costs a handful of extra transactions at the
+    // start of a directory rather than 3x of them throughout. --render-raws stays pinned at
+    // 1 - a real demosaic is slow enough that batching at all defeats watching it progress.
+    size_t flushAfter = opts_.renderRaws ? 1 : waveCap;
+    const size_t flushCeiling = opts_.renderRaws ? 1 : kBatchSize;
 
     // The last answer onWantFirst gave. Re-sorting the remaining work when nothing has
     // moved is pure overhead - on a 1280-file folder with 8-wide waves that would be
@@ -476,6 +491,14 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
         if (batch.size() >= flushAfter || waveEnd == pending.size()) {
             PIXET_PROF_SCOPE("idx.passB.flushBatch");
             flushBatch();
+            flushAfter = std::min(flushCeiling, flushAfter * 2);
+        }
+
+        // After the flush, so a cancelled run still commits the wave it just finished
+        // rather than throwing that work away - see IndexCallbacks::shouldCancel.
+        if (callbacks.shouldCancel && callbacks.shouldCancel()) {
+            if (!batch.empty()) flushBatch();
+            break;
         }
     }
 
@@ -564,6 +587,11 @@ void Indexer::run(const std::string &rootPath, IndexStats &stats, const IndexCal
     queue.emplace_back(rootId, rootPath, 0);
 
     while (!queue.empty()) {
+        // Also checked here, not just between Pass B waves: a recursive run over a large
+        // tree spends real time in Pass A on directories that are already fresh, and those
+        // never reach a wave boundary to be cancelled at.
+        if (callbacks.shouldCancel && callbacks.shouldCancel()) break;
+
         auto [dirId, dirPath, depth] = queue.back();
         queue.pop_back();
 
