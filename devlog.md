@@ -5,6 +5,33 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-28 — desktop — The build was never broken, it just looked it
+
+Reported as "looks like the deploy-windows.ps1 is broken?". It wasn't: a full run
+produced a correct 40 MiB installer, the staged app launched, and the release suite passed
+120/120. What it *did* do was print two error lines before any real output, on every
+configure and every build:
+
+    'vswhere.exe' is not recognized as an internal or external command,
+    operable program or batch file.
+
+Enter-VsDevShell runs VsDevCmd.bat internally, and that calls `vswhere` by bare name. Our
+scripts call it by absolute path so they are fine, but the DevShell module is not, and the
+VS Installer directory is not on PATH by default. Nothing failed - the dev shell still
+initialized - but two error lines at the top of a build read exactly like the toolchain
+failing to start.
+
+configure.ps1 and build.ps1 now put that directory on PATH for the process before entering
+the dev shell, which is what the message was asking for. Zero complaints across configure,
+build and a full deploy afterwards.
+
+The part worth remembering is not the fix. This was noticed early in the session, judged
+benign, and left - which was wrong. Benign output that imitates a failure is not benign:
+it trains you to ignore the top of the build log, and it costs someone a bug report
+eventually. Noise that looks like an error gets fixed or silenced, not explained away.
+
+---
+
 ## 2026-08-28 — desktop — Show the decoded RAW, not the camera's preview; 1.3.1
 
 Reported as "the thumbnail may be BW (because that's how i shoot), but the decoded raw

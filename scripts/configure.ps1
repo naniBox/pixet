@@ -27,6 +27,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Enter-VsDevShell below runs VsDevCmd.bat internally, which calls `vswhere` by bare name and
+# prints "'vswhere.exe' is not recognized as an internal or external command" when the VS
+# Installer directory isn't on PATH - which it isn't by default. Nothing actually fails: the
+# dev shell still initializes and the build is correct. But it prints two error lines at the
+# top of every configure and every build, which reads exactly like the toolchain failing to
+# start. Putting the directory on PATH for this process is what the message is asking for.
+$vsInstallerDir = "C:\Program Files (x86)\Microsoft Visual Studio\Installer"
+if (Test-Path $vsInstallerDir) { $env:Path = "$vsInstallerDir;$env:Path" }
+
 $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
 $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (-not $vsPath) {
