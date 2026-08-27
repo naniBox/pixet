@@ -5,6 +5,174 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-28 — desktop — Show the decoded RAW, not the camera's preview; 1.3.1
+
+Reported as "the thumbnail may be BW (because that's how i shoot), but the decoded raw
+will be colour - i want to see the thumbnail updated with the decoded raw", and then, once
+that worked, "the bottom left preview doesn't show the decoded one".
+
+The premise checks out exactly. Dumping both thumbnails the app produces for one ARW:
+the embedded-preview tier (state=4) is black and white, the camera's monochrome picture
+profile; the full demosaic (state=1) is colour — blue seats, orange seat, sky through the
+windows. Same file, two completely different photographs.
+
+**The grid.** RawRenderer was already producing the colour version and writing it to the
+database. The grid just never showed it. ThumbGridModel::data() returned a held pixmap
+before it could ask for a replacement:
+
+    case Qt::DecorationRole:
+        if (!row.thumb.isNull()) return row.thumb;   // stale, forever
+        if (row.thumbId != 0 && !row.requested) { ... }
+
+refreshThumbStates() clears `requested` when thumb_id moves, with the comment "allow
+re-request now that a real thumb may exist" — and that line is *dead* whenever a pixmap is
+held, because the early return fires first. Asking before returning fixes it, and the old
+pixmap stays on screen until the replacement lands, so the cell turns from grey to colour
+rather than blanking.
+
+Worth being honest about: this one is certain by inspection but was never reproduced on
+demand. The window only opens when a render finishes *after* the thumbnail is already
+decoded on screen, and with warm caches everything here finishes too fast. Every A/B
+attempt landed on a fresh navigation, which rebuilds the model and hides the bug entirely.
+
+**The preview pane**, and the more interesting half. DisplayCodec's RAW ladder tried the
+embedded preview first and only fell through to a full decode if it wasn't large enough.
+For a preview pane it is *always* large enough — so the pane showed the camera's B&W
+rendering, permanently, and nothing ever populated the display cache to change that.
+
+Reordering so the cache is consulted first wasn't enough, because a cache *miss* still
+fell back to the preview and still never decoded. The fix is that a miss now goes straight
+to the demosaic and stores the result. The embedded preview survives only where the cache
+cannot answer at all: switched off, or the fullscreen viewer asking for native resolution.
+
+The reasoning, which is the part worth keeping: a RAW's embedded preview is not a smaller
+version of the same picture. It is the camera's own JPEG, made with whatever picture
+profile was set at the time. Preferring it "because it is big enough" shows a different
+photograph, not a cheaper one, and no amount of screen size makes that the right answer.
+
+ThumbGenerator now hands its full demosaic to the display cache on the way past, so the
+render RawRenderer already performs for the thumbnail also serves the preview and the
+fullscreen viewer — one demosaic instead of three. And onBackgroundDirectoryChanged
+re-requests the preview for a selected RAW, so a render finishing updates the pane instead
+of leaving the placeholder up until the selection moves.
+
+The trade this makes, deliberately: the first view of a RAW with no cache entry now costs
+a full demosaic — a few seconds, on a background thread, once per file. Afterwards it is
+instant. For monochrome-profile shooting that is the only correct behaviour; for someone
+shooting normally the embedded preview would have looked identical and been free, so if
+this ever needs to be optional it wants a "RAW preview: camera preview / full decode"
+setting rather than a heuristic.
+
+---
+
+## 2026-08-28 — desktop — A memory tier in front of the RAW cache
+
+"Since it takes such a long time to read the decodes, how about you keep what's visible on
+screen loaded, for instant goodness."
+
+The disk tier removes the demosaic but still costs a file read plus a JPEG decode — tens
+of milliseconds, which is the difference between quick and instant while arrowing through
+a folder. So rawcache grew a second tier: decoded images held in RAM, LRU, bounded.
+
+Bounded matters more than usual here. A decoded 2560px image is ~13MB, so a screenful is a
+quarter of a gigabyte; this cannot be allowed to simply grow with the window. Configurable
+alongside the disk budget (Off / 128MB / 256MB / 512MB / 1GB / 2GB, or free text), default
+512MB, which is about 40 decodes — a screenful plus room to scroll back.
+
+RawCacheWarmer promotes the visible rows' entries into memory on every viewport change,
+from an idle-priority thread. It only promotes what is *already* on disk: warming what is
+visible must never turn scrolling past a folder of un-viewed RAWs into a demosaic of every
+one of them, which is the obvious way for a feature like this to become far worse than the
+problem it solves.
+
+Two real design faults surfaced while testing, both from the two tiers having independent
+opinions about the same entries:
+
+- Disk eviction left the entry resident, so a file the user watched disappear kept being
+  served from RAM. Memory is now a strict subset of the files — evicting a file drops its
+  resident copy.
+- A memory hit never refreshed the disk entry's write time, which is what disk eviction
+  orders by. A file being served from RAM therefore looked untouched on disk and was
+  evicted as cold, taking the resident copy with it. The hottest entries in the cache
+  would have been the first to go. Memory hits now touch the file too.
+
+Both were caught by the LRU eviction test rather than by reading, which is the argument
+for having written it.
+
+---
+
+## 2026-08-28 — desktop — An on-disk cache for RAW decodes
+
+A full demosaic is the one decode in this app slow enough to be felt every single time,
+and it is paid again on every visit to the same photo for a result that is identical
+every time. So: cache it on disk.
+
+**Not in the database, deliberately.** Entries are ~0.7MB each against a thumbnail's
+~20KB, and a few thousand would make thumbs.db the largest thing in the app while gaining
+nothing — nothing queries this by anything but its exact key, there are no transactions
+to join, and eviction wants to delete bytes rather than leave a file needing a vacuum. A
+hashed path is also inspectable and individually deletable, which a blob table is not.
+
+Layout is `<cacheDir>/ab/cd/abcd...ef.jpg`: a 128-bit key (FNV-1a twice, different offset
+bases) rendered as hex and fanned out two bytes at a time, so no directory holds more
+than a few hundred entries. Every file is a plain JPEG, so the folder opens in any image
+viewer — which matters the day something looks wrong and the question is whether the
+cache or the decoder is at fault.
+
+The key is (path, mtime, size, long edge). mtime and size are the same cheap stand-in for
+"same bytes" that Pass B's freshness check already trusts, so an edited file misses rather
+than showing a stale decode — the one failure mode a cache like this must not have.
+Putting the long edge in the key means changing the size setting ages the old size out
+through normal eviction instead of invalidating anything, so toggling between two sizes
+doesn't re-decode the library twice.
+
+**Fit view only.** The cache is consulted inside DisplayCodec's Raw branch, after the
+cheap embedded-preview rung (which beats even a cache hit and costs nothing to try) and
+only when the size asked for fits inside the cached size. The fullscreen viewer's 1:1
+zoom passes targetLongEdge <= 0 meaning native resolution, and a 24MP sensor image cannot
+come out of a 2560px entry — serving it a smaller image would quietly answer a different
+question than the one asked. So 1:1 stays a live decode: slower, but the rarer action, and
+genuinely sharp.
+
+Eviction is LRU, not FIFO: lookup() touches an entry's write time on every hit, so the
+file opened daily survives while the one opened once a year does not, regardless of which
+was imported first. It evicts to 90% of the budget rather than exactly to it, so a run of
+inserts doesn't turn into a delete on every single one. configure() sweeps on the way in,
+which is what makes lowering the budget in Preferences free the space when OK is pressed
+rather than whenever a RAW is next opened.
+
+Settings live in Preferences > General: cached decode size (1440/1600/1920/2560/3840,
+default 2560) and a maximum size that is an *editable* combo — presets from Off through
+20 GB, plus free text like "3 GB" or "750mb", because how much disk to spend is a personal
+number no preset list covers. A usage readout and a Clear Cache button sit underneath.
+Clear has no confirmation: it is a cache, and the worst case is that the next RAW takes as
+long as it did the first time.
+
+Measured on the real folder, same six-image browse, cold cache vs warm:
+
+| | CPU burned |
+|---|---|
+| cold | 43.7s |
+| warm | 8.3s, and 8.8s on a repeat |
+
+Entries came out at ~0.7MB, so the 2 GB default holds roughly 2900 RAWs. Browsing grew
+the cache steadily (1 → 3 → 4 entries over 9 steps in a folder that alternates ARW and
+JPG), which is the shape expected when only the RAWs are cached.
+
+One measurement trap worth recording: the first attempt at this benchmark pinned the main
+window topmost so the automation could find it, which sent every arrow key to the grid
+instead of the fullscreen viewer. It reported the warm run as *slower* than the cold one.
+The viewer is a separate top-level window, and anything driving it must not hold another
+window above it.
+
+Seven tests cover the cache directly, on synthesized images rather than real RAWs, since
+the cache neither knows nor cares where its contents came from: round trip, the three ways
+identity can change, storing at the configured size, both sizes staying addressable across
+a size change, a zero budget disabling it, LRU eviction actually picking the least
+recently *used* entry, and clear.
+
+---
+
 ## 2026-08-28 — desktop — RAW folders were I/O-bound on 65x more bytes than they needed
 
 Reported as "a folder with lots of RAW files takes a loooooong time for first things to
