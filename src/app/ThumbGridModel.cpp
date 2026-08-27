@@ -287,11 +287,26 @@ QVariant ThumbGridModel::data(const QModelIndex &index, int role) const {
         case Qt::DisplayRole:
             return row.name;
         case Qt::DecorationRole:
-            if (!row.thumb.isNull()) return row.thumb;
+            // Asked for *before* returning whatever is already held, not after. A row whose
+            // thumb_id changed under it still has the previous pixmap in hand - most visibly
+            // a RAW that has just finished its full demosaic render, where the old thumbnail
+            // is the camera's embedded preview and the new one is the real thing. Returning
+            // early on a non-null pixmap meant that replacement was never requested, so the
+            // grid kept showing the superseded thumbnail until the folder was reloaded from
+            // scratch.
+            //
+            // refreshThumbStates() is what clears `requested` when thumb_id moves, and
+            // eviction clears the pixmap and the flag together - so the only way to arrive
+            // here holding a pixmap with requested == false is a genuinely superseded
+            // thumbnail, which is exactly when a re-request is wanted.
             if (row.thumbId != 0 && !row.requested) {
                 row.requested = true;
                 emit thumbNeeded(row.id, row.thumbId);
             }
+            // The superseded pixmap stays on screen until its replacement lands, so the cell
+            // visibly turns from the B&W preview into the rendered colour rather than
+            // blanking out and filling back in.
+            if (!row.thumb.isNull()) return row.thumb;
             return QVariant();
         case FileIdRole:
             return (qlonglong)row.id;

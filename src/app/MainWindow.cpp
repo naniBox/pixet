@@ -55,10 +55,12 @@
 #include "WindowRegistry.h"
 #include "FolderTreeView.h"
 #include "FullscreenViewer.h"
+#include "RawCacheWarmer.h"
 #include "HoverInfoWorker.h"
 #include "KeyBindings.h"
 #include "PathQ.h"
 #include "Preferences.h"
+#include "cache/RawCache.h"
 #include "PreferencesDialog.h"
 #include "PreviewDecoder.h"
 #include "PreviewPane.h"
@@ -103,6 +105,14 @@ QModelIndex nextSiblingOrAunt(QFileSystemModel *model, const QModelIndex &idx) {
     }
     return QModelIndex();
 }
+// Hands prefs' RAW cache settings to pixet_core. Also what trims the cache after the
+// budget is lowered, since rawcache::configure() sweeps on the way in - so this is
+// called on every OK from Preferences, not only when something changed.
+void applyRawCacheSettings() {
+    pixet::rawcache::configure(prefs::rawCacheDir().toStdString(), prefs::rawCacheMaxBytes(),
+                                prefs::rawCacheLongEdge(), prefs::rawCacheMemoryBytes());
+}
+
 } // namespace
 
 MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent), resetLayout_(resetLayout) {
@@ -115,6 +125,11 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     resize(1280, 800);
 
     db_ = std::make_unique<pixet::Database>(pixet::indexDbPath(), pixet::thumbsDbPath(), false);
+
+    // Pushes the RAW cache settings into pixet_core, which has no access to prefs of its
+    // own. Done per window rather than once in main() because it is idempotent and cheap,
+    // and this way a window opened later can never be running against a stale budget.
+    applyRawCacheSettings();
 
     // --- left panel: folder tree + bookmarks (top), preview (bottom, user-resizable) ---
     // placeholder-text is Qt's semantic role for "muted but still legible" text, which is
@@ -491,6 +506,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     previewDecoder_ = std::make_unique<PreviewDecoder>();
     connect(previewDecoder_.get(), &PreviewDecoder::previewReady, this, &MainWindow::onPreviewReady);
 
+    rawCacheWarmer_ = std::make_unique<RawCacheWarmer>();
     folderIndexer_ = std::make_unique<FolderIndexer>();
     connect(this, &MainWindow::requestIndex, folderIndexer_.get(), &FolderIndexer::indexFolder);
     connect(folderIndexer_.get(), &FolderIndexer::started, this, &MainWindow::onIndexerStarted);
@@ -1700,6 +1716,7 @@ void MainWindow::onPreferences() {
         stats.exec();
     });
     connect(&dlg, &PreferencesDialog::nukeDatabaseRequested, this, &MainWindow::nukeDatabase);
+    connect(&dlg, &PreferencesDialog::rawCacheSettingsChanged, this, []() { applyRawCacheSettings(); });
     dlg.exec();
     // Cheap enough to always re-apply regardless of whether the keybindings editor
     // actually changed anything (Cancel discards its own edits before this point) -
@@ -2336,6 +2353,19 @@ void MainWindow::pushGridPriorityToIndexer() {
     ids += gridModel_->fileIdsForRows(visible.second + 1, visible.second + page);
     ids += gridModel_->fileIdsForRows(visible.first - page, visible.first - 1);
     folderIndexer_->setPriorityFiles(currentPath_, std::move(ids));
+
+    // Same viewport, different consumer: pull the RAW cache entries for what is on screen
+    // into memory, so opening one of them is a copy rather than a read plus a decode. Only
+    // the visible rows, not the margins the indexer also gets - a resident decode costs
+    // ~13MB, which is a different order of expense from a place in a queue.
+    QStringList rawPaths;
+    for (int row = visible.first; row <= visible.second; ++row) {
+        QModelIndex idx = gridModel_->index(row);
+        if (!idx.isValid()) continue;
+        if (idx.data(ThumbGridModel::FormatRole).toInt() != (int)pixet::Format::Raw) continue;
+        rawPaths << joinPathQ(currentPath_, idx.data(Qt::DisplayRole).toString());
+    }
+    rawCacheWarmer_->warm(rawPaths);
 }
 
 void MainWindow::onThumbsProgress(QString path) {
@@ -2401,6 +2431,17 @@ void MainWindow::onBackgroundDirectoryChanged(QString path) {
     gridModel_->refreshThumbStates();
     grid_->viewport()->update();
     updateSelectionStatus();
+
+    // The preview pane holds a decode of whatever is selected, and for a RAW that decode
+    // may have just been superseded: a render finishing here is exactly when the camera's
+    // embedded preview (black and white, if that is how the shot was taken) gets replaced
+    // by the real colour demosaic. The grid picks that up through refreshThumbStates()
+    // above; the preview has to be asked again, or it keeps showing the placeholder until
+    // the selection moves.
+    QModelIndex current = gridModel_->index(grid_->currentRow());
+    if (current.isValid() && current.data(ThumbGridModel::FormatRole).toInt() == (int)pixet::Format::Raw) {
+        triggerPreviewRequest();
+    }
 }
 
 void MainWindow::onWatchedDirectoryChanged(const QString &path) {

@@ -6,12 +6,14 @@
 #include "../decode/HeifCodec.h"
 #include "../decode/JpegCodec.h"
 #include "../decode/PngCodec.h"
+#include "../cache/RawCache.h"
 #include "../decode/RawCodec.h"
 #include "../decode/TiffCodec.h"
 #include "../decode/VideoCodec.h"
 #include "../decode/WebpCodec.h"
 #include "../meta/JpegExif.h"
 #include "../util/FileIO.h"
+#include "../util/FileMove.h" // statFile, for the RAW cache key
 
 #include "../util/Profile.h"
 
@@ -271,8 +273,8 @@ ThumbResult generateHeifThumb(const std::vector<uint8_t> &fileBytes, int targetL
     return result;
 }
 
-ThumbResult generateRawThumb(const std::vector<uint8_t> &fileBytes, int targetLongEdge, int quality,
-                              bool forceFullRender) {
+ThumbResult generateRawThumb(const std::string &filePath, const std::vector<uint8_t> &fileBytes,
+                              int targetLongEdge, int quality, bool forceFullRender) {
     ThumbResult result;
 
     // decodeRaw() (full demosaic) applies the file's embedded orientation to its
@@ -291,7 +293,17 @@ ThumbResult generateRawThumb(const std::vector<uint8_t> &fileBytes, int targetLo
     }
     if (!decoded) {
         decoded = decodeRaw(fileBytes.data(), fileBytes.size(), img);
-        if (decoded) result.tier = ThumbTier::Decoded;
+        if (decoded) {
+            result.tier = ThumbTier::Decoded;
+            // Hand the full decode to the display cache on the way past. This is the same
+            // demosaic the preview pane and the fullscreen viewer would otherwise each have
+            // to do for themselves, and it is by far the most expensive thing in the app -
+            // paying for it once, here, is what makes a rendered RAW open in colour
+            // immediately rather than after a second wait. The cache downscales to its own
+            // configured size, so this does not store a 24MP image.
+            int64_t size = 0, mtime = 0;
+            if (statFile(filePath, &size, &mtime)) rawcache::store(filePath, mtime, size, img);
+        }
     }
     if (!decoded) {
         result.tier = ThumbTier::Failed;
@@ -425,7 +437,7 @@ ThumbResult generateThumb(const std::string &filePath, Format fmt, int targetLon
     switch (fmt) {
         case Format::Jpeg: return generateJpegThumb(fileBytes, targetLongEdge, quality);
         case Format::Png: return generatePngThumb(fileBytes, targetLongEdge, quality);
-        case Format::Raw: return generateRawThumb(fileBytes, targetLongEdge, quality, forceFullRender);
+        case Format::Raw: return generateRawThumb(filePath, fileBytes, targetLongEdge, quality, forceFullRender);
         case Format::Tiff: return generateTiffThumb(fileBytes, targetLongEdge, quality);
         case Format::Webp: return generateWebpThumb(fileBytes, targetLongEdge, quality);
         case Format::Avif: return generateAvifThumb(fileBytes, targetLongEdge, quality);
