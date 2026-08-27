@@ -5,6 +5,166 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-28 — desktop — RAW folders were I/O-bound on 65x more bytes than they needed
+
+Reported as "a folder with lots of RAW files takes a loooooong time for first things to
+be seen", against Y:\dmo\Nextcloud\Photos\_EDITING\2026\2026-08\2026-08-15 — 335 ARW +
+335 JPG, 9.82 GB.
+
+The first suspicion was that on-screen-first thumbnailing wasn't working. It was. Copied
+the folder to SSD and drove the GUI cold: 0.6s to the file list, 1.3s to thumbnails. A
+90-ARW folder indexed in 3.4s. The ordering hook was doing its job.
+
+What differs is the disk. Y: is `kokuryuHDD`, a 4TB spinning drive that reads **82-88
+MB/s cold** — an early measurement of 2.3 GB/s was the OS cache, not the platter.
+Parallelism doesn't change it (8 threads = 0.93x sequential), so the only lever is how
+many bytes get asked for.
+
+Wall-clock was useless as a metric here: the same folder took 24.7s or 5.1s depending on
+what the page cache happened to hold, which is also why the app felt fine sometimes and
+awful others. The honest measurement is the process's own `ReadTransferCount`, taken
+after clearing the folder from both databases:
+
+**pixet-index read 9.10 GB to thumbnail this folder.**
+
+Scanning an ARW for its embedded JPEGs says why:
+
+    file size: 23.59 MB
+      embedded JPEG at 39136  :   5 KB
+      embedded JPEG at 139593 : 229 KB   (ends 0.36 MB into the file)
+
+ThumbGenerator read the whole file and handed the buffer to `decodeRawThumb`, which does
+`LibRaw::open_buffer`. 23.59 MB read to use the first 0.36 MB — **65x**, on the one
+resource that was actually scarce.
+
+`decodeRawThumbFromFile()` opens through LibRaw's own file datastream instead, so it
+reads the header, the metadata and the preview and stops. RAW now takes the path
+directly in `generateThumb()`, exactly as video already did; dimensions come from the
+same open rather than a second parse; a miss falls through to the existing whole-file
+path, which the full-demosaic fallback needs anyway. `--render-raws` is untouched.
+
+| | before | after |
+|---|---|---|
+| bytes read | 9.10 GB | **2.15 GB** |
+| RAW portion | 7.77 GB | ~0.09 GB |
+| projected cold time @ 85 MB/s | ~110s | ~26s |
+
+Identical output either way: 335 embedded-preview, 335 decoded, 0 failed. Correctness
+checked beyond the counts by opening the folder — every .ARW thumbnail matches its .JPG
+sibling in framing, orientation and colour, which is the same photo arriving through two
+independent code paths.
+
+Two details worth keeping. The shared post-`unpack_thumb` logic is factored out so the
+buffer and file paths can't drift on orientation handling. And Windows goes through
+LibRaw's `wchar_t` overload: its narrow `open_file` interprets paths in the active ANSI
+codepage, the same trap `FileIO_win.cpp` exists to avoid, so a non-ASCII folder name
+would otherwise fail to open.
+
+The remaining 2.15 GB is the camera JPEGs and is close to irreducible: their EXIF
+thumbnails are ~160px, below the grid's 300px setting, so ThumbGenerator rejects them as
+too small and does a real scaled-DCT decode — which needs the whole compressed stream.
+
+---
+
+## 2026-08-28 — desktop — Two reasons a folder still didn't feel progressive
+
+Follow-ups to the above, both reported from real use and both real.
+
+**"It still tries to do the whole thing in one go."** Pass B dispatched in waves of 20
+(the pool width) but committed in batches of 64, and nothing reaches the screen until a
+batch commits. So the on-screen-first ordering was generating the visible screenful
+first and then leaving it invisible behind 44 files nobody was looking at. The commit
+size now ramps — one wave, then doubling back up to kBatchSize. First paint lands as soon
+as the first screenful exists; the steady state still commits in 64s, so this costs a
+handful of extra transactions at the start of a directory rather than 3x throughout.
+`--render-raws` stays pinned at 1.
+
+**Navigating away from an indexing folder blocked the new one.** `indexFolder()` is a
+queued slot on one worker thread, so a second call sat in that thread's event queue until
+the first returned. A 335-RAW folder held a two-JPEG folder hostage for as long as the
+RAWs took — and the two JPEGs were what the user was looking at.
+
+New `IndexCallbacks::shouldCancel`, asked between Pass B waves and between directories.
+Cancelling is not an abort: the current wave is committed, the claim is released, and the
+remaining files stay state=New, which is exactly where an un-browsed folder sits anyway,
+so nothing downstream needs to know it happened. `FolderIndexer::cancelCurrent()` is a
+plain mutex-free atomic rather than a slot, for the same reason `setPriorityFiles()` is a
+plain method: the worker is *inside* `indexFolder()` when it's called, so a queued
+connection would arrive exactly when it had stopped mattering. The flag is cleared at the
+start of each run, so a cancellation can only ever apply to the run it was aimed at.
+
+MainWindow calls it on every navigation, immediately before `requestIndex`.
+
+Measured against the real 670-file folder mid-index: the two-JPEG folder now appears
+**1.38s** after navigating, rather than waiting the RAW folder out.
+
+Both behaviours are pinned by tests rather than by timing, since the page cache makes
+wall-clock unreproducible: `PassBCommitsEarlyThenRampsUpTheBatchSize` (threadCount=1
+makes a wave one file, so the ramp is exactly observable) and
+`CancellingPassBKeepsWhatItFinishedAndLeavesTheRestPending` (committed not rolled back,
+claim released, and a later run finishes the rest).
+
+---
+
+## 2026-08-27 — desktop — Licence shown before use, on both platforms; 1.3.0
+
+Windows gets it from the installer — `LicenseFile` in pixet.iss puts the Apache 2.0 text
+on its own wizard page with "I do not accept" preselected and Next disabled, so setup
+cannot proceed unaccepted. Inno detects RTF vs plain text by looking for an `{\rtf`
+header, so the extensionless LICENSE at the repo root works directly, with no second copy
+to keep in sync.
+
+macOS has no installer to host a page like that, so first run is the only opportunity.
+`LicenseDialog::ensureAccepted()` shows it modally and returns false if declined; main()
+then exits without opening anything. It sits after `parser.process()` so --help and
+--version still answer without a prompt, and before the first window so declining leaves
+no window, no database connection and no indexing thread behind. Acceptance persists as
+`licenseAccepted` in pixet.ini.
+
+Deliberately platform-gated rather than universal: a Windows user has already agreed
+during setup, and asking again on first launch would be a second prompt for the same
+agreement.
+
+The licence text is compiled in through icons.qrc, because a .app bundle is dragged
+around as a single unit and a loose file beside it would not survive the trip. Accept is
+explicitly not the default button — agreeing should take a deliberate click rather than a
+reflexive Return on an unexpected dialog. If the resource is ever missing the app starts
+*without* recording acceptance, rather than bricking itself or asking anyone to agree to
+a blank document.
+
+The macOS path can't run on Windows, so it was verified by temporarily compiling the gate
+in: Cancel exits 0 with nothing written, Accept writes the key and opens the window, a
+third run goes straight through. Gate restored, test key removed.
+
+---
+
+## 2026-08-27 — desktop — Windows deployment trimmed to what the app actually loads
+
+`deploy-windows.ps1` shipped windeployqt's default output, which assumes an app that
+might render through any backend and decode images with Qt. pixet does neither.
+
+Skipped at copy time via flags: `opengl32sw.dll` (20MB Mesa software rasteriser, only
+reachable from Qt Quick / QOpenGLWidget), `dxcompiler.dll` + `dxil.dll` (13.5MB, RHI
+D3D12), `d3dcompiler_47.dll` (4.7MB, RHI D3D11). Deliberately *not*
+`--no-compiler-runtime`: windeployqt is the only thing staging `vc_redist.x64.exe`, which
+pixet.iss requires — nothing in the repo said so before, and it's an implicit dependency
+worth knowing about.
+
+Pruned after staging: the imageformats, iconengines, generic, networkinformation and tls
+plugin dirs, by allowlist (platforms, styles) rather than a delete-list, so a future Qt
+adding default plugins can't silently re-inflate the installer. Then a derived sweep
+drops any Qt6*.dll nothing left in the staging folder imports — Qt6Network and Qt6Svg are
+dead only *as a consequence* of those plugins going, so the answer is re-derived from
+import tables each run rather than hardcoded.
+
+115MB staged becomes 73MB; the installer goes from 51.1 to 39.9 MiB. Verified by
+launching the trimmed staging folder directly.
+
+SETUP.md gained the step 8 it never had — the installer path had been undocumented in
+both SETUP.md and here since it landed — plus fixes for the stale claims around it.
+
+---
+
 ## 2026-08-27 — mac — pixet was crawling the whole disk, and macOS was telling us so
 
 Reported as "I keep getting *pixet.app would like to access your Downloads / Photo
@@ -127,6 +287,42 @@ and they are now the only TCC-gated folders left in the rotation.
 Until it was replaced, running it would have re-seeded the crawl from the `/`, `/nix` and
 `/System` spine rows the prune leaves alive as ancestors. Rebuilt via `scripts/mac-e2e.sh`
 and installed; the previous bundle is parked at `/Applications/pixet.app.old-2026-08-27`.
+
+---
+
+## 2026-08-26 — desktop — Sort toggle, fullscreen tracking, and a comment audit
+
+**Sort buttons reverse on a second click.** Clicking the active sort key used to be a
+silent no-op: an exclusive QActionGroup won't let a click uncheck its checked member, so
+re-triggering the active key recomputed an identical sort. The four key actions now go
+through a lambda that flips the direction first when the clicked key is already active.
+That indirection is necessary rather than stylistic — `onSortOrderChanged()` deliberately
+re-reads which action is checked instead of knowing which one fired, and by the time it
+runs the group has already moved the check mark. `prefs::gridSortKey()` is still the
+pre-click key there, which is the comparison needed. Tooltips name the direction now,
+since the buttons are icon-only and that's the only place the behaviour is discoverable.
+
+**The fullscreen viewer follows the grid.** It already pushed its row to the grid; the
+reverse never existed, so moving the viewer aside and picking a different image left the
+two showing different things. Driven from `onGridSelectionChanged()`, the one place a
+lead-row change already lands. Two guards matter: the viewer returns early when the row
+is already on screen, which is what breaks the cycle with the grid's own `rowChanged`
+answer; and a folder change clears the fit cache, zoom pixmap and in-flight requests,
+because everything in there is keyed by row and a row is a different file in a different
+folder.
+
+**Comment audit.** Went through every comment in the project on the rule that each one
+has to stand on its own without the git history. Rewrote everything that narrated a
+change ("this used to be X", "an earlier version tried Y", "see git history") into a
+present-tense statement of why the code is as it is, keeping the measurements and
+reproductions, which are the valuable part. Also removed references that don't survive on
+their own: this devlog and the P0-P5 phase labels, in 30 places.
+
+Two comments turned out to be actively wrong rather than merely history-dependent. main()
+had two overlapping blocks above the positional-argument loop, the first claiming extra
+arguments "are ignored rather than treated as an error" — they aren't, each opens a
+window. And pixet.iss described windeployqt as staging imageformats, which the deploy trim
+above had just stopped being true.
 
 ---
 
