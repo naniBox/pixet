@@ -56,6 +56,7 @@
 #include "FolderTreeView.h"
 #include "FullscreenViewer.h"
 #include "RawCacheWarmer.h"
+#include "ShellOps.h"
 #include "HoverInfoWorker.h"
 #include "KeyBindings.h"
 #include "PathQ.h"
@@ -202,6 +203,8 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // --- right: preview pane (constructed here so topSplitter_/leftPanel_ below can
     // reference it - actually placed at the bottom of the left column, see layout) ---
     preview_ = new PreviewPane(this);
+    preview_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(preview_, &QWidget::customContextMenuRequested, this, &MainWindow::onPreviewContextMenu);
 
     topSplitter_ = new QSplitter(Qt::Horizontal, this);
     topSplitter_->addWidget(treePanel);
@@ -1103,6 +1106,12 @@ void MainWindow::buildItemContextMenu(QMenu &menu, int row, bool fromFullscreen)
                         [name]() { QGuiApplication::clipboard()->setText(name); });
         menu.addAction(QStringLiteral("Copy Path"), this,
                         [fullPath]() { QGuiApplication::clipboard()->setText(fullPath); });
+        // Reveals the file itself, selected in its folder, rather than just opening the
+        // folder - see shellops::revealInFileManager(). Sits with Copy Path because it
+        // answers the same question ("where is this?") by a different route, and reaches
+        // the fullscreen viewer for free, since that shares this menu.
+        menu.addAction(shellops::revealActionLabel(), this,
+                        [fullPath]() { shellops::revealInFileManager(fullPath); });
     }
 }
 
@@ -1546,7 +1555,40 @@ void MainWindow::onTreeContextMenu(const QPoint &pos) {
         menu.addAction(QStringLiteral("Add to Bookmarks"), this, [this, path]() { addBookmark(path); });
     }
 
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("Create Folder..."), this, [this, path]() { createFolderIn(path); });
+
+    menu.addSeparator();
+    // The right-clicked folder, not the one being browsed - those differ whenever someone
+    // right-clicks a folder they haven't navigated into yet, which is most of the time in
+    // a tree.
+    menu.addAction(shellops::revealActionLabel(), this,
+                    [path]() { shellops::revealInFileManager(path); });
+
     menu.exec(tree_->mapToGlobal(pos)); // `pos` is view-relative, so map from the view
+}
+
+void MainWindow::onPreviewContextMenu(const QPoint &pos) {
+    // The pane shows the grid's current selection, so that is what the menu acts on. No
+    // selection means nothing is on display and there is nothing to reveal - showing an
+    // empty or all-disabled menu would be worse than not opening one.
+    QModelIndex idx = gridModel_->index(grid_->currentRow());
+    if (!idx.isValid()) return;
+
+    const QString name = idx.data(Qt::DisplayRole).toString();
+    if (name.isEmpty()) return;
+    const QString filePath = joinPathQ(currentPath_, name);
+
+    QMenu menu(this);
+    // Named for the same reason the tree and grid menus name their target: the pane has no
+    // visible selection of its own, so without this the menu is a verb with no subject.
+    QAction *header = menu.addAction(name);
+    header->setEnabled(false);
+    menu.addSeparator();
+    menu.addAction(shellops::revealActionLabel(), this,
+                    [filePath]() { shellops::revealInFileManager(filePath); });
+
+    menu.exec(preview_->mapToGlobal(pos));
 }
 
 void MainWindow::onFocusAddressBar() {
@@ -2022,6 +2064,78 @@ QString MainWindow::promptRename(const QString &currentName) {
     lineEdit->setFocus();
     if (dlg.exec() != QDialog::Accepted) return QString();
     return lineEdit->text().trimmed();
+}
+
+void MainWindow::createFolderIn(const QString &parentPath) {
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("Create Folder"));
+
+    auto *layout = new QVBoxLayout(&dlg);
+    layout->addWidget(new QLabel(QStringLiteral("New folder in %1:").arg(QDir(parentPath).dirName()), &dlg));
+
+    auto *lineEdit = new QLineEdit(QStringLiteral("New Folder"), &dlg);
+    lineEdit->selectAll();
+    layout->addWidget(lineEdit);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QPushButton *okButton = buttons->button(QDialogButtonBox::Ok);
+    connect(lineEdit, &QLineEdit::textChanged, okButton,
+            [okButton](const QString &text) { okButton->setEnabled(!text.trimmed().isEmpty()); });
+    connect(lineEdit, &QLineEdit::returnPressed, &dlg, [&dlg, okButton]() {
+        if (okButton->isEnabled()) dlg.accept();
+    });
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    lineEdit->setFocus();
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const QString name = lineEdit->text().trimmed();
+    if (name.isEmpty()) return;
+
+    // Separators are rejected rather than quietly creating a chain of directories: "a/b"
+    // typed into a field labelled "New folder" reads as one folder with an odd name, and
+    // silently making two (or worse, escaping the parent entirely with "..") is not what
+    // was asked for.
+    if (name.contains(QLatin1Char('/')) || name.contains(QLatin1Char('\\')) ||
+        name == QStringLiteral(".") || name == QStringLiteral("..")) {
+        QMessageBox::warning(this, QStringLiteral("Create Folder"),
+                              QStringLiteral("A folder name can't contain \\ or / characters."));
+        return;
+    }
+
+    QDir parent(parentPath);
+    const QString fullPath = parent.filePath(name);
+    if (QFileInfo::exists(fullPath)) {
+        QMessageBox::warning(this, QStringLiteral("Create Folder"),
+                              QStringLiteral("\"%1\" already exists here.").arg(name));
+        return;
+    }
+
+    // mkdir(), not mkpath(): mkpath succeeds silently when the directory is already there
+    // and would create intermediate levels, both of which hide exactly the mistakes this
+    // dialog should be reporting.
+    if (!parent.mkdir(name)) {
+        // No errno to report from QDir, so the message says what was attempted rather than
+        // guessing at a cause. Read-only location and a name the filesystem rejects (a
+        // reserved device name, a trailing dot on Windows) both land here.
+        QMessageBox::warning(this, QStringLiteral("Create Folder"),
+                              QStringLiteral("Could not create \"%1\" in %2.").arg(name, parentPath));
+        return;
+    }
+
+    // The tree is a QFileSystemModel and picks the new directory up on its own watch, but
+    // not necessarily before this returns - so expand the parent and select the child once
+    // the model has caught up, rather than leaving the user to find what they just made.
+    QModelIndex parentIdx = fsModel_->index(parentPath);
+    if (parentIdx.isValid()) tree_->expand(parentIdx);
+    QTimer::singleShot(0, this, [this, fullPath]() {
+        QModelIndex idx = fsModel_->index(fullPath);
+        if (!idx.isValid()) return;
+        tree_->setCurrentIndex(idx);
+        tree_->scrollTo(idx);
+    });
 }
 
 void MainWindow::onToggleSidePanel() {

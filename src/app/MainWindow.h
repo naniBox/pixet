@@ -89,6 +89,11 @@ private slots:
     // selection on a right-click, so this deliberately acts on indexAt(pos) rather than on
     // currentIndex().
     void onTreeContextMenu(const QPoint &pos);
+    // Right-click in the preview pane. Acts on whatever the pane is currently showing,
+    // which is always the grid's selected file - the pane has no selection of its own to
+    // right-click, so the menu names the file it will act on rather than leaving that to
+    // be inferred.
+    void onPreviewContextMenu(const QPoint &pos);
     void onGridSelectionChanged();
     // Ctrl-hover over the grid (see ThumbGridView::ctrlHoverRowChanged) - previews
     // whatever's under the cursor without touching the actual selection, so a
@@ -603,6 +608,16 @@ private:
     // string if cancelled/unchanged (onEditRename() treats both the same way - nothing
     // to do).
     QString promptRename(const QString &currentName);
+    // Creates a subfolder of `parentPath`, asking for the name first. Does the whole thing
+    // - prompt, validate, mkdir, report failure, reveal the result - because there is no
+    // part of it worth a caller doing separately.
+    //
+    // Deliberately not routed through FileOpsWorker like copy/move/delete are: those are
+    // batch operations over arbitrarily many files, need collision handling, and update the
+    // index. This is a single mkdir on a local path, which is fast enough that pushing it
+    // to a worker thread would only add the possibility of the tree refreshing before the
+    // directory exists.
+    void createFolderIn(const QString &parentPath);
 
     // Window position/size and splitter layout persistence (QSettings) - see
     // restoreWindowState()'s doc comment in the .cpp for the off-screen/reset behavior.

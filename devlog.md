@@ -5,6 +5,54 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-08-28 — desktop — Handing paths back to the file manager, and making folders
+
+Two context-menu additions, both about the app being a good neighbour to Explorer and
+Finder rather than a walled garden.
+
+**Open in Explorer / Open in Finder.** New shellops::revealInFileManager(), with the label
+derived from the platform rather than hardcoded so the entry names whatever file manager
+the user actually has. The behaviour distinguishes files from folders, which is the part
+that matters: a folder is opened, a file has its folder opened *with the file selected*.
+That is the difference between answering "where is this photo?" and merely landing the
+user in the right directory.
+
+Two platform details worth keeping. On Windows `/select,` is one token, comma included and
+no space - split it into two arguments and Explorer silently opens Documents instead. On
+macOS `-R` is required; a bare `open` would launch the photo in whatever application
+claims the type, which is the opposite of what the menu entry promises.
+
+Added to the preview pane and the folder tree first, and then - after a fair "i thought
+that was obvious!" - to the grid as well. The grid and the fullscreen viewer share
+buildItemContextMenu(), so that one addition covered both. Worth remembering as a
+judgement error rather than a scope one: when a feature is "reveal this file", every place
+that shows a file is the obvious set, and listing two of them was reading the request too
+literally.
+
+The preview pane needed a context menu of its own, and its menu names the file in a
+disabled header. The pane has no selection of its own to right-click - it always shows the
+grid's current selection - so without the header the menu is a verb with no subject.
+
+**Create Folder...** in the tree, creating a subfolder of the *right-clicked* folder rather
+than the browsed one, matching how the rest of that menu already behaves. Follows the
+existing promptRename() idiom: pre-filled name, selected so typing replaces it, Enter
+accepts, OK disabled while blank.
+
+mkdir(), not mkpath(): mkpath succeeds silently when the directory already exists and
+creates intermediate levels, both of which hide exactly the mistakes this dialog should be
+reporting. Separators and `..` are rejected outright - a name typed into a field labelled
+"New folder" reads as one folder, and quietly creating a chain (or escaping the parent) is
+not what was asked for. Deliberately not routed through FileOpsWorker like copy/move/delete
+are: those are batches over many files that need collision handling and index updates,
+while this is one local mkdir, and a worker thread would only add the chance of the tree
+refreshing before the directory exists.
+
+Verified by driving the app rather than by reading: the folder appears on disk and gets
+selected in the tree, a duplicate name shows "already exists here" and creates nothing, and
+`a/b` is refused without leaving an `a` behind.
+
+---
+
 ## 2026-08-28 — desktop — The build was never broken, it just looked it
 
 Reported as "looks like the deploy-windows.ps1 is broken?". It wasn't: a full run

@@ -114,6 +114,9 @@ add_executable(pixet ${PIXET_APP_TYPE}
     RawCacheWarmer.h
     RawCacheWarmer.cpp
 
+    ShellOps.h
+    ShellOps.cpp
+
     icons.qrc
 )
 
