@@ -56,6 +56,17 @@ void setRawCacheMemoryBytes(qint64 bytes);
 // app data folder - one place to look for everything pixet stores.
 QString rawCacheDir();
 
+// Hands the four settings above to pixet_core, which has no access to prefs of its own
+// (see core/cache/RawCache.h's configure()). Also what trims the cache after the budget
+// is lowered, since configure() sweeps on the way in - so this is called on every OK from
+// Preferences, not only when something changed.
+//
+// Lives here rather than in MainWindow.cpp, where it started, because the standalone
+// viewer mode never builds a MainWindow and would otherwise open RAW files with the cache
+// left unconfigured - i.e. re-demosaicing a file the full app had already cached, which is
+// seconds per image and precisely the cost the cache exists to remove.
+void applyRawCacheSettings();
+
 // Whether the license has been accepted on this machine. Only ever consulted where no
 // installer presented it - see LicenseDialog.h, which owns the whole of that decision and is
 // the only thing that should be writing this.

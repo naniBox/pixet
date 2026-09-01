@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QAbstractListModel>
 #include <QHash>
 #include <QPixmap>
 #include <QPointF>
@@ -10,7 +11,6 @@
 
 class QPainter;
 class QTimer;
-class ThumbGridModel;
 class FullscreenDecoder;
 
 // Fullscreen image viewer. Opened via double-click/Enter on a thumbnail, and
@@ -57,7 +57,21 @@ public:
     // `directoryPath`). `model` is not owned - must outlive this call (MainWindow's
     // gridModel_, whose lifetime already exceeds any fullscreen session opened from
     // it).
-    void openAt(ThumbGridModel *model, const QString &directoryPath, int startRow);
+    //
+    // Typed as the QAbstractListModel base rather than ThumbGridModel because the
+    // standalone viewer mode (`pixet <file>`, see main.cpp) drives this same widget from
+    // a FolderListModel instead - a plain directory listing with no database behind it.
+    // Nothing below ever needed more than rowCount()/index()/data(): the ThumbGridModel::
+    // Role constants this reads are plain enum values, not members it calls through.
+    void openAt(QAbstractListModel *model, const QString &directoryPath, int startRow);
+
+    // Standalone mode: this viewer is the whole application, with no main window behind
+    // it. Changes exactly one thing - what the Enter/ActivateFullscreen key means. In the
+    // normal case it closes, making Enter the toggle that matches how the viewer was
+    // opened from the grid; standalone there is nothing to toggle back to, so it means
+    // "escalate to the full app at this folder" and emits browseRequested() instead.
+    // Escape still just exits, in both modes.
+    void setStandalone(bool standalone) { standalone_ = standalone; }
 
     // Follow a selection change the user made in the main window while this viewer is
     // still up - reachable because the viewer can be moved aside or switched to windowed
@@ -84,6 +98,15 @@ signals:
     // itself, since everything in it (cached info, the on-demand EXIF read, the Edit
     // actions) lives on that side.
     void contextMenuRequested(int row, QPoint globalPos);
+    // Standalone mode only: the user pressed Enter and wants the full folder view. Carries
+    // the row so the caller can open the main window already navigated to what was on
+    // screen, rather than to the folder in the abstract.
+    void browseRequested(int row);
+    // A full-resolution decode landed and its dimensions are, by definition, the file's
+    // native size. Emitted for whichever model wants to learn sizes it has no other source
+    // for - FolderListModel does (see its setNativeSize()); ThumbGridModel already has them
+    // from the indexer and simply isn't connected to this.
+    void nativeSizeDiscovered(int row, QSize size);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -100,7 +123,7 @@ private slots:
     void onDecoded(qint64 requestId, QImage image);
 
 private:
-    ThumbGridModel *model_ = nullptr; // not owned
+    QAbstractListModel *model_ = nullptr; // not owned
     QString directoryPath_;
     int currentRow_ = -1;
 
@@ -148,6 +171,7 @@ private:
     // toggle, so this is a persisted preference (survives closing and relaunching
     // the app), not just a within-session one - see the .cpp.
     bool trueFullscreen_ = true;
+    bool standalone_ = false;    // see setStandalone()
     int infoOverlayLevel_ = 0;   // 0 = off, 1 = on (I key) - see the .cpp for why not full EXIF cycling
 
     QPoint dragStartMouse_;
