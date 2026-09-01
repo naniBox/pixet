@@ -52,6 +52,8 @@ add_executable(pixet ${PIXET_APP_TYPE}
 
     ThumbGridModel.h
     ThumbGridModel.cpp
+    FolderListModel.h
+    FolderListModel.cpp
     ThumbGridView.h
     ThumbGridView.cpp
     ThumbLoader.h

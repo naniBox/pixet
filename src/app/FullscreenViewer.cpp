@@ -18,6 +18,7 @@
 #include "Preferences.h"
 #include "ThumbGridModel.h"
 #include "db/Schema.h"
+#include "version.h"
 
 namespace {
 // prefs::settingsStore() key trueFullscreen_ is persisted under - see the header's
@@ -88,7 +89,7 @@ void FullscreenViewer::resetDecodeState() {
     zoomPrefetchTimer_->stop();
 }
 
-void FullscreenViewer::openAt(ThumbGridModel *model, const QString &directoryPath, int startRow) {
+void FullscreenViewer::openAt(QAbstractListModel *model, const QString &directoryPath, int startRow) {
     model_ = model;
     directoryPath_ = directoryPath;
 
@@ -261,6 +262,13 @@ void FullscreenViewer::onDecoded(qint64 requestId, QImage image) {
         zoomPixmap_ = QPixmap::fromImage(image);
         zoomPixmapRow_ = zoomRequestRow_;
         zoomRequestRow_ = -1;
+        // This decode was asked for at targetLongEdge=0, so what came back *is* the file at
+        // its native pixel size - the one measurement a model with no indexer behind it has
+        // no other way to obtain. Emitted before the repaint below so a model that answers
+        // this by filling in WidthRole/HeightRole (FolderListModel) has done so by the time
+        // paintEvent() reads them, and the frame that shows the sharp pixels is also the
+        // first frame that can zoom.
+        if (!zoomPixmap_.isNull()) emit nativeSizeDiscovered(zoomPixmapRow_, zoomPixmap_.size());
         if (zoomPixmapRow_ == currentRow_) update();
         return;
     }
@@ -314,7 +322,22 @@ void FullscreenViewer::updateCursor() {
     }
 }
 
-void FullscreenViewer::updateWindowTitle() { setWindowTitle(pathForRow(currentRow_)); }
+void FullscreenViewer::updateWindowTitle() {
+    // Only ever seen in windowed mode (F) - true fullscreen has no title bar to put this in.
+    // Path first, then version, then "pixet" last - the same shape as
+    // MainWindow::updateWindowTitle(), and last for the same non-obvious reason: Qt appends
+    // the application display name to any title that doesn't already end with it, so a title
+    // arranged the natural way arrives on screen with "- pixet" stuck on the end. See that
+    // function for the full explanation.
+    //
+    // Before this carried a version the title was the bare path, which likewise didn't end in
+    // the display name - so what was actually on screen was Qt's "<path> - pixet", not the
+    // path alone this line appeared to set.
+    const QString path = pathForRow(currentRow_);
+    const QString version = QString::fromLatin1(pixet::version());
+    setWindowTitle(path.isEmpty() ? QStringLiteral("%1 - pixet").arg(version)
+                                  : QStringLiteral("%1 - %2 - pixet").arg(path, version));
+}
 
 void FullscreenViewer::drawInfoOverlay(QPainter &painter) const {
     if (infoOverlayLevel_ <= 0 || !model_ || currentRow_ < 0) return;
@@ -558,13 +581,23 @@ void FullscreenViewer::keyPressEvent(QKeyEvent *event) {
     // of what ActivateFullscreen is currently bound to - guarantees there's always
     // a way out of the viewer even if that binding gets reassigned to something
     // unreachable from here.
-    if (event->key() == Qt::Key_Escape ||
-        keybindings::matches(event, keybindings::binding(keybindings::Action::ActivateFullscreen))) {
+    if (event->key() == Qt::Key_Escape) {
+        close();
+        return;
+    }
+    if (keybindings::matches(event, keybindings::binding(keybindings::Action::ActivateFullscreen))) {
         // Enter/Return (or whatever ActivateFullscreen is rebound to) is what opened
         // this (grid's activated() fires on it too, see MainWindow::
         // onGridItemActivated) - closing on it too makes it a toggle rather than an
         // open-only action.
-        close();
+        //
+        // Standalone there was no grid to open from and so nothing to toggle back to;
+        // the same key means "now show me the folder this is in" instead, which is the
+        // one thing the mode deliberately hasn't loaded yet. Deliberately does not close
+        // here - main.cpp closes this only once the main window is actually up, so the
+        // last-window-closed quit can't fire in the gap between the two.
+        if (standalone_) emit browseRequested(currentRow_);
+        else close();
         return;
     }
     if (keybindings::matches(event, keybindings::binding(keybindings::Action::FullscreenToggleTrueFullscreen))) {

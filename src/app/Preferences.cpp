@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 
+#include "cache/RawCache.h"
 #include "util/AppPaths.h"
 
 namespace {
@@ -13,6 +14,11 @@ std::atomic<int> g_thumbnailIconSize{-1};
 } // namespace
 
 namespace prefs {
+
+void applyRawCacheSettings() {
+    pixet::rawcache::configure(rawCacheDir().toStdString(), rawCacheMaxBytes(), rawCacheLongEdge(),
+                                rawCacheMemoryBytes());
+}
 
 QString settingsFilePath() {
     return QString::fromStdString(pixet::appDataDir()) + QStringLiteral("/pixet.ini");

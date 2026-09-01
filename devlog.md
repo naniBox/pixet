@@ -5,6 +5,116 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-09-01 — desktop — `pixet photo.jpg` opens the photo, not the app
+
+A single image on the command line now goes straight to a fullscreen viewer with no
+MainWindow behind it at all. A folder, several paths, or `--browse` get the browser
+exactly as before. Escape quits; Enter escalates to the full folder view, navigated to
+whatever was on screen.
+
+**Where the win actually is, because it isn't where it looks.** Time-to-first-window is
+the same in both modes (~240ms, dominated by loading Qt's DLLs) — measuring that and
+finding no difference was the useful result, because it says the thing to skip is not
+window construction but everything the browser does *after* the window appears. Measured
+on release, 8s after launch, opening the same photo in Camera Roll (79 files):
+
+| | viewer | browser (`--browse`) |
+|---|---|---|
+| CPU | ~270 ms | 0.6–5.6 s |
+| threads | 20 | 41 |
+| RSS | 82 MB | 101–421 MB |
+| file reads | 3 MB | 6.5–227 MB |
+
+The browser's range is the indexer/reconciler deciding there's work to do on that
+particular visit. The viewer's numbers barely move between runs, which is the real
+property being bought: it reads the one photo and its four prefetch neighbours, and
+nothing else ever happens.
+
+**A separate `pixetview.exe` was considered and rejected.** It would not have been small —
+pixet_core is static and drags in libraw/FFmpeg/libheif/libavif, and FullscreenViewer is a
+QWidget, so a second binary lands within a rounding error of pixet.exe's size. Against
+that: a second windeployqt on Windows, a second .app bundle with its own
+CFBundleDocumentTypes on macOS, installer rework, and Enter becoming a process relaunch
+that throws away the decode it already has. Whereas pixet.iss already registers
+`pixet.exe "%1"` for every still-image type, so the fast path in main() needed no
+installer or deploy change whatsoever.
+
+**FullscreenViewer turned out to already be decoupled, which is why this was small.** Its
+~20 touches of the model all go through plain QAbstractItemModel API; `ThumbGridModel::
+FormatRole` and friends are enum values, not members it calls through. Widening `openAt()`
+to take QAbstractListModel (the base, not QAbstractItemModel — `index(row)`'s default
+arguments are declared on QAbstractListModel) was the entire change needed to drive it
+from FolderListModel, a DB-free model built from one listDir() call. No new base class and
+no mode flag on ThumbGridModel: the two share nothing but the role numbering, which is why
+FolderListModel just uses ThumbGridModel's Role values directly rather than declaring its
+own that could drift.
+
+**Native pixel size was the one thing a directory listing can't answer**, and zoom needs
+it. Every codec has a `read*Dimensions()` header probe, but they take a whole buffer, so
+using them means reading each file on the UI thread — for RAW, precisely the cost this
+mode exists to avoid. Instead the viewer emits `nativeSizeDiscovered()` when a
+full-resolution decode lands: that decode was requested at targetLongEdge=0, so what comes
+back *is* the native size, free. FolderListModel fills in Width/HeightRole from it. Until
+the zoom prefetch lands (400ms debounce + decode) zoom is unavailable, taking the same
+"no known native size" path the viewer already has for an unindexed file. Emitted before
+the repaint, so the frame that shows sharp pixels is also the first frame that can zoom.
+
+**Video is deliberately excluded** from the mode, despite decoding fine. It would decode
+to one poster frame, and MainWindow::onGridItemActivated() never opens the viewer for a
+video at all — it launches the user's player. Showing a frozen frame would be a third
+behaviour worse than either existing one, so videos fall through to the browser unchanged.
+
+Smaller things that fell out:
+
+- `applyRawCacheSettings()` moved from a file-static in MainWindow.cpp to `prefs::`.
+  Nothing else would have configured the decoded-RAW cache in viewer mode, so opening a
+  RAW would have re-run a multi-second demosaic whose result was already cached on disk.
+- Enter shows the MainWindow *before* closing the viewer. The other order posts a
+  quitOnLastWindowClosed quit in the gap between the two and the app just exits.
+- FileOpenForwarder (the macOS Open-With path) learned about the viewer, so a second
+  "open this" while it's up re-lists that file's folder in place rather than escalating.
+- TakenDate sort can't be honoured here — capture time is per-file EXIF, so respecting it
+  would mean opening every file in the folder before showing the first one. Those folders
+  fall back to name order; the other three sort keys come free from listDir().
+- Right-click in standalone mode does nothing: the viewer emits contextMenuRequested and
+  MainWindow is what builds that menu. Left as-is rather than half-porting a menu whose
+  entries (Edit actions, cached info) all live on the other side.
+
+Shipping as **1.4.0** (from 1.3.1) - a minor bump rather than a patch, since this is a new
+mode and a behaviour change to `pixet <file>`, not a fix. Bumped in `project(VERSION)` and
+`vcpkg.json`, the only two tracked places the string lives; everything else (PIXET_VERSION,
+CFBundleShortVersionString, the installer filename) derives from the first.
+
+**The version now shows in the title bar, and getting it there turned up a latent Qt
+behaviour worth writing down.** Titles are `shots - 1.4.0 - pixet` and, in the viewer's
+windowed mode, `<path> - 1.4.0 - pixet`. The version sits in the *middle*, which looks like
+a formatting mistake and isn't: main() calls `setApplicationDisplayName("pixet")`, and Qt's
+`QPlatformWindow::formatWindowTitle()` appends " - <display name>" to every title that does
+not already end with it. The obvious spelling, `shots - pixet 1.4.0`, therefore reaches the
+screen as `shots - pixet 1.4.0 - pixet` - which is exactly what the first attempt did.
+Ending the title with the display name is the supported opt-out.
+
+Two things fell out of understanding that. First, it explains why the pre-existing title
+format put "pixet" last - not style, load-bearing. Second, two titles were already being
+silently rewritten by Qt and nobody had noticed: the empty-path case set "pixet 1.4.0" and
+was served "pixet 1.4.0 - pixet", and FullscreenViewer set a bare path and was served
+"<path> - pixet". Both now end with the display name and say what they mean. The remaining
+one is LicenseDialog's "pixet X - License", served as "pixet X - License - pixet"; left
+alone as a macOS-first-run-only dialog rather than fixed blind from Windows.
+
+The alternative - folding the version into the display name so `shots - pixet 1.4.0` ends
+with it - was rejected because the same string names the macOS application menu's
+About/Hide/Quit items, and "Quit pixet 1.4.0" is a worse outcome than a middle-positioned
+version. The View > Windows list is unaffected either way: it labels entries from
+`windowMenuLabel()`, not the window title.
+
+Unrelated, cost 10 minutes: the build dir had CMake 4.4.2's path baked into build.ninja
+and winget had moved to 4.4.3, so any build failed with "CreateProcess failed" until a
+reconfigure. And `ctest` on PATH resolves to an unrelated `Y:\dmo\Nextcloud\Utils\bin\
+ctest.exe` — use CMake's own by full path. Tests pass (1/1, 4.6s).
+
+---
+
 ## 2026-08-28 — desktop — Handing paths back to the file manager, and making folders
 
 Two context-menu additions, both about the app being a good neighbour to Explorer and

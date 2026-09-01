@@ -61,7 +61,6 @@
 #include "KeyBindings.h"
 #include "PathQ.h"
 #include "Preferences.h"
-#include "cache/RawCache.h"
 #include "PreferencesDialog.h"
 #include "PreviewDecoder.h"
 #include "PreviewPane.h"
@@ -106,14 +105,6 @@ QModelIndex nextSiblingOrAunt(QFileSystemModel *model, const QModelIndex &idx) {
     }
     return QModelIndex();
 }
-// Hands prefs' RAW cache settings to pixet_core. Also what trims the cache after the
-// budget is lowered, since rawcache::configure() sweeps on the way in - so this is
-// called on every OK from Preferences, not only when something changed.
-void applyRawCacheSettings() {
-    pixet::rawcache::configure(prefs::rawCacheDir().toStdString(), prefs::rawCacheMaxBytes(),
-                                prefs::rawCacheLongEdge(), prefs::rawCacheMemoryBytes());
-}
-
 } // namespace
 
 MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent), resetLayout_(resetLayout) {
@@ -130,7 +121,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // Pushes the RAW cache settings into pixet_core, which has no access to prefs of its
     // own. Done per window rather than once in main() because it is idempotent and cheap,
     // and this way a window opened later can never be running against a stale budget.
-    applyRawCacheSettings();
+    prefs::applyRawCacheSettings();
 
     // --- left panel: folder tree + bookmarks (top), preview (bottom, user-resizable) ---
     // placeholder-text is Qt's semantic role for "muted but still legible" text, which is
@@ -1758,7 +1749,7 @@ void MainWindow::onPreferences() {
         stats.exec();
     });
     connect(&dlg, &PreferencesDialog::nukeDatabaseRequested, this, &MainWindow::nukeDatabase);
-    connect(&dlg, &PreferencesDialog::rawCacheSettingsChanged, this, []() { applyRawCacheSettings(); });
+    connect(&dlg, &PreferencesDialog::rawCacheSettingsChanged, this, []() { prefs::applyRawCacheSettings(); });
     dlg.exec();
     // Cheap enough to always re-apply regardless of whether the keybindings editor
     // actually changed anything (Cancel discards its own edits before this point) -
@@ -2326,11 +2317,33 @@ QString MainWindow::windowLeafName() const {
 
 void MainWindow::updateWindowTitle() {
     // Folder first so the window is identifiable from the Dock, the app switcher and the
-    // Windows submenu, all of which truncate from the right.
+    // Windows submenu, all of which truncate from the right. Then the version, so "which
+    // build is this?" is answerable at a glance without opening About.
+    //
+    // **The title must end with "pixet"**, which is why the version sits in the middle rather
+    // than in the natural-reading "shots - pixet 1.4.0" position. main() calls
+    // setApplicationDisplayName("pixet"), and Qt's QPlatformWindow::formatWindowTitle()
+    // responds by appending " - <display name>" to every window title that does not already
+    // end with it. So "shots - pixet 1.4.0" reaches the screen as "shots - pixet 1.4.0 -
+    // pixet". Ending with the display name is the supported way to opt out of that; the
+    // alternative - folding the version into the display name itself - also renames the macOS
+    // application menu's About/Hide/Quit items, which is a worse trade for a title bar.
+    //
+    // The empty-path branch takes the same shape for the same reason. It previously read
+    // "pixet 1.4.0", which does *not* end in the display name and so was being served as
+    // "pixet 1.4.0 - pixet".
+    //
+    // The View > Windows list is unaffected: it labels entries from windowMenuLabel(), not
+    // from this, so repeating the version down that menu was never a risk.
+    //
+    // fromLatin1 rather than letting arg() take the const char* directly: Qt 6's
+    // multi-argument arg() is a template constrained to string-like types, and a raw
+    // const char* doesn't satisfy it even though the single-argument form accepts one.
+    const QString version = QString::fromLatin1(pixet::version());
     if (currentPath_.isEmpty()) {
-        setWindowTitle(QStringLiteral("pixet %1").arg(pixet::version()));
+        setWindowTitle(QStringLiteral("%1 - pixet").arg(version));
     } else {
-        setWindowTitle(QStringLiteral("%1 - pixet").arg(windowLeafName()));
+        setWindowTitle(QStringLiteral("%1 - %2 - pixet").arg(windowLeafName(), version));
     }
     WindowRegistry::instance().titlesChanged();
 }
