@@ -68,6 +68,17 @@ ThumbGridView::ThumbGridView(QWidget *parent) : QAbstractScrollArea(parent) {
 
     hoverInfoWorker_ = std::make_unique<HoverInfoWorker>();
     connect(hoverInfoWorker_.get(), &HoverInfoWorker::ready, this, &ThumbGridView::onHoverInfoReady);
+
+    reloadKeyBindings();
+}
+
+void ThumbGridView::reloadKeyBindings() {
+    folderNavBindings_ = {
+        {keybindings::binding(keybindings::Action::FolderPrevious), Qt::Key_Up},
+        {keybindings::binding(keybindings::Action::FolderNext), Qt::Key_Down},
+        {keybindings::binding(keybindings::Action::FolderParent), Qt::Key_Left},
+        {keybindings::binding(keybindings::Action::FolderFirstChild), Qt::Key_Right},
+    };
 }
 
 ThumbGridView::~ThumbGridView() = default;
@@ -646,17 +657,17 @@ void ThumbGridView::wheelEvent(QWheelEvent *event) {
 }
 
 void ThumbGridView::keyPressEvent(QKeyEvent *event) {
-    if (event->modifiers() == Qt::ControlModifier) {
-        switch (event->key()) {
-            case Qt::Key_Up:
-            case Qt::Key_Down:
-            case Qt::Key_Left:
-            case Qt::Key_Right:
-                emit navigateFolderRequested((Qt::Key)event->key());
-                event->accept();
-                return;
-            default:
-                break;
+    // Folder navigation moves the whole view to another folder, so it is checked before
+    // the grid's own navigation below and, like ActivateFullscreen, has to go through
+    // keybindings::matches() rather than a case label - once rebound the key isn't
+    // necessarily an arrow at all. Defaults are Ctrl+arrow, which Qt renders and matches
+    // as Cmd+arrow on macOS; see KeyBindings.h on why that difference is deliberate and
+    // why physical Ctrl+arrow can't be the Mac default.
+    for (const FolderNavBinding &nav : folderNavBindings_) {
+        if (keybindings::matches(event, nav.sequence)) {
+            emit navigateFolderRequested(nav.direction);
+            event->accept();
+            return;
         }
     }
 
