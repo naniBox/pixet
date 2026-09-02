@@ -15,6 +15,7 @@
 #include "Preferences.h"
 #include "WindowRegistry.h"
 #include "db/Schema.h"
+#include "util/Shutdown.h"
 #include "version.h"
 
 namespace {
@@ -112,6 +113,13 @@ bool isViewableFile(const QString &path) {
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
+
+    // Backstop for MainWindow::closeEvent's own requestShutdown() - see the comment there
+    // for why closeEvent is the early hook and this one is not sufficient alone. This
+    // covers the two paths that never go through a MainWindow's closeEvent at all: the
+    // standalone viewer mode below, and an explicit quit (File > Quit, the macOS app menu,
+    // a session logout) which returns from exec() without closing anything first.
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, []() { pixet::requestShutdown(); });
 
     // Drives the macOS application-menu title, the Dock label, the standard About panel and
     // QCommandLineParser's --help header. All of this was unset, which left the app menu
@@ -222,6 +230,10 @@ int main(int argc, char *argv[]) {
         // whose result the browser had already cached. MainWindow's constructor is what
         // normally does this.
         prefs::applyRawCacheSettings();
+        // Same reasoning, and the same consequence if it is missed: unconfigured, pixet_core
+        // falls back to DecodeLimits.h's compiled-in defaults, so a user who deliberately
+        // raised or removed the ceiling would find it quietly back in force in this mode.
+        prefs::applyDecodeLimits();
 
         // The model is parented to the viewer so the two die together: it must outlive every
         // in-flight decode request, all of which read their paths back out of it.

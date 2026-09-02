@@ -4,6 +4,8 @@
 
 #include <png.h>
 
+#include "DecodeLimits.h"
+
 namespace pixet {
 
 bool decodePng(const uint8_t *data, size_t size, RgbImage &out) {
@@ -22,6 +24,15 @@ bool decodePng(const uint8_t *data, size_t size, RgbImage &out) {
     // supplied to png_image_finish_read below), matching RgbImage's plain
     // (non-alpha) layout.
     image.format = PNG_FORMAT_RGB;
+
+    // libpng has no scaled decode, so the buffer below is always the source's full native
+    // size - which is exactly what a decompression bomb exploits, a few hundred KB of file
+    // expanding to tens of GB of pixels. begin_read has already given us the dimensions,
+    // and nothing has been allocated yet, so this is the cheapest possible place to refuse.
+    if (!decodelimits::pixelsAllowed(image.width, image.height)) {
+        png_image_free(&image);
+        return false;
+    }
 
     out.w = (int)image.width;
     out.h = (int)image.height;

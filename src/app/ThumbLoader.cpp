@@ -3,6 +3,7 @@
 #include <QMetaObject>
 
 #include "Preferences.h"
+#include "ThreadShutdown.h"
 #include "QtInterop.h"
 #include "db/Database.h"
 #include "decode/JpegCodec.h"
@@ -98,8 +99,9 @@ ThumbLoader::ThumbLoader(QObject *parent) : QObject(parent) {
 }
 
 ThumbLoader::~ThumbLoader() {
-    thread_.quit();
-    thread_.wait();
+    // Bounded, and able to take the process down rather than hang it if this worker is
+    // stuck inside a long decode - see ThreadShutdown.h for the failure this replaces.
+    threadshutdown::stopWorker(thread_, "ThumbLoader");
 }
 
 void ThumbLoader::setDevicePixelRatio(qreal ratio) {

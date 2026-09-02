@@ -4,6 +4,7 @@
 #include <QTimer>
 
 #include "Preferences.h"
+#include "ThreadShutdown.h"
 #include "db/Database.h"
 #include "scan/DirRows.h"
 #include "scan/Indexer.h"
@@ -27,8 +28,9 @@ BackgroundReconciler::BackgroundReconciler(QObject *parent) : QObject(parent) {
 }
 
 BackgroundReconciler::~BackgroundReconciler() {
-    thread_.quit();
-    thread_.wait();
+    // Bounded, and able to take the process down rather than hang it if this worker is
+    // stuck inside a long decode - see ThreadShutdown.h for the failure this replaces.
+    threadshutdown::stopWorker(thread_, "BackgroundReconciler");
 }
 
 BackgroundReconciler &BackgroundReconciler::shared() {

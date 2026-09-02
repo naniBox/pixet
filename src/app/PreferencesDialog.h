@@ -75,6 +75,11 @@ private:
     QComboBox *rawCacheBudgetCombo_;
     QComboBox *rawCacheMemoryCombo_;
     QLabel *rawCacheUsageLabel_;
+    // Decode limits - see core/decode/DecodeLimits.h. Both editable for the same reason the
+    // RAW cache budgets are: the right ceiling depends on the machine and on what the user
+    // actually browses, so the presets are a starting point rather than the whole choice.
+    QComboBox *maxDecodeFileSizeCombo_;
+    QComboBox *maxDecodeMegapixelsCombo_;
     QLabel *reindexStatusLabel_;
     QLabel *nukeStatusLabel_;
     QMap<keybindings::Action, QKeySequenceEdit *> keyBindingEdits_;
@@ -85,10 +90,12 @@ private:
     // Re-reads the cache directory and puts the total in rawCacheUsageLabel_. Walks the
     // directory, so it is called on open and after a clear, not on every keystroke.
     void refreshRawCacheUsage();
-    // Parses the budget combo's current text - a preset's own data, or something the user
+    // Parses a byte-size combo's current text - a preset's own data, or something the user
     // typed like "3 GB" / "500mb" / "1.5g". Returns -1 if it can't be read as a size, which
-    // accept() treats as "leave the setting alone" rather than as zero.
-    qint64 parseRawCacheBudget(const QComboBox *combo, bool bareNumberIsGb) const;
+    // accept() treats as "leave the setting alone" rather than as zero. Shared by the two
+    // RAW cache budgets and the decode file-size limit; they differ only in what a bare
+    // number with no unit should mean, which is what bareNumberIsGb picks.
+    qint64 parseByteSize(const QComboBox *combo, bool bareNumberIsGb) const;
     void onResetKeyBindings();
     // Checks every keyBindingEdits_ entry against reservedSequences() and against
     // each other; on conflict, shows a QMessageBox naming both actions involved and

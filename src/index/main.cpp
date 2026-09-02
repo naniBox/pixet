@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "db/Database.h"
+#include "decode/DecodeLimits.h"
 #include "scan/Indexer.h"
 #include "util/AppPaths.h"
 #include "util/PathUtil.h"
@@ -44,7 +45,8 @@ int main(int argc, char *argv[]) {
     if (argc < 2 || wantsHelp) {
         std::printf("pixet-index %s\n", pixet::version());
         std::printf(
-            "usage: pixet-index <root-path> [--force] [--force-rethumbnail] [--no-recurse] [--render-raws] [-j N]\n");
+            "usage: pixet-index <root-path> [--force] [--force-rethumbnail] [--no-recurse] [--render-raws]\n"
+            "                   [-j N] [--max-file-mb N] [--max-megapixels N]\n");
         std::printf("  --force             ignore the per-folder freshness cache, rescan everything\n");
         std::printf(
             "  --force-rethumbnail unconditionally re-thumbnail every file, even ones whose (mtime, size)\n"
@@ -62,6 +64,20 @@ int main(int argc, char *argv[]) {
             "                      the machine's core count). Directory walking/DB writes stay\n"
             "                      single-threaded regardless - only the actual image decode work (the slow\n"
             "                      part, especially for RAW/HEIC) is spread across threads.\n");
+        // These exist because the GUI has them as preferences and this tool writes to the
+        // same index: a folder skipped here would otherwise be silently re-attempted by the
+        // GUI under a different ceiling, and vice versa. Defaults match DecodeLimits.h, so
+        // omitting them gives the same answers the GUI gives out of the box.
+        std::printf(
+            "  --max-file-mb N     largest file to read whole for a thumbnail, in MB (default: %lld;\n"
+            "                      0 = no limit). Videos are streamed and never affected.\n",
+            (long long)(decodelimits::kDefaultMaxFileBytes / (1024 * 1024)));
+        std::printf(
+            "  --max-megapixels N  largest image to decode, in megapixels (default: %lld; 0 = no limit).\n"
+            "                      Every format but JPEG decodes at full size first, ~7 MB per megapixel,\n"
+            "                      so this is what stops a small compressed file from expanding into tens\n"
+            "                      of gigabytes. Files over either limit are recorded as unsupported.\n",
+            (long long)(decodelimits::kDefaultMaxPixels / 1000000));
         // 0 when help was asked for, 1 when it's being shown because the invocation was wrong -
         // the difference matters to anything calling this from a script.
         return wantsHelp ? 0 : 1;
@@ -69,6 +85,10 @@ int main(int argc, char *argv[]) {
 
     IndexOptions opts;
     opts.owner = "pid:" + std::to_string(currentProcessId());
+    // Kept as locals rather than pushed straight into decodelimits::configure() per flag,
+    // so the banner below can report exactly what the run will use.
+    int64_t maxFileBytes = decodelimits::kDefaultMaxFileBytes;
+    int64_t maxPixels = decodelimits::kDefaultMaxPixels;
     std::string rootArg = argv[1];
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -79,7 +99,15 @@ int main(int argc, char *argv[]) {
         else if (arg == "--no-recurse") opts.recursive = false;
         else if (arg == "--render-raws") opts.renderRaws = true;
         else if ((arg == "-j" || arg == "--jobs") && i + 1 < argc) opts.threadCount = std::atoi(argv[++i]);
+        else if (arg == "--max-file-mb" && i + 1 < argc)
+            maxFileBytes = (int64_t)std::atoll(argv[++i]) * 1024 * 1024;
+        else if (arg == "--max-megapixels" && i + 1 < argc)
+            maxPixels = (int64_t)std::atoll(argv[++i]) * 1000000;
     }
+    // pixet_core has no settings of its own, so this is the CLI's equivalent of the GUI's
+    // prefs::applyDecodeLimits() - without it a run here would silently use the compiled-in
+    // defaults however the flags were set.
+    decodelimits::configure(maxFileBytes, maxPixels);
 
     std::string rootPath = normalizePath(rootArg);
     std::printf("pixet-index %s\n", pixet::version());
@@ -90,8 +118,13 @@ int main(int argc, char *argv[]) {
     // is about to do, so it resolves the same way here just for the printout.
     unsigned resolvedThreads =
         opts.threadCount > 0 ? (unsigned)opts.threadCount : std::max(1u, std::thread::hardware_concurrency());
-    std::printf("options: recursive=%s force=%s render-raws=%s jobs=%u\n\n", opts.recursive ? "yes" : "no",
+    std::printf("options: recursive=%s force=%s render-raws=%s jobs=%u\n", opts.recursive ? "yes" : "no",
                  opts.forceRescan ? "yes" : "no", opts.renderRaws ? "yes" : "no", resolvedThreads);
+    // Printed alongside the rest because a file skipped for being too large shows up in the
+    // totals only as "unsupported-format", which is otherwise a confusing thing to see
+    // against a perfectly ordinary .tif.
+    std::printf("limits:  max-file=%lldMB max-megapixels=%lld (0 = no limit)\n\n",
+                 (long long)(maxFileBytes / (1024 * 1024)), (long long)(maxPixels / 1000000));
 
     Database db(indexDbPath(), thumbsDbPath());
     Indexer indexer(db, opts);

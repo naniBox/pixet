@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "cache/RawCache.h"
+#include "decode/DecodeLimits.h"
 #include "util/AppPaths.h"
 
 namespace {
@@ -27,6 +28,35 @@ QString settingsFilePath() {
 QSettings settingsStore() { return QSettings(settingsFilePath(), QSettings::IniFormat); }
 
 QString rawCacheDir() { return QString::fromStdString(pixet::appDataDir()) + QStringLiteral("/rawcache"); }
+
+void applyDecodeLimits() {
+    pixet::decodelimits::configure(maxDecodeFileBytes(), (int64_t)maxDecodeMegapixels() * 1000000);
+}
+
+qint64 maxDecodeFileBytes() {
+    qint64 v = settingsStore()
+                    .value(QStringLiteral("maxDecodeFileBytes"), (qint64)kDefaultMaxDecodeFileBytes)
+                    .toLongLong();
+    return std::max<qint64>(0, v); // 0 is meaningful: no limit
+}
+
+void setMaxDecodeFileBytes(qint64 bytes) {
+    settingsStore().setValue(QStringLiteral("maxDecodeFileBytes"), std::max<qint64>(0, bytes));
+}
+
+int maxDecodeMegapixels() {
+    int v = settingsStore()
+                 .value(QStringLiteral("maxDecodeMegapixels"), (int)kDefaultMaxDecodeMegapixels)
+                 .toInt();
+    // Only the floor is clamped, and only to keep a negative out of the multiply in
+    // applyDecodeLimits(). No ceiling: a deliberately enormous value is just another way of
+    // spelling "no limit", and 0 already says that outright.
+    return std::max(0, v);
+}
+
+void setMaxDecodeMegapixels(int megapixels) {
+    settingsStore().setValue(QStringLiteral("maxDecodeMegapixels"), std::max(0, megapixels));
+}
 
 int rawCacheLongEdge() {
     int v = settingsStore().value(QStringLiteral("rawCacheLongEdge"), kDefaultRawCacheLongEdge).toInt();

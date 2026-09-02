@@ -2,6 +2,7 @@
 
 #include <QMetaObject>
 
+#include "ThreadShutdown.h"
 #include "cache/RawCache.h"
 #include "util/FileMove.h"
 
@@ -15,8 +16,9 @@ RawCacheWarmer::RawCacheWarmer(QObject *parent) : QObject(parent) {
 }
 
 RawCacheWarmer::~RawCacheWarmer() {
-    thread_.quit();
-    thread_.wait();
+    // Bounded, and able to take the process down rather than hang it if this worker is
+    // stuck inside a long decode - see ThreadShutdown.h for the failure this replaces.
+    threadshutdown::stopWorker(thread_, "RawCacheWarmer");
 }
 
 void RawCacheWarmer::warm(const QStringList &filePaths) {
