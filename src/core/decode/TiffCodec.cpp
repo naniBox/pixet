@@ -6,6 +6,8 @@
 
 #include <tiffio.h>
 
+#include "DecodeLimits.h"
+
 namespace pixet {
 
 namespace {
@@ -71,6 +73,18 @@ bool decodeTiff(const uint8_t *data, size_t size, RgbImage &out) {
     TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
     TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
     if (w == 0 || h == 0) {
+        TIFFClose(tif);
+        return false;
+    }
+
+    // Checked here, between reading the header and allocating anything, because this is
+    // where the three big allocations below start and every one of them is sized purely by
+    // w*h: the raster (4 bytes/px), libtiff's own strip buffer inside
+    // TIFFReadRGBAImageOriented (the whole image at once when the file is a single strip,
+    // as an uncompressed scan usually is), and out.pixels (3 bytes/px). A 5-gigapixel TIFF
+    // therefore wants ~50GB before anything downstream ever gets to downscale it. See
+    // DecodeLimits.h for the file this was written for.
+    if (!decodelimits::pixelsAllowed(w, h)) {
         TIFFClose(tif);
         return false;
     }

@@ -5,6 +5,111 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-09-02 — desktop — One file in Downloads cost 50GB and wouldn't let go
+
+Browsing `C:\Users\dmo\Downloads` took the process to ~48GB and it kept climbing after the
+window was closed; only Task Manager ended it. Both halves of that turned out to be real,
+and separate.
+
+**The file.** `Im1.tif`, 14.1 GiB, BigTIFF, 97943 x 51536 = **5.0 gigapixels**,
+uncompressed RGB, and — because `RowsPerStrip` equals the full image height — stored as a
+single strip. Nothing on the thumbnail path bounded any of that, so one file stacked up
+four allocations that nothing in between ever looked at:
+
+| | |
+|---|---|
+| `readWholeFile()` | 15.1 GB |
+| `decodeTiff()`'s RGBA raster (4 B/px) | 20.2 GB |
+| libtiff's own strip buffer, inside `TIFFReadRGBAImageOriented` | 15.1 GB |
+| `RgbImage::pixels` (3 B/px) | 15.1 GB |
+
+~65GB had it ever finished; ~50GB is where it was when killed. On 20 cores the indexer runs
+20-wide waves, so this was one thread of twenty, all reading whole files with no budget
+between them.
+
+The maddening part is that `readTiffDimensions()` is header-only and already existed — it
+was just called from inside `generateTiffThumb()`, i.e. *after* the 14 GiB read. The cheap
+answer was there all along, one step too late to be used.
+
+**The hang.** All nine workers were `thread_.quit(); thread_.wait();`. `quit()` asks the
+*event loop* to return and does exactly nothing while a slot is executing, and `wait()` has
+no timeout — so `~MainWindow` parked the UI thread in `~FolderIndexer` while the worker it
+was waiting for carried on allocating. `shouldCancel` is only polled between Pass B waves,
+never inside a decode, so `cancelCurrent()` couldn't touch it either. And `ThreadPool`
+deliberately drains its queue on destruction, so the rest of the wave would have run too.
+Window gone, process pinned, memory rising.
+
+**Two limits, not one, because there are two ways to get there.** `decode/DecodeLimits.h`
+holds both, configured from prefs (and `pixet-index --max-file-mb / --max-megapixels`) the
+same way rawcache already is. A file-size cap bounds the whole-file read; a pixel cap
+bounds the decode. The pixel one is what actually matters — a *compressed* gigapixel scan
+sits under any sane size cap and still wants tens of GB once expanded — and it lives in
+each codec (`TiffCodec`, `PngCodec`, `WebpCodec`, `AvifCodec`, `HeifCodec`) before the
+first allocation, so `DisplayCodec`'s preview/fullscreen path gets it for free rather than
+needing its own copy.
+
+Three placements worth writing down:
+
+- **`ThumbGenerator` decides, the codec enforces.** A codec returning `false` for "too big"
+  is indistinguishable from a corrupt file, which would record the row as `Failed` — a
+  permanent verdict on a perfectly good file. So the generator checks the header dimensions
+  it already read and returns `Unsupported`, which is what that state has always meant:
+  settled policy, recorded once, revisited if the policy changes. The codec guard stays as
+  defence in depth for every other caller.
+- **A 1MB prefix probe before the whole-file read.** With the size cap at its default the
+  pixel check never has to fire, but "no limit" is a real choice in the UI, and someone who
+  picks it for their 800MB panoramas shouldn't thereby sign up for a 14 GiB read followed
+  by a refusal. `provablyOverPixelLimit()` reads a bounded prefix and only ever answers
+  "provably too big" — a TIFF with its IFD at the end simply doesn't answer and takes the
+  normal path, so it can make things faster but never change a verdict. This is what took
+  the `--max-file-mb 0` case from 11.7s / 15GB to 0.1s / 6MB.
+- **HEIC deliberately skips the up-front gate.** Its embedded preview is cheap and bounded
+  by the *preview's* size, so an enormous HEIC can still get a good thumbnail; only once
+  that comes back empty is the main image's size worth reporting.
+
+**Shutdown: ask, wait a bounded time, then stop being polite.** `util/Shutdown.h` is a
+one-way process-wide flag; `generateThumb()` returns a new `ThumbTier::Cancelled`
+immediately when it's set, so an already-dispatched wave collapses instead of decoding
+another 20 files nobody will see. `Cancelled` writes *nothing* — the row stays `New`, which
+is where an un-thumbnailed file normally sits. Conflating it with `Failed` would have
+condemned a folder's worth of good files for being in flight when the window closed.
+
+`app/ThreadShutdown.h` replaces the eight decode workers' destructors: `quit()`, wait 8s,
+and if it still won't stop *and the app is actually quitting*, `_exit()`. The second
+condition matters — one window of several closing is not a reason to kill a live app, so
+that case falls back to the old unbounded wait. `FileOpsWorker` keeps the plain wait on
+purpose and says so: a half-finished copy of the user's files is worth waiting for, and
+unlike a runaway decode it isn't eating memory while it does.
+
+The flag is raised in `MainWindow::closeEvent` (last window only), not just `aboutToQuit` —
+windows are `WA_DeleteOnClose`, so `~MainWindow` runs from a `deleteLater` *inside* the
+event loop, before `exec()` returns. `aboutToQuit` would have fired after the thing it was
+meant to shorten had already begun; it stays connected as the backstop for the standalone
+viewer and File > Quit.
+
+**Measured, same folder, same machine (20 cores).**
+
+| | before | after |
+|---|---|---|
+| browsing Downloads, peak RSS | 12.1 GB and climbing | **0.47 GB** |
+| close window → process gone | never (killed manually) | **0.08 s** |
+| `pixet-index` on `Im1.tif` alone | ~50GB, unbounded | **0.1 s, 6 MB** |
+
+Downloads now indexes fully: 186 Done, 1 Unsupported (`Im1.tif`), 1 Failed — a 489-byte
+truncated `.webp`, which is a genuinely corrupt file and correctly reported as one.
+
+Defaults are 512 MB and 500 MP, both settings (General tab, "Decode limits"). 500 MP is
+~3.3x the largest cameras in real use and ~3.5GB as `RgbImage`; 512 MB clears a 100MB drum
+scan and a 150MP medium-format RAW by a wide margin. Anything over either limit still
+appears in the grid with a placeholder — skipped, not hidden.
+
+Tests: 128/128 (8 new in `test_decodelimits.cpp`). The shutdown flag is deliberately not
+unit-tested — it is one-way by design, so setting it would make `generateThumb` return
+`Cancelled` for every test registered after it, and adding a reset purely to test it would
+mean putting the footgun into production code to check the footgun-free version works.
+
+---
+
 ## 2026-09-01 — desktop — `pixet photo.jpg` opens the photo, not the app
 
 A single image on the command line now goes straight to a fullscreen viewer with no

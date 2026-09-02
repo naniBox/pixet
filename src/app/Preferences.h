@@ -5,6 +5,8 @@
 #include <QString>
 #include <QStringList>
 
+#include "decode/DecodeLimits.h"
+
 // User-configurable settings, backed by the same on-disk store MainWindow also uses
 // for window/layout state - a single place for the actual *keys* and defaults,
 // rather than every reader/writer duplicating both. See PreferencesDialog for the UI
@@ -55,6 +57,34 @@ void setRawCacheMemoryBytes(qint64 bytes);
 // Absolute path of the cache directory, alongside index.db/thumbs.db in the same per-user
 // app data folder - one place to look for everything pixet stores.
 QString rawCacheDir();
+
+// Ceilings on what a single image decode may cost - see core/decode/DecodeLimits.h for
+// what they bound and the 14 GiB, 5-gigapixel TIFF that made them necessary. 0 means "no
+// limit" for either, which is a real choice a user can make and not a broken value.
+//
+// Exposed as settings rather than hard-coded because the right answer depends on the
+// machine and on what is in the folders being browsed: 500 megapixels is generous for a
+// laptop browsing camera output and stingy for a workstation that genuinely works with
+// gigapixel scans, and neither user should have to rebuild to say so.
+constexpr qint64 kDefaultMaxDecodeFileBytes = pixet::decodelimits::kDefaultMaxFileBytes;
+constexpr qint64 kDefaultMaxDecodeMegapixels = pixet::decodelimits::kDefaultMaxPixels / 1000000;
+
+qint64 maxDecodeFileBytes();
+void setMaxDecodeFileBytes(qint64 bytes);
+// Stored in megapixels rather than raw pixels: it is what the UI shows, what anyone
+// hand-editing the ini would want to type, and it keeps the stored number small enough to
+// read at a glance.
+int maxDecodeMegapixels();
+void setMaxDecodeMegapixels(int megapixels);
+
+// What the megapixel drop-down offers. Off (0) is deliberately in the list - a user who
+// knows they browse gigapixel imagery should be able to say so in the UI rather than by
+// editing the ini.
+constexpr int kMaxDecodeMegapixelPresets[] = {50, 100, 250, 500, 1000, 2000, 0};
+
+// Hands both limits to pixet_core, which has no prefs of its own - the same arrangement
+// applyRawCacheSettings() uses, and called from the same places.
+void applyDecodeLimits();
 
 // Hands the four settings above to pixet_core, which has no access to prefs of its own
 // (see core/cache/RawCache.h's configure()). Also what trims the cache after the budget

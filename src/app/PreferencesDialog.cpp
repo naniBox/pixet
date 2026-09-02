@@ -180,6 +180,75 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     refreshRawCacheUsage();
 
     generalLayout->addWidget(rawGroup);
+
+    // --- Decode limits ----------------------------------------------------------------
+    // Ceilings on what one image is allowed to cost to open. See core/decode/DecodeLimits.h
+    // for what these bound and the file that made them necessary.
+    auto *limitsGroup = new QGroupBox(QStringLiteral("Decode limits"), generalTab);
+    auto *limitsLayout = new QFormLayout(limitsGroup);
+
+    maxDecodeFileSizeCombo_ = new QComboBox(limitsGroup);
+    maxDecodeFileSizeCombo_->setEditable(true);
+    maxDecodeFileSizeCombo_->setInsertPolicy(QComboBox::NoInsert);
+    static const BudgetPreset kFileSizeLimits[] = {
+        {"128 MB", 128LL * 1024 * 1024},
+        {"256 MB", 256LL * 1024 * 1024},
+        {"512 MB", 512LL * 1024 * 1024},
+        {"1 GB", 1LL * 1024 * 1024 * 1024},
+        {"4 GB", 4LL * 1024 * 1024 * 1024},
+        {"No limit", 0},
+    };
+    for (const BudgetPreset &b : kFileSizeLimits) {
+        maxDecodeFileSizeCombo_->addItem(QString::fromLatin1(b.label), (qint64)b.bytes);
+    }
+    const qint64 currentFileLimit = prefs::maxDecodeFileBytes();
+    const int fileLimitIndex = maxDecodeFileSizeCombo_->findData(currentFileLimit);
+    if (fileLimitIndex >= 0) {
+        maxDecodeFileSizeCombo_->setCurrentIndex(fileLimitIndex);
+    } else {
+        maxDecodeFileSizeCombo_->setCurrentText(
+            QStringLiteral("%1 MB").arg(currentFileLimit / (1024 * 1024)));
+    }
+    maxDecodeFileSizeCombo_->setToolTip(
+        QStringLiteral("Opening an image reads the whole file into memory first, so this is the largest "
+                        "one pixet will try. Anything bigger is listed but not thumbnailed. Videos are "
+                        "streamed rather than read whole and are never affected by this."));
+    limitsLayout->addRow(QStringLiteral("Largest file to open:"), maxDecodeFileSizeCombo_);
+
+    maxDecodeMegapixelsCombo_ = new QComboBox(limitsGroup);
+    maxDecodeMegapixelsCombo_->setEditable(true);
+    maxDecodeMegapixelsCombo_->setInsertPolicy(QComboBox::NoInsert);
+    for (int mp : prefs::kMaxDecodeMegapixelPresets) {
+        maxDecodeMegapixelsCombo_->addItem(
+            mp == 0 ? QStringLiteral("No limit") : QStringLiteral("%1 MP").arg(mp), mp);
+    }
+    const int currentMp = prefs::maxDecodeMegapixels();
+    const int mpIndex = maxDecodeMegapixelsCombo_->findData(currentMp);
+    if (mpIndex >= 0) {
+        maxDecodeMegapixelsCombo_->setCurrentIndex(mpIndex);
+    } else {
+        maxDecodeMegapixelsCombo_->setCurrentText(QStringLiteral("%1 MP").arg(currentMp));
+    }
+    // The second limit is the one that actually does the work, so its tooltip is where the
+    // reasoning goes: a file-size cap alone can't stop a small compressed file from
+    // expanding into tens of gigabytes once decoded.
+    maxDecodeMegapixelsCombo_->setToolTip(
+        QStringLiteral("Every format except JPEG has to be decoded at its full size before it can be "
+                        "shrunk to a thumbnail, at roughly 7 MB of memory per megapixel. This caps that, "
+                        "and it is the limit that catches a small file which expands enormously - a "
+                        "compressed gigapixel scan, or a deliberately crafted one. Today's biggest "
+                        "cameras are around 150 MP."));
+    limitsLayout->addRow(QStringLiteral("Largest image to decode:"), maxDecodeMegapixelsCombo_);
+
+    auto *limitsHint = new QLabel(
+        QStringLiteral("Files over either limit still appear in the grid, with a placeholder instead of a "
+                        "thumbnail - they are skipped, not hidden. Raise these if you work with very large "
+                        "scans or panoramas and have the memory for it."),
+        limitsGroup);
+    limitsHint->setWordWrap(true);
+    limitsLayout->addRow(limitsHint);
+
+    generalLayout->addWidget(limitsGroup);
     generalLayout->addStretch(1);
     tabs->addTab(generalTab, QStringLiteral("General"));
 
@@ -360,7 +429,7 @@ void PreferencesDialog::onClearRawCacheClicked() {
     refreshRawCacheUsage();
 }
 
-qint64 PreferencesDialog::parseRawCacheBudget(const QComboBox *combo, bool bareNumberIsGb) const {
+qint64 PreferencesDialog::parseByteSize(const QComboBox *combo, bool bareNumberIsGb) const {
     // A preset that is still selected as-is carries its exact byte count, so prefer that
     // over re-parsing our own label and risking a rounding difference.
     const int idx = combo->currentIndex();
@@ -462,12 +531,34 @@ void PreferencesDialog::accept() {
     // -1 means the text couldn't be parsed as a size. Leaving the old value alone beats
     // both alternatives: writing 0 would silently disable the cache over a typo, and
     // refusing to close the dialog would be a lot of ceremony for one malformed field.
-    const qint64 budget = parseRawCacheBudget(rawCacheBudgetCombo_, /*bareNumberIsGb=*/true);
+    const qint64 budget = parseByteSize(rawCacheBudgetCombo_, /*bareNumberIsGb=*/true);
     if (budget >= 0) prefs::setRawCacheMaxBytes(budget);
     // Bare numbers here mean MB, not GB: the presets are in MB and "512" typed into a field
     // labelled in megabytes should not silently become half a terabyte of RAM.
-    const qint64 memBudget = parseRawCacheBudget(rawCacheMemoryCombo_, /*bareNumberIsGb=*/false);
+    const qint64 memBudget = parseByteSize(rawCacheMemoryCombo_, /*bareNumberIsGb=*/false);
     if (memBudget >= 0) prefs::setRawCacheMemoryBytes(memBudget);
+
+    // Bare numbers mean MB here too - the presets are mostly in MB, and someone typing
+    // "750" into a field whose neighbours read "512 MB" does not mean 750 gigabytes.
+    const qint64 fileLimit = parseByteSize(maxDecodeFileSizeCombo_, /*bareNumberIsGb=*/false);
+    if (fileLimit >= 0) prefs::setMaxDecodeFileBytes(fileLimit);
+
+    // Same -1 convention as the byte fields: unparseable text leaves the stored value
+    // alone. "No limit" is the preset, whose data is 0, so it comes back through the
+    // currentData() branch rather than the text one.
+    const int mpIdx = maxDecodeMegapixelsCombo_->currentIndex();
+    if (mpIdx >= 0 && maxDecodeMegapixelsCombo_->itemText(mpIdx) == maxDecodeMegapixelsCombo_->currentText()) {
+        prefs::setMaxDecodeMegapixels(maxDecodeMegapixelsCombo_->itemData(mpIdx).toInt());
+    } else {
+        const QString mpText = maxDecodeMegapixelsCombo_->currentText().trimmed().toLower();
+        if (mpText.startsWith(QStringLiteral("no"))) {
+            prefs::setMaxDecodeMegapixels(0);
+        } else {
+            bool mpOk = false;
+            const int typed = mpText.split(QLatin1Char(' ')).first().toInt(&mpOk);
+            if (mpOk && typed >= 0) prefs::setMaxDecodeMegapixels(typed);
+        }
+    }
     // Applied immediately rather than at next launch, and this is also what trims the
     // cache when the budget was lowered - see rawcache::configure().
     emit rawCacheSettingsChanged();

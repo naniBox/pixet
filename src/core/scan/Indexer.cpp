@@ -14,6 +14,7 @@
 #include "../thumb/ThumbGenerator.h"
 #include "../util/FileIO.h"
 #include "../util/PathUtil.h"
+#include "../util/Shutdown.h"
 #include "../util/Time.h"
 #include "DirRows.h"
 #include "DirWalker.h"
@@ -383,6 +384,13 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
                     else stats.thumbsDecoded++;
                     break;
                 }
+                // Nothing was attempted - the process is quitting (see util/Shutdown.h).
+                // Write nothing at all: the row stays state=New, which is where an
+                // un-thumbnailed file normally sits, so the next scan picks it up as if
+                // this run had simply never reached it. Recording anything here would
+                // permanently condemn a folder's worth of good files for the crime of
+                // being in the wave that was in flight when the user closed the window.
+                case ThumbTier::Cancelled: break;
                 case ThumbTier::Unsupported:
                 case ThumbTier::Failed: {
                     auto updFile = db_.prepare("UPDATE files SET state=? WHERE id=?");
@@ -496,7 +504,10 @@ void Indexer::indexOneDirectory(int64_t dirId, const std::string &dirPath,
 
         // After the flush, so a cancelled run still commits the wave it just finished
         // rather than throwing that work away - see IndexCallbacks::shouldCancel.
-        if (callbacks.shouldCancel && callbacks.shouldCancel()) {
+        // shutdownRequested() is checked alongside the caller's own hook rather than left
+        // to it: pixet-index and the tests install no shouldCancel at all, and a quit has
+        // to stop this loop regardless of who asked for the run.
+        if (shutdownRequested() || (callbacks.shouldCancel && callbacks.shouldCancel())) {
             if (!batch.empty()) flushBatch();
             break;
         }
@@ -590,7 +601,7 @@ void Indexer::run(const std::string &rootPath, IndexStats &stats, const IndexCal
         // Also checked here, not just between Pass B waves: a recursive run over a large
         // tree spends real time in Pass A on directories that are already fresh, and those
         // never reach a wave boundary to be cancelled at.
-        if (callbacks.shouldCancel && callbacks.shouldCancel()) break;
+        if (shutdownRequested() || (callbacks.shouldCancel && callbacks.shouldCancel())) break;
 
         auto [dirId, dirPath, depth] = queue.back();
         queue.pop_back();

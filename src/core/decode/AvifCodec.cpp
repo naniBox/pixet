@@ -4,6 +4,8 @@
 
 #include <avif/avif.h>
 
+#include "DecodeLimits.h"
+
 namespace pixet {
 
 bool decodeAvif(const uint8_t *data, size_t size, RgbImage &out) {
@@ -12,7 +14,10 @@ bool decodeAvif(const uint8_t *data, size_t size, RgbImage &out) {
 
     bool ok = false;
     if (avifDecoderSetIOMemory(decoder, data, size) == AVIF_RESULT_OK &&
-        avifDecoderParse(decoder) == AVIF_RESULT_OK && avifDecoderNextImage(decoder) == AVIF_RESULT_OK) {
+        avifDecoderParse(decoder) == AVIF_RESULT_OK && avifDecoderNextImage(decoder) == AVIF_RESULT_OK &&
+        // Before avifRGBImageAllocatePixels below, which is the first full-size allocation
+        // here - and then out.pixels is a second one the same size again.
+        decodelimits::pixelsAllowed(decoder->image->width, decoder->image->height)) {
         avifImage *image = decoder->image;
 
         avifRGBImage rgb;

@@ -11,9 +11,11 @@
 #include "../decode/TiffCodec.h"
 #include "../decode/VideoCodec.h"
 #include "../decode/WebpCodec.h"
+#include "../decode/DecodeLimits.h"
 #include "../meta/JpegExif.h"
 #include "../util/FileIO.h"
-#include "../util/FileMove.h" // statFile, for the RAW cache key
+#include "../util/FileMove.h" // statFile, for the RAW cache key and the size gate
+#include "../util/Shutdown.h"
 
 #include "../util/Profile.h"
 
@@ -128,6 +130,17 @@ ThumbResult generatePngThumb(const std::vector<uint8_t> &fileBytes, int targetLo
     // parser for a case that's vanishingly rare in a real photo library.
     readPngDimensions(fileBytes.data(), fileBytes.size(), result.origWidth, result.origHeight);
 
+    // The codec would refuse this too (see the guard in PngCodec.cpp), but only by returning false,
+    // which is indistinguishable from a corrupt file and would record the row as Failed.
+    // The dimensions are already in hand from the header read just above, so decide it
+    // here instead and report it for what it is: a file we have chosen not to decode, not
+    // one we tried and could not. Costs nothing - readTiffDimensions and friends have
+    // already done the only work involved.
+    if (!decodelimits::pixelsAllowed(result.origWidth, result.origHeight)) {
+        result.tier = ThumbTier::Unsupported;
+        return result;
+    }
+
     // libpng has no scaled/progressive decode like libjpeg's DCT scaling - always
     // decodes at native resolution, so there's no embedded-preview or partial-decode
     // tier here, just a straight decode-then-downscale.
@@ -160,6 +173,17 @@ ThumbResult generateTiffThumb(const std::vector<uint8_t> &fileBytes, int targetL
     // accounts for that same rotation when reporting origWidth/origHeight.
     readTiffDimensions(fileBytes.data(), fileBytes.size(), result.origWidth, result.origHeight);
 
+    // The codec would refuse this too (see the guard in TiffCodec.cpp), but only by returning false,
+    // which is indistinguishable from a corrupt file and would record the row as Failed.
+    // The dimensions are already in hand from the header read just above, so decide it
+    // here instead and report it for what it is: a file we have chosen not to decode, not
+    // one we tried and could not. Costs nothing - readTiffDimensions and friends have
+    // already done the only work involved.
+    if (!decodelimits::pixelsAllowed(result.origWidth, result.origHeight)) {
+        result.tier = ThumbTier::Unsupported;
+        return result;
+    }
+
     // No scaled/progressive decode for TIFF either - always native resolution, then
     // downscale.
     RgbImage img;
@@ -191,6 +215,17 @@ ThumbResult generateWebpThumb(const std::vector<uint8_t> &fileBytes, int targetL
     // for the same reason PNG does (see generatePngThumb).
     readWebpDimensions(fileBytes.data(), fileBytes.size(), result.origWidth, result.origHeight);
 
+    // The codec would refuse this too (see the guard in WebpCodec.cpp), but only by returning false,
+    // which is indistinguishable from a corrupt file and would record the row as Failed.
+    // The dimensions are already in hand from the header read just above, so decide it
+    // here instead and report it for what it is: a file we have chosen not to decode, not
+    // one we tried and could not. Costs nothing - readTiffDimensions and friends have
+    // already done the only work involved.
+    if (!decodelimits::pixelsAllowed(result.origWidth, result.origHeight)) {
+        result.tier = ThumbTier::Unsupported;
+        return result;
+    }
+
     RgbImage img;
     if (!decodeWebp(fileBytes.data(), fileBytes.size(), img)) {
         result.tier = ThumbTier::Failed;
@@ -217,6 +252,17 @@ ThumbResult generateAvifThumb(const std::vector<uint8_t> &fileBytes, int targetL
     // No orientation extraction for AVIF - see AvifCodec.h for why (irot/imir
     // transforms are uncommon in practice, same scope decision as PNG/WebP).
     readAvifDimensions(fileBytes.data(), fileBytes.size(), result.origWidth, result.origHeight);
+
+    // The codec would refuse this too (see the guard in AvifCodec.cpp), but only by returning false,
+    // which is indistinguishable from a corrupt file and would record the row as Failed.
+    // The dimensions are already in hand from the header read just above, so decide it
+    // here instead and report it for what it is: a file we have chosen not to decode, not
+    // one we tried and could not. Costs nothing - readTiffDimensions and friends have
+    // already done the only work involved.
+    if (!decodelimits::pixelsAllowed(result.origWidth, result.origHeight)) {
+        result.tier = ThumbTier::Unsupported;
+        return result;
+    }
 
     RgbImage img;
     if (!decodeAvif(fileBytes.data(), fileBytes.size(), img)) {
@@ -256,7 +302,16 @@ ThumbResult generateHeifThumb(const std::vector<uint8_t> &fileBytes, int targetL
         if (decoded) result.tier = ThumbTier::Decoded;
     }
     if (!decoded) {
-        result.tier = ThumbTier::Failed;
+        // No up-front pixel gate here, unlike the four formats above, and the difference is
+        // deliberate: a HEIC's embedded preview is a genuinely cheap decode of its own,
+        // bounded by the preview's size rather than the main image's, so an enormous HEIC
+        // can still get a perfectly good thumbnail out of it. Refusing on the main image's
+        // dimensions before trying would throw that away for nothing. Only once the preview
+        // has come back empty is the size worth reporting - and then it explains the
+        // failure, so it's Unsupported rather than Failed (decodeHandle's own guard is what
+        // actually refused the full decode).
+        result.tier = decodelimits::pixelsAllowed(result.origWidth, result.origHeight) ? ThumbTier::Failed
+                                                                                        : ThumbTier::Unsupported;
         return result;
     }
 
@@ -387,10 +442,73 @@ ThumbResult generateVideoThumb(const std::string &filePath, int targetLongEdge, 
     return result;
 }
 
+// How much of a file to read when only its header is wanted. Generous next to what any
+// of these headers actually need (a PNG's IHDR is 33 bytes in), because the point is to
+// cover the common case where a TIFF's first IFD sits a little way into the file, and 1MB
+// against a potential 14GB is not a tradeoff worth tuning.
+constexpr size_t kHeaderProbeBytes = 1024 * 1024;
+
+// True only when a bounded prefix is enough to prove the image is over the pixel limit.
+//
+// Exists because the pixel checks in generateXThumb() below all happen *after* the whole
+// file has been read - they bound the decode, which is most of the cost, but not the read.
+// With the file-size limit at its default that never matters, since anything big enough to
+// care about was already refused on its size. But that limit is a user setting and "no
+// limit" is one of its choices, and someone who picks it to open their 800MB panoramas
+// should not thereby be signing up to read a 14GB file whole before refusing it anyway.
+//
+// Deliberately conservative in both directions. A header that isn't in the prefix (a TIFF
+// whose IFD is at the end of the file is entirely legal, and container formats can put
+// their metadata after the payload) simply doesn't answer, and the file goes down the
+// normal path - so this can make things faster but never changes a verdict. And a `false`
+// means "not proven oversized", not "fine": every later check still runs.
+bool provablyOverPixelLimit(const std::string &filePath, Format fmt) {
+    switch (fmt) {
+        case Format::Png:
+        case Format::Tiff:
+        case Format::Webp:
+        case Format::Avif:
+            break;
+        // JPEG and RAW are absent because neither reads the whole file to make a
+        // thumbnail in the first place (scaled DCT decode; embedded preview straight from
+        // the path), and HEIC because its embedded preview is cheap regardless of how big
+        // the main image is - refusing here would throw away a perfectly good thumbnail.
+        // See generateHeifThumb.
+        default: return false;
+    }
+
+    if (decodelimits::maxPixels() <= 0) return false; // no limit configured - nothing to prove
+
+    std::vector<uint8_t> prefix;
+    if (!readFilePrefix(filePath, kHeaderProbeBytes, prefix) || prefix.empty()) return false;
+
+    int w = 0, h = 0;
+    bool known = false;
+    switch (fmt) {
+        case Format::Png: known = readPngDimensions(prefix.data(), prefix.size(), w, h); break;
+        case Format::Tiff: known = readTiffDimensions(prefix.data(), prefix.size(), w, h); break;
+        case Format::Webp: known = readWebpDimensions(prefix.data(), prefix.size(), w, h); break;
+        case Format::Avif: known = readAvifDimensions(prefix.data(), prefix.size(), w, h); break;
+        default: break;
+    }
+    return known && !decodelimits::pixelsAllowed(w, h);
+}
+
 } // namespace
 
 ThumbResult generateThumb(const std::string &filePath, Format fmt, int targetLongEdge, int quality,
                            bool forceFullRender) {
+    // First thing, before any I/O: a Pass B wave has already been dispatched to the thread
+    // pool by the time a quit arrives, and ThreadPool deliberately runs every queued task
+    // rather than dropping them (see util/ThreadPool.cpp), so without this the app spends
+    // another whole wave of decodes on its way out - with the UI thread blocked in a
+    // destructor waiting for exactly that. See util/Shutdown.h.
+    if (shutdownRequested()) {
+        ThumbResult result;
+        result.tier = ThumbTier::Cancelled;
+        return result;
+    }
+
     // Video is handled before the whole-file-read below (it takes the path directly),
     // and before the format gate too (Video isn't in the Jpeg/Png/Raw list there).
     if (fmt == Format::Video) return generateVideoThumb(filePath, targetLongEdge, quality);
@@ -419,6 +537,33 @@ ThumbResult generateThumb(const std::string &filePath, Format fmt, int targetLon
     if (fmt == Format::Raw && !forceFullRender) {
         ThumbResult result = generateRawThumbFromFile(filePath, targetLongEdge, quality);
         if (result.tier != ThumbTier::Failed) return result;
+    }
+
+    // Everything from here on reads the file whole, which is the point at which a file's
+    // size stops being the filesystem's problem and becomes ours - and on a Downloads
+    // folder rather than a photo library, "a .tif" can mean 14 GiB. Gated from a stat, so
+    // an over-size file costs one syscall instead of its own weight in RAM.
+    //
+    // Reported as Unsupported rather than Failed: this is a decision about the file, and
+    // recording it keeps every later scan from re-discovering it. Deliberately after the
+    // RAW embedded-preview attempt above, which reads only a header and a preview however
+    // large the file is, so a big RAW still gets its cheap thumbnail.
+    {
+        int64_t sizeBytes = 0, mtimeUnix = 0;
+        if (statFile(filePath, &sizeBytes, &mtimeUnix) && !decodelimits::fileSizeAllowed(sizeBytes)) {
+            ThumbResult result;
+            result.tier = ThumbTier::Unsupported;
+            return result;
+        }
+    }
+
+    // Second gate, on the other limit, from a 1MB prefix rather than the whole file - see
+    // provablyOverPixelLimit(). Only useful when the size gate above has been widened or
+    // turned off, which is exactly when it is needed.
+    if (provablyOverPixelLimit(filePath, fmt)) {
+        ThumbResult result;
+        result.tier = ThumbTier::Unsupported;
+        return result;
     }
 
     std::vector<uint8_t> fileBytes;

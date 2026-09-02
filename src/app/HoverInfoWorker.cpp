@@ -2,6 +2,7 @@
 
 #include <QStringList>
 
+#include "ThreadShutdown.h"
 #include "db/Schema.h"
 #include "meta/JpegExif.h"
 #include "util/FileIO.h"
@@ -83,8 +84,9 @@ HoverInfoWorker::HoverInfoWorker(QObject *parent) : QObject(parent) {
 }
 
 HoverInfoWorker::~HoverInfoWorker() {
-    thread_.quit();
-    thread_.wait();
+    // Bounded, and able to take the process down rather than hang it if this worker is
+    // stuck inside a long decode - see ThreadShutdown.h for the failure this replaces.
+    threadshutdown::stopWorker(thread_, "HoverInfoWorker");
 }
 
 void HoverInfoWorker::request(quint64 id, QString path, int format) {

@@ -31,7 +31,13 @@ enum class FileState : int {
     New = 0,        // row exists, no thumbnail attempted yet
     Done = 1,       // thumbnail generated successfully
     Failed = 2,     // decode was attempted and failed (corrupt/unreadable file)
-    Unsupported = 3,// format has no decoder built yet - retry once support lands
+    // Two things pixet has decided not to thumbnail, deliberately rather than by failing:
+    // a format with no decoder built yet (retry once support lands), and a file over the
+    // configured decode limits - too big to read whole, or too many pixels to decode. See
+    // decode/DecodeLimits.h. Kept apart from Failed (2) because neither is a broken file:
+    // both are settled policy, recorded so no later scan pays to rediscover it, and both
+    // become eligible again the moment the policy changes.
+    Unsupported = 3,
     // RAW only: the current thumbnail was generated from the file's embedded preview
     // (fast, but camera-baked - a different rendering pipeline than the actual sensor
     // data, which can look meaningfully different: white balance, tone curve, crop).
