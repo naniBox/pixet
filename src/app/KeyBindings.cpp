@@ -41,6 +41,20 @@ QList<ActionInfo> buildActionList() {
         {Action::Rename, QStringLiteral("rename"), QStringLiteral("Rename selected file"), QKeySequence(Qt::Key_F2)},
         {Action::ActivateFullscreen, QStringLiteral("activateFullscreen"),
          QStringLiteral("Open / close fullscreen viewer"), QKeySequence(Qt::Key_Return)},
+        // No #ifdef: "Ctrl+..." is the portable spelling that Qt renders and matches as
+        // Cmd+arrow on macOS and Ctrl+arrow on Windows, which is the right default on
+        // each. Both are free - unlike physical Ctrl+arrow and Ctrl+Shift+Left/Right on
+        // macOS, which the system takes for Mission Control and space switching (see
+        // KeyBindings.h). A user who frees those in System Settings can rebind to them
+        // here; nothing in the app has to change for that to work.
+        {Action::FolderPrevious, QStringLiteral("folderPrevious"), QStringLiteral("Folder tree: previous folder"),
+         QKeySequence(QStringLiteral("Ctrl+Up"))},
+        {Action::FolderNext, QStringLiteral("folderNext"), QStringLiteral("Folder tree: next folder"),
+         QKeySequence(QStringLiteral("Ctrl+Down"))},
+        {Action::FolderParent, QStringLiteral("folderParent"), QStringLiteral("Folder tree: parent folder"),
+         QKeySequence(QStringLiteral("Ctrl+Left"))},
+        {Action::FolderFirstChild, QStringLiteral("folderFirstChild"), QStringLiteral("Folder tree: first subfolder"),
+         QKeySequence(QStringLiteral("Ctrl+Right"))},
         {Action::FullscreenToggleTrueFullscreen, QStringLiteral("fullscreenTrueFullscreen"),
          QStringLiteral("Fullscreen: toggle true fullscreen"), QKeySequence(Qt::Key_F)},
         {Action::FullscreenToggleZoom, QStringLiteral("fullscreenZoom"), QStringLiteral("Fullscreen: toggle zoom"),
@@ -62,10 +76,11 @@ QList<QKeySequence> buildReservedList() {
         QKeySequence(Qt::Key_PageDown),
         QKeySequence(Qt::Key_Space),
         QKeySequence(Qt::Key_Escape),
-        QKeySequence(QStringLiteral("Ctrl+Left")),
-        QKeySequence(QStringLiteral("Ctrl+Right")),
-        QKeySequence(QStringLiteral("Ctrl+Up")),
-        QKeySequence(QStringLiteral("Ctrl+Down")),
+        // Ctrl+arrow used to be reserved here too, back when folder navigation was
+        // hardcoded. It is a set of configurable actions now (Action::FolderPrevious and
+        // friends), so reserving it would block those actions from holding their own
+        // defaults - and conflicts between two configurable actions are already caught by
+        // PreferencesDialog's pairwise check, which reserving was never about.
     };
     // Also reserve the fixed (non-remappable) Edit-menu standard shortcuts - Select
     // All/Copy/Cut/Paste are wired directly in MainWindow via QKeySequence::StandardKey,

@@ -46,6 +46,23 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     auto *tabs = new QTabWidget(this);
     layout->addWidget(tabs, /*stretch=*/1);
 
+    // Every tab scrolls. Keybindings has needed it since it grew past a screenful, and
+    // Maintenance grew the same way - four groups of buttons, each with a wrapped
+    // paragraph explaining it. Without a scroll area, a QVBoxLayout given less height
+    // than its contents want doesn't clip, it squeezes every child toward its minimum,
+    // so the symptom isn't a cut-off tab but a bunched-up unreadable one. Applied to all
+    // three rather than only where it currently hurts, since any of them can grow.
+    auto addScrollingTab = [tabs](QWidget *content, const QString &title) {
+        auto *scroll = new QScrollArea(tabs);
+        scroll->setWidget(content);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        // No horizontal scrolling: the wrapped hint labels should reflow to the dialog's
+        // width, not stay wide and push a scrollbar underneath them.
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        tabs->addTab(scroll, title);
+    };
+
     // --- General tab: video player + thumbnails ---
     auto *generalTab = new QWidget(tabs);
     auto *generalLayout = new QVBoxLayout(generalTab);
@@ -250,7 +267,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
 
     generalLayout->addWidget(limitsGroup);
     generalLayout->addStretch(1);
-    tabs->addTab(generalTab, QStringLiteral("General"));
+    addScrollingTab(generalTab, QStringLiteral("General"));
 
     // --- Keybindings tab, scrollable - see KeyBindings.h's class comment for why
     // only these action-trigger keys are here (not grid/fullscreen directional
@@ -285,11 +302,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     keyLayout->addRow(resetKeysButton);
     connect(resetKeysButton, &QPushButton::clicked, this, &PreferencesDialog::onResetKeyBindings);
 
-    auto *keyScroll = new QScrollArea(tabs);
-    keyScroll->setWidget(keyContent);
-    keyScroll->setWidgetResizable(true);
-    keyScroll->setFrameShape(QFrame::NoFrame);
-    tabs->addTab(keyScroll, QStringLiteral("Keybindings"));
+    addScrollingTab(keyContent, QStringLiteral("Keybindings"));
 
     // --- Maintenance tab: index + danger zone ---
     auto *maintenanceTab = new QWidget(tabs);
@@ -383,7 +396,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     connect(nukeButton, &QPushButton::clicked, this, &PreferencesDialog::onNukeClicked);
 
     maintenanceLayout->addStretch(1);
-    tabs->addTab(maintenanceTab, QStringLiteral("Maintenance"));
+    addScrollingTab(maintenanceTab, QStringLiteral("Maintenance"));
 
     // --- OK/Cancel (shared across all tabs) ---
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
@@ -392,7 +405,11 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     layout->addWidget(buttons);
 
     setMinimumWidth(440);
-    resize(480, 480);
+    // Taller than it was: the Keybindings tab gained four folder-navigation rows and
+    // Maintenance four groups, and while both scroll now, opening straight into a
+    // scrollbar for content that would have fitted is a worse first impression than a
+    // slightly bigger dialog. Still well inside a laptop screen.
+    resize(520, 620);
 }
 
 void PreferencesDialog::updateCustomPlayerEnabled() {

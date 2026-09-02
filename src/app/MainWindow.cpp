@@ -1862,6 +1862,9 @@ void MainWindow::applyKeyBindingShortcuts() {
     addBookmarkAction_->setShortcut(keybindings::binding(keybindings::Action::AddBookmark));
     focusAddressBarAction_->setShortcut(keybindings::binding(keybindings::Action::FocusAddressBar));
     renameAction_->setShortcut(keybindings::binding(keybindings::Action::Rename));
+    // The grid caches its own folder-navigation bindings rather than reading them per key
+    // press - see ThumbGridView::reloadKeyBindings().
+    grid_->reloadKeyBindings();
 }
 
 QLineEdit *MainWindow::focusedLineEdit() const { return qobject_cast<QLineEdit *>(QApplication::focusWidget()); }
