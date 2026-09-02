@@ -5,6 +5,86 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-09-02 — mac — Ctrl+arrow folder navigation is now a setting, because it had to be
+
+Reported from the Mac as "on Windows I have Ctrl+arrows to navigate the folder list while
+focused on the grid, that doesn't work on macOS, can we have it back?"
+
+It had never worked there, and the reason is a trap worth writing down. `ThumbGridView`
+tested `event->modifiers() == Qt::ControlModifier`, and **Qt maps `Qt::ControlModifier` to
+Command on macOS** - the same swap `KeyBindings.cpp` already relies on to make the portable
+string `"Ctrl+R"` mean Cmd+R for Refresh. So on the Mac that check had always meant
+*Cmd*+arrow, which worked fine and which nobody had tried. Physical Ctrl arrives as
+`Qt::MetaModifier`, which nothing handled, so it fell through to the plain-arrow case and
+quietly moved the grid cursor one cell instead.
+
+### Why the obvious fix was wrong, twice
+
+First attempt was to also accept `Qt::MetaModifier` on macOS. That is dead on arrival:
+macOS binds all four Ctrl+arrows system-wide - Mission Control, Application windows, and
+move left/right a space - and the WindowServer consumes them before any application is
+offered the event.
+
+Second attempt was the suggestion that came back: use Ctrl+Shift+arrow instead. Checked
+`~/Library/Preferences/com.apple.symbolichotkeys.plist` before building it, and
+**Ctrl+Shift+Left and Ctrl+Shift+Right are taken too** - ids 80 and 82, the "alt" variants
+of move-left/right-a-space, both enabled. Only Ctrl+Shift+Up was free (id 34, disabled on
+that machine). That would have shipped working navigation for up/down and silence for
+parent/child, which are the two anyone actually uses. Worth the five minutes of reading a
+plist to find out before writing the code rather than after.
+
+So there is no fixed default that is right on both platforms, which is the argument for
+making it configurable rather than for guessing better a third time.
+
+### What it is now
+
+Four configurable actions in Preferences > Keybindings: previous folder, next folder,
+parent folder, first subfolder. Defaults are the portable string `"Ctrl+<arrow>"` with
+**no `#ifdef`** - Qt renders and matches that as Ctrl+arrow on Windows and Cmd+arrow on
+macOS, which is free and idiomatic on each. Confirmed by screenshotting the dialog: the
+rows come out as ⌘↑ ⌘↓ ⌘← ⌘→.
+
+Anyone who wants physical Ctrl can now bind it themselves, after freeing the Mission
+Control shortcuts - without that, `QKeySequenceEdit` can't even capture the chord, since
+the OS takes it before Qt sees it. Nothing in the app has to change for that to work.
+
+Two consequences worth knowing:
+- `ThumbGridView` caches the four sequences (`reloadKeyBindings()`, called from
+  `MainWindow::applyKeyBindingShortcuts()`) rather than reading them per key press.
+  `keyPressEvent` runs for every key including auto-repeating arrows, and four QSettings
+  lookups an event to answer a question that only changes in a dialog is silly.
+- Ctrl+arrow had to come **out** of `reservedSequences()`. That list exists so a
+  configurable action can't shadow fixed navigation; now that folder navigation *is* a set
+  of configurable actions, leaving it reserved would have rejected those actions' own
+  defaults the moment anyone pressed OK in the dialog on Windows.
+
+### Preferences tabs all scroll now
+
+Reported alongside it: the Maintenance tab was "super bunched up". The cause isn't
+clipping. A `QVBoxLayout` given less height than its children want doesn't cut anything
+off - it squeezes every child toward its minimum - so the symptom of a too-short dialog is
+an unreadable tab rather than a truncated one. Only Keybindings had a `QScrollArea`.
+
+All three tabs go through one `addScrollingTab()` helper now, horizontal scrolling off so
+the wrapped hint paragraphs reflow to the dialog width instead of pushing a scrollbar
+underneath them. Default size 480x480 -> 520x620, so a dialog that would have fitted
+doesn't open into a scrollbar. Verified by screenshot rather than by assertion.
+
+### A note on verifying keyboard behaviour on this machine
+
+AppleScript can now drive the app (it was refused assistive access back when the
+multi-window work was done), but `System Events` still refuses `key code`:
+`osascript is not allowed to send keystrokes. (1002)`. An earlier attempt to prove this
+feature by driving keys produced a confident "neither modifier works" result that was
+entirely an artifact - no keys were ever delivered. The permission probe used
+`keystroke ""`, which silently succeeds while real events fail.
+
+What did work, and is worth reaching for next time: a temporary hook in `main.cpp` behind
+an env var that constructs the dialog and calls `QWidget::grab()` per tab, saving PNGs.
+That needs no permission at all, since nothing leaves the process.
+
+---
+
 ## 2026-09-02 — desktop — One file in Downloads cost 50GB and wouldn't let go
 
 Browsing `C:\Users\dmo\Downloads` took the process to ~48GB and it kept climbing after the
