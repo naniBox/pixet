@@ -5,188 +5,79 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
-## 2026-09-02 — mac — Ctrl+arrow folder navigation is now a setting, because it had to be
+## 2026-09-04 — desktop — Bookmarks reorder by drag, and the sort column that never was unique
 
-Reported from the Mac as "on Windows I have Ctrl+arrows to navigate the folder list while
-focused on the grid, that doesn't work on macOS, can we have it back?"
+Bookmarks are drag-reorderable. The new order is written straight back to `bookmarks.sort`,
+so it survives a restart and is shared by every window.
 
-It had never worked there, and the reason is a trap worth writing down. `ThumbGridView`
-tested `event->modifiers() == Qt::ControlModifier`, and **Qt maps `Qt::ControlModifier` to
-Command on macOS** - the same swap `KeyBindings.cpp` already relies on to make the portable
-string `"Ctrl+R"` mean Cmd+R for Refresh. So on the Mac that check had always meant
-*Cmd*+arrow, which worked fine and which nobody had tried. Physical Ctrl arrives as
-`Qt::MetaModifier`, which nothing handled, so it fell through to the plain-arrow case and
-quietly moved the grid cursor one cell instead.
+**The whole feature is stock Qt except for knowing when the move is finished**, and that
+one question is where all the thinking went. `QListWidget` in `InternalMove` mode does the
+drag, the drop indicator and the row shuffle without help. What it does *not* offer is a
+"the rows are now in a new order" signal, and the three obvious places to hook are each
+wrong in a different way.
 
-### Why the obvious fix was wrong, twice
+Qt 6 has two internal-move implementations and they finish at different moments.
+`QListView`, in list mode, does the move itself inside `dropEvent()` via
+`QListModel::moveRows` — the `QListWidgetItem` is relocated, pointer and all — and sets
+`QAbstractItemViewPrivate::dropEventMoved` so that `startDrag()` knows to skip its own
+cleanup. Everything else falls back to `QAbstractItemView`, where an internal move is two
+separate edits: `dropEvent()` inserts a decoded copy at the new position, and the *source*
+row is removed afterwards, back in `startDrag()`, once the nested `QDrag::exec()` loop that
+delivered the drop has returned.
 
-First attempt was to also accept `Qt::MetaModifier` on macOS. That is dead on arrival:
-macOS binds all four Ctrl+arrows system-wide - Mission Control, Application windows, and
-move left/right a space - and the WindowServer consumes them before any application is
-offered the event.
+So: hooking `dropEvent()` reads the final order on the first path and a list containing the
+dragged bookmark *twice* on the second. Connecting to the model's `rowsMoved` is shorter
+than either, and is what most recipes reach for, but only the first path emits it — if Qt
+ever changed which one runs, reordering would silently stop persisting, with no visible
+symptom until someone restarted and found their arrangement gone. Overriding `startDrag()`
+and emitting after the base call is correct under both, because its returning is the first
+moment both halves have happened either way. That is the entire content of
+`BookmarkListWidget`; comparing row ids before and after is what keeps an aborted drag, or
+a drop back onto the same spot, from counting as a reorder.
 
-Second attempt was the suggestion that came back: use Ctrl+Shift+arrow instead. Checked
-`~/Library/Preferences/com.apple.symbolichotkeys.plist` before building it, and
-**Ctrl+Shift+Left and Ctrl+Shift+Right are taken too** - ids 80 and 82, the "alt" variants
-of move-left/right-a-space, both enabled. Only Ctrl+Shift+Up was free (id 34, disabled on
-that machine). That would have shipped working navigation for up/down and silence for
-parent/child, which are the two anyone actually uses. Worth the five minutes of reading a
-plist to find out before writing the code rather than after.
+Worth recording that I got this wrong first, and wrote comments confidently asserting the
+mime round-trip was the mechanism. Qt's shipped private headers settled it —
+`qlistwidget_p.h` declares the `moveRows` override, `qabstractitemview_p.h` carries the
+`dropEventMoved` flag. `C:\Qt\6.8.3\msvc2022_64\include\QtWidgets\6.8.3\QtWidgets\private\`
+is on disk and checkable in seconds, and beats reasoning about which path Qt "probably"
+takes. An earlier attempt to answer it empirically, by calling `model()->dropMimeData()`
+directly, actively misled: invoked outside a real drag it takes
+`QAbstractItemModel::decodeData`'s overwrite path and clobbers the first row, which is an
+artefact of the call, not something any drop does.
 
-So there is no fixed default that is right on both platforms, which is the argument for
-making it configurable rather than for guessing better a third time.
+**`sort` was never unique, and the feature is what exposed it.** `addBookmark()` derived
+the new value from `count(*)`, so any remove-then-add cycle could hand two rows the same
+number — remove the middle of three (leaving 0, 2), add one, and the newcomer is also 2.
+`ORDER BY sort` alone is then free to return those two in either order, so a bookmark list
+could quietly reshuffle itself between runs. Fixed at both ends: `ORDER BY sort, id` gives
+ties a stable tiebreak, and new bookmarks now take `max(sort)+1`, which lands them at the
+end even on a database already carrying duplicate or sparse values. A drag renumbers every
+row densely 0..n-1, so reordering once repairs legacy numbering in passing.
 
-### What it is now
+Smaller things that fell out:
 
-Four configurable actions in Preferences > Keybindings: previous folder, next folder,
-parent folder, first subfolder. Defaults are the portable string `"Ctrl+<arrow>"` with
-**no `#ifdef`** - Qt renders and matches that as Ctrl+arrow on Windows and Cmd+arrow on
-macOS, which is free and idiomatic on each. Confirmed by screenshotting the dialog: the
-rows come out as ⌘↑ ⌘↓ ⌘← ⌘→.
-
-Anyone who wants physical Ctrl can now bind it themselves, after freeing the Mission
-Control shortcuts - without that, `QKeySequenceEdit` can't even capture the chord, since
-the OS takes it before Qt sees it. Nothing in the app has to change for that to work.
-
-Two consequences worth knowing:
-- `ThumbGridView` caches the four sequences (`reloadKeyBindings()`, called from
-  `MainWindow::applyKeyBindingShortcuts()`) rather than reading them per key press.
-  `keyPressEvent` runs for every key including auto-repeating arrows, and four QSettings
-  lookups an event to answer a question that only changes in a dialog is silly.
-- Ctrl+arrow had to come **out** of `reservedSequences()`. That list exists so a
-  configurable action can't shadow fixed navigation; now that folder navigation *is* a set
-  of configurable actions, leaving it reserved would have rejected those actions' own
-  defaults the moment anyone pressed OK in the dialog on Windows.
-
-### Preferences tabs all scroll now
-
-Reported alongside it: the Maintenance tab was "super bunched up". The cause isn't
-clipping. A `QVBoxLayout` given less height than its children want doesn't cut anything
-off - it squeezes every child toward its minimum - so the symptom of a too-short dialog is
-an unreadable tab rather than a truncated one. Only Keybindings had a `QScrollArea`.
-
-All three tabs go through one `addScrollingTab()` helper now, horizontal scrolling off so
-the wrapped hint paragraphs reflow to the dialog width instead of pushing a scrollbar
-underneath them. Default size 480x480 -> 520x620, so a dialog that would have fitted
-doesn't open into a scrollbar. Verified by screenshot rather than by assertion.
-
-### A note on verifying keyboard behaviour on this machine
-
-AppleScript can now drive the app (it was refused assistive access back when the
-multi-window work was done), but `System Events` still refuses `key code`:
-`osascript is not allowed to send keystrokes. (1002)`. An earlier attempt to prove this
-feature by driving keys produced a confident "neither modifier works" result that was
-entirely an artifact - no keys were ever delivered. The permission probe used
-`keystroke ""`, which silently succeeds while real events fail.
-
-What did work, and is worth reaching for next time: a temporary hook in `main.cpp` behind
-an env var that constructs the dialog and calls `QWidget::grab()` per tab, saving PNGs.
-That needs no permission at all, since nothing leaves the process.
-
----
-
-## 2026-09-02 — desktop — One file in Downloads cost 50GB and wouldn't let go
-
-Browsing `C:\Users\dmo\Downloads` took the process to ~48GB and it kept climbing after the
-window was closed; only Task Manager ended it. Both halves of that turned out to be real,
-and separate.
-
-**The file.** `Im1.tif`, 14.1 GiB, BigTIFF, 97943 x 51536 = **5.0 gigapixels**,
-uncompressed RGB, and — because `RowsPerStrip` equals the full image height — stored as a
-single strip. Nothing on the thumbnail path bounded any of that, so one file stacked up
-four allocations that nothing in between ever looked at:
-
-| | |
-|---|---|
-| `readWholeFile()` | 15.1 GB |
-| `decodeTiff()`'s RGBA raster (4 B/px) | 20.2 GB |
-| libtiff's own strip buffer, inside `TIFFReadRGBAImageOriented` | 15.1 GB |
-| `RgbImage::pixels` (3 B/px) | 15.1 GB |
-
-~65GB had it ever finished; ~50GB is where it was when killed. On 20 cores the indexer runs
-20-wide waves, so this was one thread of twenty, all reading whole files with no budget
-between them.
-
-The maddening part is that `readTiffDimensions()` is header-only and already existed — it
-was just called from inside `generateTiffThumb()`, i.e. *after* the 14 GiB read. The cheap
-answer was there all along, one step too late to be used.
-
-**The hang.** All nine workers were `thread_.quit(); thread_.wait();`. `quit()` asks the
-*event loop* to return and does exactly nothing while a slot is executing, and `wait()` has
-no timeout — so `~MainWindow` parked the UI thread in `~FolderIndexer` while the worker it
-was waiting for carried on allocating. `shouldCancel` is only polled between Pass B waves,
-never inside a decode, so `cancelCurrent()` couldn't touch it either. And `ThreadPool`
-deliberately drains its queue on destruction, so the rest of the wave would have run too.
-Window gone, process pinned, memory rising.
-
-**Two limits, not one, because there are two ways to get there.** `decode/DecodeLimits.h`
-holds both, configured from prefs (and `pixet-index --max-file-mb / --max-megapixels`) the
-same way rawcache already is. A file-size cap bounds the whole-file read; a pixel cap
-bounds the decode. The pixel one is what actually matters — a *compressed* gigapixel scan
-sits under any sane size cap and still wants tens of GB once expanded — and it lives in
-each codec (`TiffCodec`, `PngCodec`, `WebpCodec`, `AvifCodec`, `HeifCodec`) before the
-first allocation, so `DisplayCodec`'s preview/fullscreen path gets it for free rather than
-needing its own copy.
-
-Three placements worth writing down:
-
-- **`ThumbGenerator` decides, the codec enforces.** A codec returning `false` for "too big"
-  is indistinguishable from a corrupt file, which would record the row as `Failed` — a
-  permanent verdict on a perfectly good file. So the generator checks the header dimensions
-  it already read and returns `Unsupported`, which is what that state has always meant:
-  settled policy, recorded once, revisited if the policy changes. The codec guard stays as
-  defence in depth for every other caller.
-- **A 1MB prefix probe before the whole-file read.** With the size cap at its default the
-  pixel check never has to fire, but "no limit" is a real choice in the UI, and someone who
-  picks it for their 800MB panoramas shouldn't thereby sign up for a 14 GiB read followed
-  by a refusal. `provablyOverPixelLimit()` reads a bounded prefix and only ever answers
-  "provably too big" — a TIFF with its IFD at the end simply doesn't answer and takes the
-  normal path, so it can make things faster but never change a verdict. This is what took
-  the `--max-file-mb 0` case from 11.7s / 15GB to 0.1s / 6MB.
-- **HEIC deliberately skips the up-front gate.** Its embedded preview is cheap and bounded
-  by the *preview's* size, so an enormous HEIC can still get a good thumbnail; only once
-  that comes back empty is the main image's size worth reporting.
-
-**Shutdown: ask, wait a bounded time, then stop being polite.** `util/Shutdown.h` is a
-one-way process-wide flag; `generateThumb()` returns a new `ThumbTier::Cancelled`
-immediately when it's set, so an already-dispatched wave collapses instead of decoding
-another 20 files nobody will see. `Cancelled` writes *nothing* — the row stays `New`, which
-is where an un-thumbnailed file normally sits. Conflating it with `Failed` would have
-condemned a folder's worth of good files for being in flight when the window closed.
-
-`app/ThreadShutdown.h` replaces the eight decode workers' destructors: `quit()`, wait 8s,
-and if it still won't stop *and the app is actually quitting*, `_exit()`. The second
-condition matters — one window of several closing is not a reason to kill a live app, so
-that case falls back to the old unbounded wait. `FileOpsWorker` keeps the plain wait on
-purpose and says so: a half-finished copy of the user's files is worth waiting for, and
-unlike a runaway decode it isn't eating memory while it does.
-
-The flag is raised in `MainWindow::closeEvent` (last window only), not just `aboutToQuit` —
-windows are `WA_DeleteOnClose`, so `~MainWindow` runs from a `deleteLater` *inside* the
-event loop, before `exec()` returns. `aboutToQuit` would have fired after the thing it was
-meant to shorten had already begun; it stays connected as the backstop for the standalone
-viewer and File > Quit.
-
-**Measured, same folder, same machine (20 cores).**
-
-| | before | after |
-|---|---|---|
-| browsing Downloads, peak RSS | 12.1 GB and climbing | **0.47 GB** |
-| close window → process gone | never (killed manually) | **0.08 s** |
-| `pixet-index` on `Im1.tif` alone | ~50GB, unbounded | **0.1 s, 6 MB** |
-
-Downloads now indexes fully: 186 Done, 1 Unsupported (`Im1.tif`), 1 Failed — a 489-byte
-truncated `.webp`, which is a genuinely corrupt file and correctly reported as one.
-
-Defaults are 512 MB and 500 MP, both settings (General tab, "Decode limits"). 500 MP is
-~3.3x the largest cameras in real use and ~3.5GB as `RgbImage`; 512 MB clears a 100MB drum
-scan and a 150MP medium-format RAW by a wide margin. Anything over either limit still
-appears in the grid with a placeholder — skipped, not hidden.
-
-Tests: 128/128 (8 new in `test_decodelimits.cpp`). The shutdown flag is deliberately not
-unit-tested — it is one-way by design, so setting it would make `generateThumb` return
-`Cancelled` for every test registered after it, and adding a reset purely to test it would
-mean putting the footgun into production code to check the footgun-free version works.
+- `persistBookmarkOrder()` is the app layer's first transaction, which makes the rollback
+  matter more than the write does. `Statement::step()` throws, and `db_` is the connection
+  every later bookmark and metadata query runs on — unwinding past an open transaction
+  would leave it open for the rest of the session, turning a failed reorder into a broken
+  window.
+- It deliberately does not call `loadBookmarks()` on success. The widget is already correct
+  — Qt applied the move — so re-reading would rebuild every row for no visible change and
+  drop the selection the drag just left on the moved bookmark. It reloads only on the
+  failure paths, where resyncing to the database is the whole point.
+- `InternalMove` buys a small piece of correctness for free: `QAbstractItemView` refuses
+  any drag whose source isn't the widget itself, so a folder dragged in from Explorer, or
+  from pixet's own thumbnail grid (which drags out real file URLs), is a no-op on the
+  bookmarks list rather than something half-defined. Accepting those is a real feature, but
+  a separate one.
+- A plain `cmake --build build/debug` from a fresh shell still hits the missing-`INCLUDE`
+  failure `SETUP.md` documents; `scripts/build.ps1` is the answer and worked first try.
+  Running the debug binary also needs `C:\Qt\6.8.3\msvc2022_64\bin` on `PATH`, since dev
+  builds stay un-deployed on purpose.
+- Not verified by execution: the drag gesture itself. 120/120 tests pass, but they are core
+  codec/DB tests with no bookmark coverage, and driving a real mouse drag needs input
+  automation this repo doesn't have. The app builds, launches and closes cleanly with the
+  new widget; the gesture is correct by construction, not by demonstration.
 
 ---
 

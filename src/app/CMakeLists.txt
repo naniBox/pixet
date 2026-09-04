@@ -50,6 +50,9 @@ add_executable(pixet ${PIXET_APP_TYPE}
     FolderTreeView.h
     FolderTreeView.cpp
 
+    BookmarkListWidget.h
+    BookmarkListWidget.cpp
+
     ThumbGridModel.h
     ThumbGridModel.cpp
     FolderListModel.h
