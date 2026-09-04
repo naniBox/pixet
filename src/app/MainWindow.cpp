@@ -47,6 +47,7 @@
 #include <QVBoxLayout>
 
 #include "BackgroundReconciler.h"
+#include "BookmarkListWidget.h"
 #include "ClipboardOps.h"
 #include "CollisionDialog.h"
 #include "DatabaseStatsDialog.h"
@@ -134,10 +135,11 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
         return title;
     };
 
-    bookmarks_ = new QListWidget(this);
+    bookmarks_ = new BookmarkListWidget(this);
     bookmarks_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(bookmarks_, &QListWidget::itemClicked, this, &MainWindow::onBookmarkClicked);
     connect(bookmarks_, &QListWidget::customContextMenuRequested, this, &MainWindow::onBookmarksContextMenu);
+    connect(bookmarks_, &BookmarkListWidget::orderChanged, this, &MainWindow::persistBookmarkOrder);
 
     auto *bookmarksPanel = new QWidget(this);
     auto *bookmarksLayout = new QVBoxLayout(bookmarksPanel);
@@ -2578,7 +2580,10 @@ void MainWindow::onWatchedDirectoryChanged(const QString &path) {
 
 void MainWindow::loadBookmarks() {
     bookmarks_->clear();
-    auto sel = db_->prepare("SELECT id, path, label FROM bookmarks ORDER BY sort");
+    // The id tiebreak matters because sort is not unique: builds before drag-reordering
+    // derived it from count(*), so a remove-then-add cycle could hand two rows the same
+    // value, and `ORDER BY sort` alone would then be free to shuffle them between runs.
+    auto sel = db_->prepare("SELECT id, path, label FROM bookmarks ORDER BY sort, id");
     while (sel.step()) {
         qint64 id = sel.columnInt64(0);
         QString path = QString::fromStdString(sel.columnText(1));
@@ -2595,9 +2600,13 @@ void MainWindow::addBookmark(const QString &path) {
     QString label = QFileInfo(path).fileName();
     if (label.isEmpty()) label = path; // e.g. a drive root like "C:\"
 
-    auto countSel = db_->prepare("SELECT count(*) FROM bookmarks");
-    countSel.step();
-    int64_t nextSort = countSel.columnInt64(0);
+    // max(sort)+1, not count(*): after a drag-reorder sort is a dense 0..n-1 run and the
+    // two agree, but on a database carrying legacy duplicate/sparse values count(*) can
+    // collide with a row that already exists, dropping the new bookmark into the middle of
+    // the list instead of at the end. -1 is the empty-table base so the first row gets 0.
+    auto maxSel = db_->prepare("SELECT coalesce(max(sort), -1) + 1 FROM bookmarks");
+    maxSel.step();
+    int64_t nextSort = maxSel.columnInt64(0);
 
     auto ins = db_->prepare("INSERT INTO bookmarks(path, label, sort) VALUES(?,?,?)");
     ins.bind(1, path.toStdString());
@@ -2613,6 +2622,50 @@ void MainWindow::removeBookmark(qint64 id) {
     del.bind(1, (int64_t)id);
     del.step();
     loadBookmarks();
+}
+
+void MainWindow::persistBookmarkOrder() {
+    // The widget is the source of truth here - Qt has already applied the move to it, and
+    // this is only mirroring that into the database. Deliberately no loadBookmarks() at the
+    // end: re-reading would rebuild the rows underneath the user for no visible change, and
+    // would drop the selection the drag just left on the moved bookmark.
+    //
+    // QListView's internal move relocates the QListWidgetItem itself, so Qt::UserRole + 1
+    // is carried across intact - but the fallback path in QAbstractItemView rebuilds the
+    // row from QMimeData instead (see BookmarkListWidget), and that only preserves custom
+    // roles as long as the model keeps encoding them. Rather than depend on that, check:
+    // without an id per row the mapping from row to bookmark is gone, and writing positions
+    // anyway would scramble the order. Reloading costs the user the drag, never the list.
+    QList<qint64> ids;
+    ids.reserve(bookmarks_->count());
+    for (int row = 0; row < bookmarks_->count(); ++row) {
+        qint64 id = bookmarks_->item(row)->data(Qt::UserRole + 1).toLongLong();
+        if (id <= 0) {
+            loadBookmarks();
+            return;
+        }
+        ids << id;
+    }
+
+    // One transaction: a reorder is a single user action, and a partial renumber is a worse
+    // state to leave behind than either the old order or the new one. Statement::step()
+    // throws, and db_ is the connection every later bookmark and metadata query runs on -
+    // unwinding past an open transaction would leave it open for the rest of the session,
+    // so the rollback matters more here than the (unlikely) write failure itself does.
+    try {
+        db_->beginTransaction();
+        auto upd = db_->prepare("UPDATE bookmarks SET sort=? WHERE id=?");
+        for (int row = 0; row < ids.size(); ++row) {
+            upd.reset();
+            upd.bind(1, (int64_t)row);
+            upd.bind(2, (int64_t)ids.at(row));
+            upd.step();
+        }
+        db_->commit();
+    } catch (const std::exception &) {
+        db_->rollback();
+        loadBookmarks(); // resync the widget to whatever actually survived
+    }
 }
 
 void MainWindow::restoreLastDirectory() {

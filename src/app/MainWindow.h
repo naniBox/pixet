@@ -25,6 +25,7 @@ class QModelIndex;
 class QSplitter;
 class QTimer;
 
+class BookmarkListWidget;
 class FolderTreeView;
 class StatusLabel;
 class ThumbGridModel;
@@ -268,7 +269,7 @@ private:
 
     FolderTreeView *tree_;
     QFileSystemModel *fsModel_;
-    QListWidget *bookmarks_;
+    BookmarkListWidget *bookmarks_;
     ThumbGridView *grid_;
     ThumbGridModel *gridModel_;
     PreviewPane *preview_;
@@ -577,6 +578,11 @@ private:
     // same folder being added twice - this is what the UI checks against instead.
     bool isBookmarked(const QString &path) const;
     void removeBookmark(qint64 id);
+    // Writes the list widget's current top-to-bottom order back to bookmarks.sort after a
+    // drag-reorder (see BookmarkListWidget::orderChanged). Renumbers every row 0..n-1
+    // rather than patching just the row that moved, which also quietly repairs the
+    // duplicate sort values older builds could leave behind.
+    void persistBookmarkOrder();
     void restoreLastDirectory();
     void saveLastDirectory(const QString &path);
     // "Reset Index" (Preferences dialog, already confirmed there) - deletes every

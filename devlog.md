@@ -5,6 +5,82 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-09-04 — desktop — Bookmarks reorder by drag, and the sort column that never was unique
+
+Bookmarks are drag-reorderable. The new order is written straight back to `bookmarks.sort`,
+so it survives a restart and is shared by every window.
+
+**The whole feature is stock Qt except for knowing when the move is finished**, and that
+one question is where all the thinking went. `QListWidget` in `InternalMove` mode does the
+drag, the drop indicator and the row shuffle without help. What it does *not* offer is a
+"the rows are now in a new order" signal, and the three obvious places to hook are each
+wrong in a different way.
+
+Qt 6 has two internal-move implementations and they finish at different moments.
+`QListView`, in list mode, does the move itself inside `dropEvent()` via
+`QListModel::moveRows` — the `QListWidgetItem` is relocated, pointer and all — and sets
+`QAbstractItemViewPrivate::dropEventMoved` so that `startDrag()` knows to skip its own
+cleanup. Everything else falls back to `QAbstractItemView`, where an internal move is two
+separate edits: `dropEvent()` inserts a decoded copy at the new position, and the *source*
+row is removed afterwards, back in `startDrag()`, once the nested `QDrag::exec()` loop that
+delivered the drop has returned.
+
+So: hooking `dropEvent()` reads the final order on the first path and a list containing the
+dragged bookmark *twice* on the second. Connecting to the model's `rowsMoved` is shorter
+than either, and is what most recipes reach for, but only the first path emits it — if Qt
+ever changed which one runs, reordering would silently stop persisting, with no visible
+symptom until someone restarted and found their arrangement gone. Overriding `startDrag()`
+and emitting after the base call is correct under both, because its returning is the first
+moment both halves have happened either way. That is the entire content of
+`BookmarkListWidget`; comparing row ids before and after is what keeps an aborted drag, or
+a drop back onto the same spot, from counting as a reorder.
+
+Worth recording that I got this wrong first, and wrote comments confidently asserting the
+mime round-trip was the mechanism. Qt's shipped private headers settled it —
+`qlistwidget_p.h` declares the `moveRows` override, `qabstractitemview_p.h` carries the
+`dropEventMoved` flag. `C:\Qt\6.8.3\msvc2022_64\include\QtWidgets\6.8.3\QtWidgets\private\`
+is on disk and checkable in seconds, and beats reasoning about which path Qt "probably"
+takes. An earlier attempt to answer it empirically, by calling `model()->dropMimeData()`
+directly, actively misled: invoked outside a real drag it takes
+`QAbstractItemModel::decodeData`'s overwrite path and clobbers the first row, which is an
+artefact of the call, not something any drop does.
+
+**`sort` was never unique, and the feature is what exposed it.** `addBookmark()` derived
+the new value from `count(*)`, so any remove-then-add cycle could hand two rows the same
+number — remove the middle of three (leaving 0, 2), add one, and the newcomer is also 2.
+`ORDER BY sort` alone is then free to return those two in either order, so a bookmark list
+could quietly reshuffle itself between runs. Fixed at both ends: `ORDER BY sort, id` gives
+ties a stable tiebreak, and new bookmarks now take `max(sort)+1`, which lands them at the
+end even on a database already carrying duplicate or sparse values. A drag renumbers every
+row densely 0..n-1, so reordering once repairs legacy numbering in passing.
+
+Smaller things that fell out:
+
+- `persistBookmarkOrder()` is the app layer's first transaction, which makes the rollback
+  matter more than the write does. `Statement::step()` throws, and `db_` is the connection
+  every later bookmark and metadata query runs on — unwinding past an open transaction
+  would leave it open for the rest of the session, turning a failed reorder into a broken
+  window.
+- It deliberately does not call `loadBookmarks()` on success. The widget is already correct
+  — Qt applied the move — so re-reading would rebuild every row for no visible change and
+  drop the selection the drag just left on the moved bookmark. It reloads only on the
+  failure paths, where resyncing to the database is the whole point.
+- `InternalMove` buys a small piece of correctness for free: `QAbstractItemView` refuses
+  any drag whose source isn't the widget itself, so a folder dragged in from Explorer, or
+  from pixet's own thumbnail grid (which drags out real file URLs), is a no-op on the
+  bookmarks list rather than something half-defined. Accepting those is a real feature, but
+  a separate one.
+- A plain `cmake --build build/debug` from a fresh shell still hits the missing-`INCLUDE`
+  failure `SETUP.md` documents; `scripts/build.ps1` is the answer and worked first try.
+  Running the debug binary also needs `C:\Qt\6.8.3\msvc2022_64\bin` on `PATH`, since dev
+  builds stay un-deployed on purpose.
+- Not verified by execution: the drag gesture itself. 120/120 tests pass, but they are core
+  codec/DB tests with no bookmark coverage, and driving a real mouse drag needs input
+  automation this repo doesn't have. The app builds, launches and closes cleanly with the
+  new widget; the gesture is correct by construction, not by demonstration.
+
+---
+
 ## 2026-09-01 — desktop — `pixet photo.jpg` opens the photo, not the app
 
 A single image on the command line now goes straight to a fullscreen viewer with no
