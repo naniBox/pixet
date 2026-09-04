@@ -4,6 +4,7 @@
 #include <QTimer>
 
 #include "Preferences.h"
+#include "ThreadShutdown.h"
 #include "db/Database.h"
 #include "db/Schema.h"
 #include "scan/Indexer.h"
@@ -28,8 +29,9 @@ RawRenderer::RawRenderer(QObject *parent) : QObject(parent) {
 }
 
 RawRenderer::~RawRenderer() {
-    thread_.quit();
-    thread_.wait();
+    // Bounded, and able to take the process down rather than hang it if this worker is
+    // stuck inside a long decode - see ThreadShutdown.h for the failure this replaces.
+    threadshutdown::stopWorker(thread_, "RawRenderer");
 }
 
 RawRenderer &RawRenderer::shared() {

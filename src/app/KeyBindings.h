@@ -7,12 +7,21 @@
 class QKeyEvent;
 
 // User-configurable keyboard shortcuts, backed by prefs::settingsStore() (see
-// Preferences.h). Deliberately covers only the "single action trigger" keys
-// (menu commands, fullscreen toggles) - not grid/fullscreen directional navigation
-// (arrows, Home/End, PageUp/PageDown, Space, Ctrl+arrow folder nav) or the
-// always-on Escape-to-close, which stay fixed as standard conventions nobody
-// really wants to remap, and which the "reserved" keys below protect from being
-// silently shadowed by a rebind. See PreferencesDialog for the editor UI.
+// Preferences.h). Covers the "single action trigger" keys (menu commands, fullscreen
+// toggles) plus folder-tree navigation from the grid - not the grid/fullscreen
+// *directional* keys (plain arrows, Home/End, PageUp/PageDown, Space) or the always-on
+// Escape-to-close, which stay fixed as standard conventions nobody really wants to
+// remap, and which the "reserved" keys below protect from being silently shadowed by a
+// rebind. See PreferencesDialog for the editor UI.
+//
+// Folder navigation was fixed at Ctrl+arrow until it turned out that "Ctrl+arrow" is not
+// one thing across platforms. Qt maps Qt::ControlModifier to Command on macOS, so the
+// portable spelling already meant Cmd+arrow there - while the physical Ctrl+arrows a
+// Windows user reaches for arrive as Qt::MetaModifier *and* are claimed system-wide by
+// macOS (Mission Control, Application windows, and move left/right a space - including
+// the Ctrl+Shift+Left/Right variants), so the WindowServer consumes them before any
+// application is offered the event. There is no single default that is right everywhere,
+// which is the argument for making it configurable rather than picking better.
 namespace keybindings {
 
 enum class Action {
@@ -27,6 +36,14 @@ enum class Action {
     // Escape always closes too, regardless of this binding, so there's never a way
     // to lock yourself out of the viewer by reassigning this to something odd.
     ActivateFullscreen,
+    // Folder-tree navigation from the grid: these move the whole view to a different
+    // folder, rather than moving the selection within the current one. "Previous" and
+    // "next" are tree order, not alphabetical-within-parent - see
+    // MainWindow::onNavigateFolderRequested() for exactly what each one walks to.
+    FolderPrevious,
+    FolderNext,
+    FolderParent,
+    FolderFirstChild,
     FullscreenToggleTrueFullscreen,
     FullscreenToggleZoom,
     FullscreenToggleInfoOverlay,

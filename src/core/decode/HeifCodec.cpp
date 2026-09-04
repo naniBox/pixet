@@ -4,11 +4,22 @@
 
 #include <libheif/heif.h>
 
+#include "DecodeLimits.h"
+
 namespace pixet {
 
 namespace {
 
 bool decodeHandle(const heif_image_handle *handle, RgbImage &out) {
+    // The handle knows the size without decoding, so refuse here rather than after
+    // heif_decode_image has already materialized the full-resolution plane. Applies to the
+    // embedded-preview path too (decodeHeifThumb), whose handle is the thumbnail's own and
+    // so will pass this on any file where the main image wouldn't.
+    if (!decodelimits::pixelsAllowed(heif_image_handle_get_width(handle),
+                                      heif_image_handle_get_height(handle))) {
+        return false;
+    }
+
     heif_image *img = nullptr;
     heif_error err = heif_decode_image(handle, &img, heif_colorspace_RGB, heif_chroma_interleaved_RGB, nullptr);
     if (err.code != heif_error_Ok || !img) return false;

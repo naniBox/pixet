@@ -3,6 +3,7 @@
 #include <QMetaObject>
 
 #include "QtInterop.h"
+#include "ThreadShutdown.h"
 #include "db/Schema.h"
 #include "decode/DisplayCodec.h"
 #include "util/Profile.h"
@@ -13,8 +14,9 @@ PreviewDecoder::PreviewDecoder(QObject *parent) : QObject(parent) {
 }
 
 PreviewDecoder::~PreviewDecoder() {
-    thread_.quit();
-    thread_.wait();
+    // Bounded, and able to take the process down rather than hang it if this worker is
+    // stuck inside a long decode - see ThreadShutdown.h for the failure this replaces.
+    threadshutdown::stopWorker(thread_, "PreviewDecoder");
 }
 
 void PreviewDecoder::requestPreview(qint64 requestId, const QString &filePath, int fmt, int targetLongEdge) {

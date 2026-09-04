@@ -14,6 +14,7 @@
 #include "../meta/JpegExif.h"
 #include "../util/FileIO.h"
 #include "../util/FileMove.h"
+#include "DecodeLimits.h"
 
 namespace pixet {
 
@@ -41,6 +42,14 @@ bool decodeForDisplay(const std::string &filePath, Format fmt, int targetLongEdg
         }
         return true;
     }
+
+    // The same gate the thumbnail path applies (see ThumbGenerator's generateThumb), for
+    // the same reason and against the same file: this is the preview pane's and the
+    // fullscreen viewer's own whole-file read, on their own threads, with nothing else
+    // bounding it. Clicking the file that took 50GB to thumbnail would otherwise do it
+    // again here. statFile has already run at the top of this function for the RAW cache
+    // key, so the check itself is free.
+    if (!decodelimits::fileSizeAllowed(sizeBytes)) return false;
 
     std::vector<uint8_t> fileBytes;
     if (!readWholeFile(filePath, fileBytes)) return false;

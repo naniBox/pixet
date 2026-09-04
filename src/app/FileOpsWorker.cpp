@@ -41,6 +41,12 @@ FileOpsWorker::FileOpsWorker(QObject *parent) : QObject(parent) {
 }
 
 FileOpsWorker::~FileOpsWorker() {
+    // Deliberately the plain unbounded wait, unlike the eight decode workers that now go
+    // through threadshutdown::stopWorker() - see ThreadShutdown.h. What this thread is busy
+    // with is a copy, a move or a delete of the user's actual files, and abandoning one of
+    // those halfway is not a cost worth paying to close a window a few seconds sooner. A
+    // large copy legitimately takes minutes; waiting for it is the correct behaviour, and
+    // unlike a runaway decode it is not consuming memory while it does.
     thread_.quit();
     thread_.wait();
 }

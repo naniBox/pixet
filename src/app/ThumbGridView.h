@@ -2,6 +2,7 @@
 
 #include <QAbstractScrollArea>
 #include <QBitArray>
+#include <QKeySequence>
 #include <QList>
 #include <QPair>
 #include <QPoint>
@@ -77,6 +78,14 @@ public:
     // next mouse move otherwise (a tooltip already on screen when the setting
     // changes would otherwise linger until the mouse next moves off the cell).
     void hideHoverTooltip();
+
+    // Re-reads the configurable folder-navigation bindings (see KeyBindings.h). The
+    // constructor does the initial load; MainWindow calls this again after the
+    // Preferences dialog writes new ones, alongside re-applying its own QAction
+    // shortcuts. Cached rather than read per key press because keyPressEvent runs for
+    // every key including auto-repeating arrows, and that would be four QSettings
+    // lookups an event to answer a question whose answer only changes in a dialog.
+    void reloadKeyBindings();
 
     // Square icons only - matches prefs::thumbnailIconSize(), the only way this is
     // ever actually driven. Recomputes the grid layout immediately, unlike QListView's own
@@ -209,6 +218,16 @@ private:
 
     QAbstractItemModel *model_ = nullptr;
     int iconSize_ = 150;
+
+    // The configured key for each folder-tree direction - see reloadKeyBindings(). The
+    // direction is the Qt::Key handed to navigateFolderRequested(), which is the
+    // *meaning* (parent/next/...) rather than the key actually pressed: they coincide
+    // only for the arrow-key defaults.
+    struct FolderNavBinding {
+        QKeySequence sequence;
+        Qt::Key direction;
+    };
+    QList<FolderNavBinding> folderNavBindings_;
 
     // selected_ is always sized == rowCount() - a bitset rather than e.g. QSet<int>
     // because paintCell() asks "is this row selected?" for every visible cell on

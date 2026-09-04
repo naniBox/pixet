@@ -13,8 +13,19 @@ namespace pixet {
 enum class ThumbTier {
     EmbeddedPreview, // decoded from an EXIF/container-embedded thumbnail - cheapest
     Decoded,         // decoded the main image (scaled-DCT where the format allows it)
-    Unsupported,     // no decoder for this format yet
-    Failed,          // decode was attempted and failed (corrupt/truncated file)
+    // No decoder for this format yet - and also the deliberate "this file is bigger than
+    // we are willing to decode" answer (see decode/DecodeLimits.h). Both are settled
+    // policy rather than an error: recording it stops every later scan from paying to
+    // rediscover the same thing, which is exactly what Unsupported already meant.
+    Unsupported,
+    Failed, // decode was attempted and failed (corrupt/truncated file)
+    // Nothing was attempted: the process is shutting down (see util/Shutdown.h). Unlike
+    // every tier above, this is *not* a verdict about the file, and callers must not
+    // record it as one - Indexer's flushBatch skips these rows so the file stays state=New
+    // and the next scan picks it up untouched. Kept distinct from Failed precisely because
+    // conflating them would permanently mark a folder's worth of perfectly good files as
+    // broken on the way out of the app.
+    Cancelled,
 };
 
 struct ThumbResult {

@@ -22,6 +22,8 @@ add_library(pixet_core STATIC
     util/PathUtil.cpp
     util/ProcessId.h
     util/ProcessId.cpp
+    util/Shutdown.h
+    util/Shutdown.cpp
     util/Profile.h
     util/Profile.cpp
     util/ThreadPool.h
@@ -48,6 +50,8 @@ add_library(pixet_core STATIC
 
     decode/RgbImage.h
     decode/RgbImage.cpp
+    decode/DecodeLimits.h
+    decode/DecodeLimits.cpp
 
     cache/RawCache.h
     cache/RawCache.cpp

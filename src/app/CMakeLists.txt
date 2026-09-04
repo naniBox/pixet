@@ -75,6 +75,9 @@ add_executable(pixet ${PIXET_APP_TYPE}
     WindowRegistry.h
     WindowRegistry.cpp
 
+    ThreadShutdown.h
+    ThreadShutdown.cpp
+
     FolderIndexer.h
     FolderIndexer.cpp
 

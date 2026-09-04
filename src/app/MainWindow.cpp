@@ -78,6 +78,7 @@
 #include "util/Profile.h"
 #include "util/FileMove.h"
 #include "util/PathUtil.h"
+#include "util/Shutdown.h"
 #include "version.h"
 
 namespace {
@@ -123,6 +124,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // own. Done per window rather than once in main() because it is idempotent and cheap,
     // and this way a window opened later can never be running against a stale budget.
     prefs::applyRawCacheSettings();
+    prefs::applyDecodeLimits();
 
     // --- left panel: folder tree + bookmarks (top), preview (bottom, user-resizable) ---
     // placeholder-text is Qt's semantic role for "muted but still legible" text, which is
@@ -1751,7 +1753,13 @@ void MainWindow::onPreferences() {
         stats.exec();
     });
     connect(&dlg, &PreferencesDialog::nukeDatabaseRequested, this, &MainWindow::nukeDatabase);
-    connect(&dlg, &PreferencesDialog::rawCacheSettingsChanged, this, []() { prefs::applyRawCacheSettings(); });
+    connect(&dlg, &PreferencesDialog::rawCacheSettingsChanged, this, []() {
+        prefs::applyRawCacheSettings();
+        // Applied on the same signal rather than one of its own: both are "OK was pressed,
+        // push the numbers into pixet_core", both are cheap, and splitting them would only
+        // create a second thing to forget to connect.
+        prefs::applyDecodeLimits();
+    });
     dlg.exec();
     // Cheap enough to always re-apply regardless of whether the keybindings editor
     // actually changed anything (Cancel discards its own edits before this point) -
@@ -1856,6 +1864,9 @@ void MainWindow::applyKeyBindingShortcuts() {
     addBookmarkAction_->setShortcut(keybindings::binding(keybindings::Action::AddBookmark));
     focusAddressBarAction_->setShortcut(keybindings::binding(keybindings::Action::FocusAddressBar));
     renameAction_->setShortcut(keybindings::binding(keybindings::Action::Rename));
+    // The grid caches its own folder-navigation bindings rather than reading them per key
+    // press - see ThumbGridView::reloadKeyBindings().
+    grid_->reloadKeyBindings();
 }
 
 QLineEdit *MainWindow::focusedLineEdit() const { return qobject_cast<QLineEdit *>(QApplication::focusWidget()); }
@@ -2740,6 +2751,25 @@ void MainWindow::changeEvent(QEvent *event) {
 
 void MainWindow::closeEvent(QCloseEvent *event) {
     saveWindowState();
+
+    // Tell pixet_core the application is going away, while that still buys something.
+    //
+    // The timing is the whole point. Windows are Qt::WA_DeleteOnClose, so ~MainWindow -
+    // and with it every worker destructor - runs from a deleteLater inside the event loop,
+    // which is *before* exec() returns and therefore before aboutToQuit ever fires. Setting
+    // the flag from aboutToQuit alone would set it after the thing it is meant to shorten
+    // had already begun. closeEvent runs first, so this is the last hook that is genuinely
+    // early. (main() also connects aboutToQuit, for the standalone viewer, which has no
+    // MainWindow at all.)
+    //
+    // Only when this is the last window, and only when closing it actually quits: with
+    // another window still open the app is not going anywhere, and cancelling its indexer
+    // out from under it would leave a live window with a half-scanned folder. count() still
+    // includes this window - the registry entry is removed in the destructor, not here.
+    if (WindowRegistry::instance().count() <= 1 && QApplication::quitOnLastWindowClosed()) {
+        pixet::requestShutdown();
+    }
+
     QMainWindow::closeEvent(event);
 }
 
