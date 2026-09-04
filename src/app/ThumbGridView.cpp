@@ -97,6 +97,7 @@ void ThumbGridView::setModel(QAbstractItemModel *model) {
     currentRow_ = -1;
     anchorRow_ = -1;
     pendingCollapseRow_ = -1;
+    resetSinceNotify_ = true;
     if (model_) {
         connect(model_, &QAbstractItemModel::modelReset, this, [this]() {
             selected_.clear();
@@ -105,6 +106,13 @@ void ThumbGridView::setModel(QAbstractItemModel *model) {
             anchorRow_ = -1;
             pressRow_ = -1;
             pendingCollapseRow_ = -1;
+            // Deliberately silent: the caller (MainWindow::reloadGridPreservingSelection)
+            // restores the selection by file id immediately afterwards, and announcing an
+            // empty selection in between would blank the preview pane for the length of a
+            // decode on every folder refresh. resetSinceNotify_ is how that restore still
+            // gets announced even when it lands on the same row number - see
+            // applySelectionResult().
+            resetSinceNotify_ = true;
             relayout();
         });
         connect(model_, &QAbstractItemModel::dataChanged, this, [this](const QModelIndex &, const QModelIndex &) {
@@ -297,7 +305,13 @@ void ThumbGridView::selectRange(int row, bool unionMode) {
 void ThumbGridView::applySelectionResult(int oldCurrentRow) {
     viewport()->update();
     emit selectionChanged();
-    if (currentRow_ != oldCurrentRow) emit currentRowChanged(currentRow_);
+    // The reset case is not the same question as "did the number change". After one,
+    // oldCurrentRow is the -1 the reset itself stored, so a restore that also lands on
+    // -1 - every file in the selection moved or vanished from the folder - compares
+    // equal and would say nothing, leaving listeners describing a file that is no longer
+    // there. The number matching is exactly when it means least.
+    if (currentRow_ != oldCurrentRow || resetSinceNotify_) emit currentRowChanged(currentRow_);
+    resetSinceNotify_ = false;
 }
 
 void ThumbGridView::setCurrentRow(int row) {

@@ -5,6 +5,71 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-09-04 — desktop — A moved file left its preview behind, because a row number is not an identity
+
+Select an image, look at it in the preview pane, then move the file out of the folder from
+Explorer. The grid drops to the right count and the per-file status fields empty out, but
+the preview pane keeps showing the image that is no longer there, and the path bar keeps
+naming it.
+
+**The fault is in the view's notion of "did the selection change", not in the file ops.**
+An external move fires the folder watcher, which reindexes and lands in
+`onFilesListed()` → `reloadGridPreservingSelection()`. That calls
+`ThumbGridModel::setDirectory()`, a full model reset, and `ThumbGridView`'s reset handler
+silently forces `currentRow_` to -1 without emitting anything. The restore immediately
+after, `setSelection(rows, rowForFileId(currentId))`, captures `oldCurrent` — already -1 —
+looks the moved file up, doesn't find it, and computes -1 again. `applySelectionResult()`
+then asks `currentRow_ != oldCurrentRow`, gets -1 vs -1, and stays quiet. MainWindow's
+`onGridSelectionChanged()` never runs, so nothing clears the preview or the path bar.
+
+The row number matching is exactly when it means least. Across a reset it isn't an identity
+at all — every row now refers to a different file, or to none — so the one comparison the
+code trusts is the one made between two values the reset itself wrote.
+
+Fixed with a `resetSinceNotify_` flag: the reset sets it, `applySelectionResult()` treats it
+as forcing the emit, and clears it. Deliberately not by making the reset handler emit
+directly, which was the first thing I tried in my head and would have blanked the preview
+for the length of a decode on *every* folder refresh — the reset and the restore are two
+halves of one operation and only the end of it should be announced. Worth noting the fix
+adds signals in exactly one case: when the restore lands on -1. Any restore that finds a
+real row already differed from -1 and already emitted, so there is no new work on the
+common path, and no redundant decode.
+
+**Why deleting a file never had this bug**, which is the detail that located it. Delete goes
+through `removeFileById()` → `rowsRemoved` → `onRowsRemoved()`, which has a genuine
+pre-removal `oldCurrent` to compare against and correctly emits. Only the reset path loses
+the information. Two routes to "the file is gone", one of them notifying — that asymmetry
+was the tell.
+
+**Verified by reproducing it, not by reasoning about it.** Built the fix, then stashed it
+and rebuilt to get a binary of the old behaviour, and drove both the same way: a scratch
+folder of three generated PNGs, `pixet <folder>`, one Down arrow (the grid takes focus at
+startup, so this needs no mouse), screenshot, `Move-Item` the previewed file away,
+screenshot. Old binary: grid correctly shows 2 items, status bar aggregate updates, and the
+red preview is still sitting there with the path bar still reading `...\a_red.png`. New
+binary, same script: "No preview", path bar back to the folder. The before-shots are
+identical, so the normal path is untouched. The stale path bar wasn't in the original
+report and came free with the fix — same missing signal.
+
+Smaller things that fell out:
+
+- **A correction to the previous entry: the test suite is 128 tests on Windows, not the
+  120 I recorded there.** 133 `PIXET_TEST` registrations minus 5 that are inside
+  `#ifndef _WIN32` / `#ifdef __APPLE__`. The 120 came from a `pixet_tests.exe` that a build
+  hadn't refreshed, and I read the number off it without asking why it was what it was.
+  A test count that changes on its own is a fact about the build, not a detail to skim.
+  Left the old entry as written, per this file's own rule about not rewriting history.
+- No regression test accompanies this. The suite links `pixet_core` only and has no Qt, and
+  `ThumbGridView` is app-layer Qt — the signal-level assertion this wants (reset, restore
+  onto no selection, expect `currentRowChanged`) needs a Qt-linked test target that doesn't
+  exist yet. Worth adding, as its own piece of work rather than smuggled in here.
+- The screenshot harness (launch, focus, key, capture window rect, mutate the folder
+  underneath, capture again) is throwaway, but it's the first time this project has driven
+  the real UI end to end and read the result back. If UI regressions keep turning up, that
+  is the shape the tooling should take.
+
+---
+
 ## 2026-09-04 — desktop — Bookmarks reorder by drag, and the sort column that never was unique
 
 Bookmarks are drag-reorderable. The new order is written straight back to `bookmarks.sort`,
