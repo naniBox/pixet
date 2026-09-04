@@ -240,6 +240,17 @@ private:
     int currentRow_ = -1; // the lead row - see the currentRow() doc comment above
     int anchorRow_ = -1;  // shift-click/shift-arrow range origin; -1 when nothing's selected
 
+    // Set when the model resets, cleared by the next applySelectionResult().
+    //
+    // A reset forces currentRow_ to -1 without emitting anything (there is no
+    // meaningful row to report yet, and the caller is about to restore a selection),
+    // which makes the row number a useless identity across one: the caller's
+    // "did it move?" comparison ends up between two post-reset values. It reads as
+    // unchanged even though every row now refers to a different file, or to none.
+    // applySelectionResult() consults this so the restore after a reset always
+    // notifies, whatever the numbers happen to be.
+    bool resetSinceNotify_ = false;
+
     // mousePressEvent/mouseReleaseEvent state for the deferred-collapse gesture: a
     // plain click on an *already*-selected row doesn't collapse the selection
     // immediately (see mousePressEvent) - only on release, and only if nothing else
@@ -352,8 +363,9 @@ private:
     // (plain Shift+click). Falls back to replaceSelectionWith(row) if there's no
     // anchor yet.
     void selectRange(int row, bool unionMode);
-    // Repaints, and emits selectionChanged() plus (if it moved) currentRowChanged() -
-    // called once at the end of every gesture/mutator above.
+    // Repaints, and emits selectionChanged() plus currentRowChanged() - the latter if
+    // the lead moved, or if a model reset made the comparison meaningless (see
+    // resetSinceNotify_). Called once at the end of every gesture/mutator above.
     void applySelectionResult(int oldCurrentRow);
 
     // ThumbGridModel can insert/remove rows mid-lifetime now (a file op landing in,
