@@ -183,6 +183,16 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     tree_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(tree_, &QWidget::customContextMenuRequested, this, &MainWindow::onTreeContextMenu);
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onTreeSelectionChanged);
+    // The tree is a drop target as well as a navigator: thumbnails dragged out of the
+    // grid (or files dragged in from Explorer/Finder) can be dropped onto any folder
+    // row to move them there. The view deliberately doesn't know these rows are
+    // directories on disk - see FolderTreeView::filesDroppedOnFolder.
+    connect(tree_, &FolderTreeView::filesDroppedOnFolder, this, &MainWindow::onFilesDroppedOnTree);
+    // The tree declines some releases (mid-scroll, or over a row that is not a folder).
+    // With the drag accepted right up to the release, this message is the only thing that
+    // distinguishes 'declined' from 'the app lost my drop' - see FolderTreeView::dropRefused.
+    connect(tree_, &FolderTreeView::dropRefused, this,
+            [this](const QString &reason) { statusBar()->showMessage(reason, 4000); });
     connect(fsModel_, &QFileSystemModel::directoryLoaded, this, &MainWindow::onTreeDirectoryLoaded);
 
     // Titled to match bookmarksPanel. A folder tree is self-explanatory on its own, but
@@ -895,6 +905,13 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
 
 void MainWindow::repositionTreeToTop(const QModelIndex &idx) {
     if (!idx.isValid()) return;
+    // Never while a drag is hovering the tree. This function exists to settle the view
+    // after a navigation, and every one of its callers can still fire seconds later
+    // (onTreeDirectoryLoaded, plus navigateTo()'s fixed-delay retries) - by which time
+    // the user may be dragging photos across the very rows it wants to move. Scrolling
+    // then either fights the drag's own edge scroll or, worse, slides a different folder
+    // under a drop that is about to land. See FolderTreeView::dragInProgress().
+    if (tree_->dragInProgress()) return;
 
     // If the row is already visible - or within a couple of rows of the viewport -
     // leave the scroll position alone. Jumping a folder that's already in view (say,
@@ -1179,6 +1196,75 @@ void MainWindow::onFilesDroppedOnGrid(QStringList localPaths, bool move) {
     emit requestFileOpPreflight(req);
 }
 
+void MainWindow::onFilesDroppedOnTree(const QModelIndex &target, QStringList localPaths, bool move) {
+    if (!target.isValid() || localPaths.isEmpty()) return;
+
+    // The one thing the view couldn't do for itself (it doesn't know it's showing a
+    // QFileSystemModel): index -> real directory path, in the exact form pixet_core
+    // stores, since this becomes Plan::dstDirPath and is string-compared against
+    // dirs.path from there on.
+    const QString dstDir = normalizeForDb(fsModel_->filePath(target));
+    if (dstDir.isEmpty()) return;
+
+    FileOpsWorker::Request req;
+    req.id = ++fileOpCounter_;
+    req.move = move;
+    req.dstDirPath = dstDir;
+
+    int alreadyThere = 0;
+    for (const QString &path : localPaths) {
+        QString normalized = normalizeForDb(path);
+        // A file dropped onto the folder it already lives in is a no-op that the file
+        // ops would faithfully execute as one (see executeOneItem()'s same-(dir,name)
+        // early return) and then report as "0 item(s) added". Dropping slightly wide of
+        // the intended row onto the current folder is an easy miss to make, so say
+        // something true about it here instead of reporting a move that didn't happen.
+        if (normalizeForDb(QFileInfo(normalized).absolutePath()) == dstDir) {
+            alreadyThere++;
+            continue;
+        }
+        req.items << makeFileOpItem(normalized);
+    }
+
+    if (req.items.isEmpty()) {
+        if (alreadyThere > 0) {
+            statusBar()->showMessage(
+                QStringLiteral("Already in \"%1\"").arg(QFileInfo(dstDir).fileName()), 4000);
+        }
+        return;
+    }
+
+    emit requestFileOpPreflight(req);
+}
+
+FileOpsWorker::Item MainWindow::makeFileOpItem(const QString &srcPath) {
+    FileOpsWorker::Item item;
+    item.srcPath = srcPath;
+
+    // If this happens to be a file pixet's own index already knows about (e.g. Cut in
+    // one pixet-browsed folder, Paste in another; or a thumbnail dragged from the grid
+    // onto a folder in the tree), populate srcFileId/srcDirId so the smart move (see
+    // fileops::execute()) can preserve its thumbnail rather than re-thumbnailing from
+    // scratch - the same lookup navigateTo() already does to turn a filesystem path
+    // into a DB row. Both stay 0 for a file pixet has never indexed, which the file ops
+    // handle as a plain insert at the destination.
+    QString normalized = normalizeForDb(srcPath);
+    QFileInfo info(normalized);
+    auto dirSel = db_->prepare("SELECT id FROM dirs WHERE path=?");
+    dirSel.bind(1, normalizeForDb(info.absolutePath()).toStdString());
+    if (dirSel.step()) {
+        int64_t dirId = dirSel.columnInt64(0);
+        auto fileSel = db_->prepare("SELECT id FROM files WHERE dir_id=? AND name=?");
+        fileSel.bind(1, dirId);
+        fileSel.bind(2, info.fileName().toStdString());
+        if (fileSel.step()) {
+            item.srcFileId = fileSel.columnInt64(0);
+            item.srcDirId = dirId;
+        }
+    }
+    return item;
+}
+
 void MainWindow::onFileOpPreflightReady(FileOpsWorker::Request req, QStringList rejected) {
     if (!rejected.isEmpty()) {
         statusBar()->showMessage(
@@ -1266,11 +1352,16 @@ void MainWindow::onFileOpFinished(quint64, QString dstDirPath, QList<qint64> src
         clipops::clearAfterCutPaste();
     }
 
-    if (dstDirPath == currentPath_) {
-        // Safe even for ids that aren't currently loaded (a no-op) - see the
-        // signal's doc comment on FileOpsWorker::finished.
-        for (qint64 id : srcFileIds) gridModel_->removeFileById(id);
+    // Unconditional, and outside the destination check below on purpose: these are rows
+    // that *left* wherever they used to live, which for a drop onto the folder tree is a
+    // different folder than the one that received them - the open folder is the source,
+    // not the destination, and this is the only thing that takes the moved thumbnails off
+    // screen. Safe for ids that aren't currently loaded (a no-op) - see the signal's doc
+    // comment on FileOpsWorker::finished - and it is also what clears the preview of a
+    // file that just moved away, via rowsRemoved -> ThumbGridView::onRowsRemoved.
+    for (qint64 id : srcFileIds) gridModel_->removeFileById(id);
 
+    if (dstDirPath == currentPath_) {
         // Two passes, deliberately not one: insertOrUpdateFileByName()'s return
         // value is only that row's index *at the moment of that one insertion* -
         // inserting "a.jpg" after "b.jpg" shifts "b.jpg" up by one, silently
@@ -1304,7 +1395,15 @@ void MainWindow::onFileOpFinished(quint64, QString dstDirPath, QList<qint64> src
                                                   : errors.mid(0, 5).join(QStringLiteral("\n")) +
                                                         QStringLiteral("\n...and %1 more").arg(errors.size() - 5));
     } else if (succeeded > 0) {
-        statusBar()->showMessage(QStringLiteral("%1 item(s) added").arg(succeeded), 4000);
+        // "added" is only true of a batch that landed in the folder on screen. One that
+        // went somewhere else - a drop onto the folder tree - has to name where it went,
+        // because the only other feedback the user gets for it is thumbnails vanishing.
+        statusBar()->showMessage(dstDirPath == currentPath_
+                                      ? QStringLiteral("%1 item(s) added").arg(succeeded)
+                                      : QStringLiteral("%1 item(s) sent to \"%2\"")
+                                            .arg(succeeded)
+                                            .arg(QFileInfo(dstDirPath).fileName()),
+                                  4000);
     }
 }
 
@@ -1364,8 +1463,17 @@ void MainWindow::onDragOutRequested() {
     // copy-vs-move outcome remains governed by the OS's own conventions at the drop
     // side (same-volume vs. cross-volume, Ctrl/Shift overrides). markPreferMove()
     // and Qt::MoveAction below are hints a target is free to ignore.
+    //
+    // Unless the drop landed back inside pixet, on a folder in the tree: that runs
+    // onFilesDroppedOnTree() *during* exec() (a drop is delivered synchronously, from
+    // inside the nested drag loop) and queues a FileOpsWorker request, which is what the
+    // counter comparison below detects. The rescan must not also run in that case - it
+    // would race the very operation it means to reflect, leaving the indexer's by-name
+    // diff free to delete rows fileops is midway through updating, costing at best the
+    // preserved thumbnail. Those rows leave the grid through onFileOpFinished() instead.
+    quint64 opsBeforeDrag = fileOpCounter_;
     Qt::DropAction result = drag->exec(Qt::CopyAction | Qt::MoveAction, Qt::MoveAction);
-    if (result == Qt::MoveAction) {
+    if (result == Qt::MoveAction && fileOpCounter_ == opsBeforeDrag) {
         // Explorer/Finder already performed the move; pixet only has to notice.
         // Reusing the already-tested by-name diff (a forced non-recursive rescan)
         // is both correct and simpler than independently guessing which of these
@@ -1928,32 +2036,7 @@ void MainWindow::onEditPaste() {
     req.id = ++fileOpCounter_;
     req.move = files.isCut;
     req.dstDirPath = currentPath_;
-    for (const QString &path : files.paths) {
-        FileOpsWorker::Item item;
-        item.srcPath = path;
-
-        // If this happens to be a file pixet's own index already knows about (e.g.
-        // Cut in one pixet-browsed folder, Paste in another), populate srcFileId/
-        // srcDirId so the smart move (see fileops::execute()) can preserve its
-        // thumbnail rather than re-thumbnailing from scratch - the same lookup
-        // navigateTo() already does to turn a filesystem path into a DB row.
-        QString normalized = normalizeForDb(path);
-        QFileInfo info(normalized);
-        auto dirSel = db_->prepare("SELECT id FROM dirs WHERE path=?");
-        dirSel.bind(1, normalizeForDb(info.absolutePath()).toStdString());
-        if (dirSel.step()) {
-            int64_t dirId = dirSel.columnInt64(0);
-            auto fileSel = db_->prepare("SELECT id FROM files WHERE dir_id=? AND name=?");
-            fileSel.bind(1, dirId);
-            fileSel.bind(2, info.fileName().toStdString());
-            if (fileSel.step()) {
-                item.srcFileId = fileSel.columnInt64(0);
-                item.srcDirId = dirId;
-            }
-        }
-
-        req.items << item;
-    }
+    for (const QString &path : files.paths) req.items << makeFileOpItem(path);
 
     pendingCutClipboardClear_ = files.isCut;
     emit requestFileOpPreflight(req);

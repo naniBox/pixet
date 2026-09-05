@@ -23,6 +23,7 @@
 #include <QUrl>
 #include <QWheelEvent>
 
+#include "DropPolicy.h"
 #include "HoverInfoWorker.h"
 #include "KeyBindings.h"
 #include "PathQ.h"
@@ -951,41 +952,24 @@ QString ThumbGridView::cachedInfoText(int row) const {
     return lines.join(QStringLiteral("\n"));
 }
 
-namespace {
-bool hasLocalFileUrl(const QMimeData *mime) {
-    if (!mime->hasUrls()) return false;
-    for (const QUrl &url : mime->urls()) {
-        if (url.isLocalFile()) return true;
-    }
-    return false;
-}
-
-// Windows' own OS-level default for a plain cross-application drag is Copy - but
-// dragging photos into a library should move them in by default (leaving a
-// duplicate behind is the surprising outcome here, not the safe one), so the
-// OS-proposed action is deliberately overridden rather than accepted as-is. Ctrl
-// switches to Copy, matching Explorer's own override key for the same drag.
-bool wantsCopy(const QDropEvent *event) { return event->keyboardModifiers() & Qt::ControlModifier; }
-} // namespace
-
 void ThumbGridView::dragEnterEvent(QDragEnterEvent *event) {
     // A drop of pixet's own drag-out (see MainWindow's drag-out handling) landing
     // back on this same view must be a no-op, not a self-import.
     if (event->source() == this) return;
-    if (!hasLocalFileUrl(event->mimeData())) return;
+    if (!droppolicy::hasLocalFileUrl(event->mimeData())) return;
     dragActive_ = true;
-    dragCopyMode_ = wantsCopy(event);
+    dragCopyMode_ = droppolicy::wantsCopy(event->modifiers());
     event->setDropAction(dragCopyMode_ ? Qt::CopyAction : Qt::MoveAction);
     event->accept();
     viewport()->update();
 }
 
 void ThumbGridView::dragMoveEvent(QDragMoveEvent *event) {
-    if (event->source() == this || !hasLocalFileUrl(event->mimeData())) return;
+    if (event->source() == this || !droppolicy::hasLocalFileUrl(event->mimeData())) return;
     // Modifiers can change mid-drag (Ctrl pressed/released while still hovering) -
     // re-evaluate every move, not just on entry, and repaint if the mode actually
     // flipped so drawDropFeedback()'s border color stays live.
-    bool copyMode = wantsCopy(event);
+    bool copyMode = droppolicy::wantsCopy(event->modifiers());
     if (copyMode != dragCopyMode_) {
         dragCopyMode_ = copyMode;
         viewport()->update();
@@ -1003,7 +987,7 @@ void ThumbGridView::dropEvent(QDropEvent *event) {
     dragActive_ = false;
     viewport()->update();
 
-    if (event->source() == this || !hasLocalFileUrl(event->mimeData())) return;
+    if (event->source() == this || !droppolicy::hasLocalFileUrl(event->mimeData())) return;
 
     QStringList paths;
     for (const QUrl &url : event->mimeData()->urls()) {
@@ -1011,7 +995,7 @@ void ThumbGridView::dropEvent(QDropEvent *event) {
     }
     if (paths.isEmpty()) return;
 
-    bool copyMode = wantsCopy(event);
+    bool copyMode = droppolicy::wantsCopy(event->modifiers());
     event->setDropAction(copyMode ? Qt::CopyAction : Qt::MoveAction);
     event->accept();
     emit filesDropped(paths, /*move=*/!copyMode);

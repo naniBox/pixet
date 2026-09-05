@@ -5,6 +5,421 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-09-05 — desktop — Refusing the drag was the wrong lever: on Windows it takes the view out of the drop for the rest of the drag
+
+Reported as: after the scroll stops and the pointer is back in the middle of the pane, the
+tree won't take a drop any more; happens after leaving the pane and coming back. Six
+scripted reproductions of that sequence all recovered fine, which was itself the clue - the
+failure isn't in the state machine, it's in *when* the state can be told to the OS.
+
+**What is actually going on.** A drop target on Windows answers `IDropTarget::DragOver` with
+an effect, and `DROPEFFECT_NONE` - which is what `QDropEvent::ignore()` produces - is
+sticky in the only way that matters: nothing changes that answer except the *next drag event
+this widget is handed*. Not a timer, not internal state, not the cursor moving. So the
+sequence is: hold at the edge, this view refuses (correctly, it is scrolling), pointer comes
+back over an ordinary row - and the next drag event is queued behind the tree listing the
+directories the scroll just revealed. Measured at over 600ms in one run. In that window
+there is no highlight, the release delivers no drop at all (DoDragDrop cancels instead of
+calling `Drop`), and the file silently stays put. Caught it on a screenshot in the end: pane
+clean, no wash, no highlight, and the release did nothing.
+
+That also retires my previous entry's optimism about the tick being able to keep the state
+honest. It can keep the *wash* honest. It cannot un-refuse a drag.
+
+**So the refusal moved from the drag to the drop.** `dragMoveEvent` now accepts for as long
+as the drag is over the pane at all - mid-scroll included, and over the scrollbar strip where
+there is no row - and `dropEvent` is where a release is declined, decided from the drop's own
+coordinates rather than from a flag that is only as fresh as the last event. The guarantee
+the feature exists for is unchanged and is now enforced in exactly one place: a release while
+the pointer is in a scrolling band drops nothing, anywhere.
+
+**The cost is the OS no-drop cursor during a scroll**, which was doing real work - it was
+half of "the change of icon is enough", the reason the text label went. Losing it is not
+free, and the alternative was drops that vanish, which is worse than a cursor that doesn't
+warn. The grey wash carries the signal alone now, and because a declined release would
+otherwise be completely silent, both refusals say so in the status bar: "Not dropped - the
+folder tree was scrolling", and "Not dropped - no folder under the cursor" for the strip and
+the empty space past the last row. If the cursor turns out to be missed more than the lost
+drops were, the way back is to refuse the drag again *only* while the tree is genuinely
+moving - accepting the moment it stops - which shortens the lockout without removing it.
+
+Verified on the exact case that failed: hold at the very bottom of the pane (in the scrollbar
+strip), let it scroll, move back to the middle, release immediately. Five runs, five drops
+landed. Before the change the same script left the file where it started with nothing on
+screen to say why.
+
+**Not verified, and worth saying so:** the counterpart check - releasing *while* the tree is
+scrolling still drops nothing - could not be re-run after this change. The machine's owner is
+using it, and Windows' focus-stealing prevention refuses to give a background script the
+foreground, which the input harness now treats as a hard stop rather than typing into
+whatever window happens to be in front. The path is four lines and reads plainly, but it is
+argued, not measured, and it is the safety property, so it wants a real run.
+
+**The harness drove the wrong window before that guard existed.** Two probes went to the
+owner's own pixet window - same binary, first process in the list - and dragged one of their
+photos across their folder tree. Both were no-drop runs, so nothing moved (checked: no file
+in Downloads created or modified, item count 60 before and after), but their selection and
+preview changed under them. `Focus-Pixet` now matches the scratch window by title, refuses to
+proceed if it can't have the foreground, and never falls back to "whatever is focused".
+
+Two smaller things this dug up:
+
+- **A second build directory, `build/debug2`.** Their running instance holds
+  `build/debug/src/app/pixet.exe`, so relinking it fails with LNK1168 while they have pixet
+  open. Rather than close their window, everything here was built and run out of a separate
+  tree. `build/debug` still needs a rebuild once their instance is closed.
+- **Instrumentation earns its keep, again.** Three rounds of it in this feature now: the
+  first found the pane/viewport mismatch, the second the run-start gate, this one the
+  DROPEFFECT_NONE lockout. Every one of them was something I had already reasoned my way past
+  in the wrong direction.
+
+128/128 tests pass.
+
+---
+
+## 2026-09-04 — desktop — Edge scroll only fired sometimes, and the reason was three different things at once
+
+Reported as: dragging to the edge often doesn't start the scroll, it works when coming in
+from outside the pane but not when moving down from the middle, and it isn't consistent.
+All of that is one symptom of three separate faults, and I only found them by instrumenting
+rather than reasoning - two of the three are things I would not have guessed and did guess
+wrong first.
+
+**Measure, don't theorise.** A probe that walked a drag down the bottom of the pane -
+y=455, 462, 468, 471, 474, 478, 482 - and recorded whether the wash appeared gave
+`SCROLL, SCROLL, no, SCROLL, no, no, no`. A failure sandwiched between two successes is not
+a boundary being off by a few pixels, so I put a logging line in `updateEdgeScroll()` and
+read what the code actually saw. Every conclusion below came from that log.
+
+**Fault one: the bottom of the pane is not the bottom of the viewport.** The band was
+measured against `viewport()->rect()`, but the widget a person aims at includes the
+horizontal scrollbar strip and the frame under it - about a dozen pixels that looked like
+the edge of the folder pane and were not part of it. Hence "works coming in from outside":
+that path crosses the viewport on the way in and starts the scroll before reaching the
+strip, while coming down from the middle stops *in* the strip and nothing happens. The band
+is now measured against `paneRect()`, the whole widget in viewport coordinates.
+
+**Fault two: no drag events are delivered there at all.** The log had no entries for those
+positions - not wrong values, no calls. Qt hands the drag to the scrollbar, which doesn't
+accept drops, and tells this view the drag *left*. Which it also does merely for crossing
+from the viewport onto the view's own scrollbar. So `dragLeaveEvent` cannot mean "the drag
+is gone" here; it now only drops the row highlight, and the tick decides when the drag is
+really over: pointer outside `paneRect()`, or the left mouse button no longer down.
+`QGuiApplication::mouseButtons()` is live inside a drag - measured, not assumed, since the
+drag runs its own modal loop - and it is what catches a drag that ended somewhere this view
+never heard about.
+
+**Fault three, and this one was mine from the previous pass: the run started in the tick.**
+I had moved activation there to get retries. But Qt's timers are serviced by whatever pumps
+messages, and inside the OLE drag loop our own drags run in, that is irregular: measured, a
+hold that ticked eleven times in 700ms in one place ticked once in another. Activation
+became a coin flip - which is exactly the shape of the report, arriving from a completely
+different direction than the two real bugs. Starting the run happens in `updateEdgeScroll()`
+again, so the drag event that enters a band activates immediately, and the tick keeps its
+retry role for the case that needed it (no room to scroll *yet*, because the model is still
+listing).
+
+Net effect: all seven probe positions scroll, including the scrollbar strip and the frame.
+The full gesture still behaves - hold at the very bottom of the pane, scroll, move off the
+edge, the wash clears, a row lights up, release puts the file there (`Box05`, this time).
+Release while scrolling still drops nothing; the top band still scrolls; a 2.8s hold is
+still continuously washed with no blink.
+
+**What is left, honestly.** With the pointer teleported out of the band and then held
+perfectly still, the wash can take up to ~400ms to clear (measured once in five rounds;
+usually under 60ms). That residue is the same starvation as fault three: no mouse movement
+means no drag events, and the timer is at the mercy of the drag loop. A hand moving away
+generates a stream of events and clears it on the first one - verified separately by walking
+the pointer out in steps, where every sample outside the band is clean. Worth knowing about
+rather than papering over: this whole feature runs inside someone else's event loop.
+
+**And the harness bit me twice more.** Two "scroll then drop" runs dropped the test file
+into `Temp\kxvhuxy3.v2k` and `Temp\l5pkoirf.25z`, because the tree keeps its scroll position
+between runs and I aimed at a row number instead of a row. Both restored. The lesson is the
+same one the feature is about: after a scroll, a position is not a destination. Test runs
+that drop now start from a freshly launched window, where the tree position is known.
+
+128/128 tests pass.
+
+---
+
+## 2026-09-04 — desktop — The edge-scroll wash outlived the state it described, twice, for two different reasons
+
+Reported as "it shows the overlay, but when I move away from the bottom it doesn't remove
+it - quite flaky". Both halves of that were true, and they turned out to be two separate
+bugs with the same shape: the wash saying "this pane will not take a drop" at a moment when
+that was no longer so. Also in this pass: acceleration with a ceiling, and the text label is
+gone.
+
+**Bug one: the state only recomputed when a drag event arrived, and those are not a clock.**
+Everything was driven from `dragMoveEvent`. But the scroll reveals rows, QFileSystemModel
+goes off to list the directories they name, and the event that should have ended the wash
+arrives whenever the UI thread gets back to it. Reproduced by leaving the band in one jump
+and sampling at 60/150/400/1000ms across four rounds: three cleared inside 60ms, the third
+was still washed at 150ms and only clean by 400ms — which is precisely the "flaky" in the
+report. And a drag held perfectly still after leaving the band delivers no event at all, so
+the wash would have stayed until something else happened to move.
+
+The fix is that the tick, not the event stream, is the authority: it re-reads
+`QCursor::pos()` itself, so the state is never more than one tick stale no matter what the
+event stream is doing. That made the tick interval a UI-latency number rather than a speed
+number — it is now a fixed 50ms, and *speed* is what varies. Re-measured, six rounds: worst
+case one tick (still washed at 60ms, clean at 150ms), which is the design bound rather than
+an open-ended wait.
+
+**Bug two, found while measuring the ramp: the wash blinked off mid-hold.** Sampling a
+three-second hold at the edge showed clean at 400ms and washed again at 1200ms. The cause
+was `canEdgeScroll()` being asked the wrong question. It gates whether a scroll *starts*,
+which is right — a tree too short to scroll must not have a dead strip at each end where
+drops silently do nothing — but it was also gating whether a scroll *continues*, and while
+QFileSystemModel streams rows in, the tree recomputes its scroll range; for a moment the
+value sits at the maximum. That read as "we're done here", cleared the wash, and handed a
+drop back to whatever row was under a cursor parked at the very bottom edge of the pane. A
+misdrop offered by a blink — the exact failure this feature exists to prevent, reintroduced
+by the guard meant to make it kinder.
+
+So a run now ends when the pointer leaves the band, and only then. Out of range means the
+run stays up and nothing moves; if rows arrive later, it resumes. Re-measured: seven samples
+across 2.8s, continuously washed, with the pauses being the model listing rather than the
+state flickering.
+
+That also settles what the wash *means*: not "something is moving" but "this pane is not
+taking a drop". Which is why it can stay up over a scroll that has run out of range without
+lying, and why it needed no words on it — see below.
+
+**Acceleration, as asked, with a ceiling.** 4 rows/s at the moment the band is entered,
+ramping linearly to 24 rows/s over 1.2s, then flat. The slow start is what makes clipping
+the edge on the way to a row near the bottom cost a row or two instead of a screenful; the
+ceiling is what stops a long hold turning into a blur nobody can aim at. Leaving the band
+resets the ramp, so the speed is always a statement about the current hold rather than
+accumulated history. Time-based rather than keyed to how deep into the band the pointer is:
+with a band one row tall, "depth" is a couple of pixels of hand tremor, which would read as
+the speed wobbling on its own, while how long you have held there is something the user is
+actually choosing. Fractional rows carry between ticks, because at 50ms ticks the start rate
+is a fifth of a row per tick and an integer step could only express "one row per tick" —
+four times too fast, and no ramp at all at the bottom end. Measured: ~1.6 rows in the first
+400ms, ~20 rows over the following two seconds.
+
+**The label is gone.** It read `Scrolling - move off the edge to drop` and the point was
+fair — the OS already draws its no-drop cursor for as long as this view refuses, so the
+badge and the wash together carry it, and a sentence of prose in the middle of a moving tree
+was one channel too many. The wash keeps its border.
+
+Verified end to end afterwards, since all of this is on the path a real drop takes: hold at
+the edge, scroll, move off, the wash clears and `Box26` lights up, release, the file is in
+`Box26`. 128/128 tests pass.
+
+---
+
+## 2026-09-04 — desktop — The folder tree scrolls at the edges during a drag, and refuses to drop while it does
+
+Second half of the drag-to-a-folder feature. Holding a drag near the top or bottom edge of
+the folder pane now scrolls it, so the destination doesn't have to be on screen when the
+drag starts — and while that scroll is running the tree **refuses the drop entirely**,
+greying itself out instead of highlighting a row.
+
+**The refusal is the feature, not a caveat on it.** Releasing over a list that is moving
+under the cursor is how a photo ends up in a folder nobody can name afterwards: the row you
+aimed at is a row and a half away by the time the button comes up, and unlike a mis-click
+there is nothing on screen afterwards saying where it went. Auto-scroll without the refusal
+would have made the tree a faster way to lose a file. So: move off the edge, the scroll
+stops, the row lights up, and the drop lands where it was aimed.
+
+The paint state has to carry that, because "nothing is highlighted" is too quiet a way to
+say "this pane will not accept what you are holding". A flat desaturated wash over the whole
+pane — pointedly *not* the accent or amber the row highlight uses, since anything in that
+family would say the opposite of what is true — plus a centred label, `Scrolling - move off
+the edge to drop`, which is the part that says what to do about it. The first wash I wrote
+was RGB(45,45,45) → (67,70,73) against the app's near-black tree, which measured as a
+change and read as a rendering artifact; it is now ~(100,105,110) with a border, which reads
+as a pane that has been greyed out. Tasteful was the wrong target for this one.
+
+**Qt's own auto-scroll is reachable, and this corrects yesterday's entry**, which said it
+wasn't. `startAutoScroll()`/`stopAutoScroll()`/`doAutoScroll()` are protected non-virtual
+members of QAbstractItemView, callable from a subclass, and I said otherwise on the strength
+of not having looked. Not using it is still right, for a different and better reason:
+`doAutoScroll()` climbs `autoScrollCount` on every 50ms tick towards a whole `pageStep` per
+tick, with no way to ask for a constant rate. Accelerating to a page at a time is precisely
+the runaway this exists to be the opposite of, and it has no notion of a view that wants to
+stop accepting drops while it moves. So: own `QTimer`, one row per 150ms tick.
+
+- **A timer rather than work in `dragMoveEvent()`**, because a drag held still at the edge
+  delivers no further events at all — the scroll has to continue on its own or the gesture
+  would only work while the mouse is wiggling. (Which is also why the test harness has to
+  jiggle by a pixel to keep drag events coming.)
+- **One row per tick, via `singleStep()`**, which is 1 in the `ScrollPerItem` mode QTreeView
+  defaults to and a row's height in pixels if anything ever switches this view to
+  `ScrollPerPixel` — so the rate is "rows per second" in both, and the constant doesn't
+  quietly change meaning at a different font size. Measured ~3.5 rows/s in practice against
+  ~6.7 nominal, because each step makes QFileSystemModel fetch the directories the new rows
+  describe, on the same thread as the timer. Slower than designed, in the direction the
+  feature wants.
+- **Running out of scroll ends the state**, rather than refusing for as long as the pointer
+  sits in the band. Otherwise a tree too short to scroll would have a permanently dead strip
+  at each end — a folder in the last row would be undroppable forever — and nothing is
+  moving under the cursor at that point anyway, which was the only reason to refuse. The
+  tick checks this itself rather than waiting for a drag event, since a drag held still
+  sends none and the wash would otherwise sit over a tree that had already stopped.
+- **The tick deliberately does not re-derive the highlight** when it stops. Until the next
+  drag event this view has told the OS it refuses the drop; painting a row the drop wouldn't
+  honour would be the one lie the whole feature exists to avoid. One pixel of movement
+  brings the two back together.
+
+**The verification found a real bug that had nothing to do with any of this.** Dragging into
+the *bottom* band scrolled the tree *up*. The cause is `MainWindow::repositionTreeToTop()`,
+which settles the tree on the browsed folder after a navigation and keeps firing for a few
+seconds afterwards (`onTreeDirectoryLoaded` inside its 4s window, plus `navigateTo()`'s
+300/800/1500/3000ms retries). Every directory the auto-scroll revealed finished listing,
+fired `directoryLoaded`, and yanked the view back — a tug of war I was reading as an
+inverted sign. It is guarded now at the one place all those callers funnel through: a new
+`FolderTreeView::dragInProgress()`, checked at the top of `repositionTreeToTop()`. Whatever
+the tree is showing during a drag, the user put it there. Worth noting the guard matters
+beyond the wrong-direction symptom: a reposition landing between the last `dragMoveEvent`
+and the drop would slide a different folder under a drop that is about to happen — the
+misdrop this feature is about, arriving from a completely different direction.
+
+**Verified by driving the app**, same `SendInput` harness as yesterday, on a scratch folder
+whose tree pane is filled with 30 sibling `Box##` folders so that anything landing anywhere
+lands inside the scratch tree. Bottom band: scrolls down, wash and label up, no row
+highlighted, release drops nothing (all three files still where they started). Top band:
+scrolls up, same. Scroll, then move off the edge: the wash clears, `Box13` highlights, the
+release puts the file in `Box13`. Held at the bottom until the scroll ran out: the wash
+clears on its own and the row under the cursor highlights again, which is the dead-strip
+case behaving.
+
+**And the harness demonstrated the hazard on me.** An earlier two-phase check parked a live
+drag across two tool calls — button still down, edge scroll still running — and by the time
+the second call moved and released, ~100 seconds of scrolling had gone by and the file
+landed in `C:\Users\dmo\FontBase`, a folder that had nothing to do with anything. Restored
+it and rewrote the check to keep each gesture inside a single invocation. That is exactly
+the failure this feature refuses to allow at the edge, arrived at by the one route it does
+not cover: a drag left running while the list moves under it. The refusal only covers the
+release, and the release is the part a person controls.
+
+128/128 tests pass. Still no automated coverage here for the same reason as yesterday: the
+suite links `pixet_core` only and has no Qt, and all of this is widget-layer behaviour.
+
+---
+
+## 2026-09-04 — desktop — Drop images onto a folder in the tree to move them there
+
+The folder tree was navigation-only. Filing a photo somewhere else meant Ctrl+X, navigate to
+the destination, Ctrl+V, navigate back — three trips for one file, and a lost scroll
+position. Now a thumbnail, or a whole multi-selection, can be dragged from the grid onto any
+folder row in the tree and it moves there; Ctrl copies instead. Files dragged in from
+Explorer land on a tree folder the same way, which cost nothing extra: both arrive as
+local-file URLs, and neither the view nor MainWindow has a reason to tell them apart.
+
+**Nothing new happens to the files.** Everything below the drop is the existing
+FileOpsWorker two-stage protocol that the grid drop and Ctrl+V already use — preflight off
+the UI thread, one CollisionDialog per conflict, then `execute()` with every resolution
+already decided. That is the whole point of the shape of this change: the tree drop had to
+become one more caller of a pipeline that already knows how to move a file, not a second way
+to move one. It therefore also inherits, for free, the smart-move path that carries a file's
+existing thumbnail across to its new folder instead of re-generating it (checked in the DB
+below, because "inherits it for free" is exactly the kind of claim that turns out not to be
+true).
+
+**`QFileSystemModel::dropMimeData()` is the trap here.** `FolderTreeView` overrides all four
+drag handlers and never calls its base, and that is load-bearing rather than stylistic:
+`QAbstractItemView`'s own drop path routes into the model, and `QFileSystemModel` will
+happily perform its own copy/move — no collision dialog, no claims on the directories
+involved, and no idea that pixet's index holds rows describing the files being moved. Every
+part of a move this app knows how to do would be bypassed by the one line that looks most
+idiomatic. The constructor says the same thing by omission: `setAcceptDrops(true)` on the
+view *and* on its viewport (drag events are delivered to the viewport — setting it on the
+view alone is a silent no-op that yields not one `dragEnterEvent`), but deliberately *not*
+`setDragDropMode(DropOnly)`, which would arm the very machinery this class exists to avoid.
+Leaving `dragEnabled()` false also means a folder row can never be picked up and dragged
+somewhere itself.
+
+**The copy-vs-move rule now lives in one place**, `DropPolicy.h`. It was three lines in an
+anonymous namespace in `ThumbGridView.cpp`, and the tree needed the same answer: Windows'
+OS-level default for a cross-application drag is Copy, which pixet inverts on purpose
+(dragging photos into a library should move them in, not leave duplicates behind), with Ctrl
+switching back. Duplicating that predicate into a second drop target is the kind of thing
+that drifts the first time someone revisits one of them, and two drop targets in the same
+window disagreeing about whether a drag copies or moves would be worse than either choice on
+its own.
+
+Two things had to change outside the new view, and both were latent bugs rather than
+plumbing:
+
+- **`onFileOpFinished()` only removed the source rows when the destination was the folder on
+  screen.** For every op that existed before, it always was — paste, drag-in and rename all
+  target `currentPath_` — so the condition was never false in a way anyone could notice. A
+  drop onto the tree makes the open folder the *source*, and the moved thumbnails would have
+  simply stayed on screen. The removal is now unconditional, which is what
+  `FileOpsWorker::finished`'s own doc comment already claimed it was safe to be. It is also
+  what clears a preview of a file that just left, via `rowsRemoved` →
+  `ThumbGridView::onRowsRemoved` — the route yesterday's stale-preview entry identified as
+  the one that always notified correctly.
+- **`onDragOutRequested()` would have raced its own drop.** After `drag->exec()` returns
+  `MoveAction` it forces a rescan of the source folder, on the assumption that Explorer
+  performed the move and pixet merely has to notice. When the drop lands back inside pixet
+  that assumption is wrong twice over: the move is pixet's own queued FileOpsWorker request,
+  and a forced by-name diff running concurrently with it can delete the very rows fileops is
+  midway through updating — costing the preserved thumbnail at best. Detected by comparing
+  `fileOpCounter_` across `exec()`: a drop is delivered synchronously from inside the nested
+  drag loop, so a request queued by the drop has already bumped the counter by the time
+  `exec()` returns. No new member, and it reads as what it is.
+
+Smaller decisions worth recording:
+
+- **A drop over the empty area below the last row is refused**, rather than redirected to the
+  root or to the nearest row. There is no folder there, and accepting it would mean inventing
+  a destination; the OS's own "can't drop here" cursor says so instead.
+- **A file dropped onto the folder it already lives in reports `Already in "X"`** and never
+  reaches the worker. `executeOneItem()` would have handled it correctly as a no-op and the
+  batch would have reported "0 item(s) added" — true, and useless. Dropping slightly wide of
+  the intended row, onto the current folder, is an easy miss to make.
+- **The finish message names the destination** (`2 item(s) sent to "Sorted"`) when a batch
+  went somewhere other than the open folder. "Added" is only true of a batch that landed
+  here, and for a move out the only other feedback is thumbnails disappearing. It gets wiped
+  a second or so later by `onIndexerFinished()`'s `clearMessage()` once the folder watcher's
+  rescan lands — pre-existing behaviour that every file-op message here shares, not something
+  this change introduced, and not chased in it.
+- **No auto-scroll and no hover-to-expand during the drag**, so the destination has to be a
+  row that is already visible — which is what was asked for. Both are additive later.
+  `QAbstractItemView`'s own auto-scroll isn't reachable without calling into the base drag
+  handlers this class deliberately doesn't call, so it would be a timer of its own rather
+  than a flag.
+
+**Verified by driving the real app, not by reasoning about it.** A scratch folder of
+generated PNGs plus an empty `Sorted/` subfolder, `pixet <folder>`, and synthetic mouse and
+key input through `SendInput` — real OS-level input, which is what Qt's `DoDragDrop` loop
+tracks; `SetCursorPos` would not have driven it — with the mid-drag screenshots taken from a
+background job, since the drag blocks in a nested loop for its whole duration. One file:
+moved on disk, row gone from the grid, preview back to "No preview", status
+`1 item(s) sent to "Sorted"`. Two selected: both moved. A colliding name: the CollisionDialog
+appeared naming the destination folder, and Keep Both produced `a_red (2).png`. Onto the
+current folder: `Already in "pixdrag"`, nothing moved. Ctrl held mid-drag: amber row
+highlight instead of the accent color, the copy landed, the original stayed. (Ctrl held at
+*press* time is a different gesture and correctly doesn't drag at all — a Ctrl+press on the
+grid toggles that row out of the selection, so there is nothing left to drag. Cost one
+confusing test run to remember.)
+
+The DB is where the thumbnail claim actually gets checked, and it also shows the copy
+behaving differently from the moves, which is the part worth having looked at:
+
+```
+pixdrag\Sorted  178862  a_red.png       thumb 181983  state 1
+pixdrag\Sorted  178863  b_green.png     thumb 181984  state 1
+pixdrag\Sorted  178866  a_red (2).png   thumb 181987  state 1
+pixdrag\Sorted  178870  e_purple.png    thumb NULL    state 0
+```
+
+The moved rows kept the ids they were given when `pixdrag` was first indexed, and carried
+their thumbnails into a folder pixet had never scanned — that is the smart move, not a
+rescan behind it. `e_purple.png`, the Ctrl-copy, is a fresh row with no thumbnail yet, which
+is correct: a copy has nothing to inherit.
+
+128/128 tests pass. No new test: the suite links `pixet_core` only and has no Qt, and
+everything this change adds lives in the Qt widget layer — the same missing Qt-linked test
+target noted in yesterday's entry, still worth building on its own.
+
+---
+
 ## 2026-09-04 — desktop — A moved file left its preview behind, because a row number is not an identity
 
 Select an image, look at it in the preview pane, then move the file out of the folder from

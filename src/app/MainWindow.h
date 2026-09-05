@@ -241,6 +241,13 @@ private slots:
     // ThumbGridView::filesDropped) - kicks off FileOpsWorker's preflight stage
     // targeting the currently-open folder.
     void onFilesDroppedOnGrid(QStringList localPaths, bool move);
+    // Files dropped onto a folder row in the tree (see
+    // FolderTreeView::filesDroppedOnFolder) - the same FileOpsWorker preflight stage as
+    // onFilesDroppedOnGrid(), but targeting a folder that is deliberately *not* the one
+    // on screen: this is how thumbnails get filed away into another folder without
+    // navigating there and back. `target` is an index into fsModel_, which is where the
+    // destination path comes from.
+    void onFilesDroppedOnTree(const QModelIndex &target, QStringList localPaths, bool move);
     // Preflight stats are back - shows one CollisionDialog per conflict (honoring
     // "apply to all remaining"), then re-emits requestFileOpExecute() with every
     // item's resolution filled in. CancelAll (Escape/close on any dialog) drops the
@@ -614,6 +621,13 @@ private:
     // string if cancelled/unchanged (onEditRename() treats both the same way - nothing
     // to do).
     QString promptRename(const QString &currentName);
+    // One source item for a copy/move request. Fills in srcFileId/srcDirId when
+    // `srcPath` happens to name a file pixet's index already knows about, which is what
+    // lets fileops::execute() take its smart-move path and carry the existing thumbnail
+    // across instead of re-generating it (they stay 0 for anything external, and the
+    // op still works - it just costs a re-thumbnail). Shared by Paste and by a drop onto
+    // the folder tree, which need identical items built from nothing but a path.
+    FileOpsWorker::Item makeFileOpItem(const QString &srcPath);
     // Creates a subfolder of `parentPath`, asking for the name first. Does the whole thing
     // - prompt, validate, mkdir, report failure, reveal the result - because there is no
     // part of it worth a caller doing separately.
