@@ -5,6 +5,123 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-09-11 — desktop — "The user scrolled" is an input, not a scrollbar value, and the tree settling now knows what it's waiting for
+
+Two reports in one, both against this morning's entry. A restored `Y:\dmo\Nextcloud\InstantUpload\Camera`
+came up with the tree expanded to it but its row five to eight lines below the fold - and
+clicking that folder's own bookmark, the obvious way to ask for the view to be fixed, did
+nothing at all. `C:\Users\dmo\Downloads` as the restored folder was flawless.
+
+**The first one is mine, from this morning.** That fix decided the user had taken over the
+tree by comparing `verticalScrollBar()->value()` against the value the previous
+`repositionTreeToTop()` left behind, on the reasoning that nothing but this program and the
+user moves it. That reasoning is wrong in exactly the case that broke. `restoreLastDirectory()`
+runs from the constructor, before the window is shown, so `setCurrentIndex()` finds
+`isVisible()` false and Qt defers its autoScroll to first show - which lands *after* the
+baseline was recorded. The guard read Qt revealing the current index as a hand on the wheel,
+gave up on the navigation permanently, and left the row wherever the deferred reveal had put
+it. Downloads survived because it is shallow: the row was in view regardless of who had last
+touched the scrollbar. There are other ways for that value to move on its own - range clamps
+as `QFileSystemModel` streams rows in, re-layouts on sort - and any of them would have done
+the same thing. A heuristic that reads a scrollbar cannot tell a hand from a layout.
+
+**So it now reads the input instead.** `FolderTreeView` gained a `userScrolled()` signal,
+emitted from a `wheelEvent()` override and from the vertical scrollbar's `actionTriggered`
+and `sliderMoved`. Between them that is the wheel, the trackpad, the arrows, the trough, the
+drag and the scrollbar's own keyboard handling; none of them can be reached except by a hand,
+and crucially none of them is emitted by `setValue()`, which is how every scroll this program
+performs - `scrollTo()`, the drag edge scroll in `onEdgeScrollTick()` - actually moves. So Qt
+can re-lay-out and clamp and reveal all it likes without being mistaken for the user.
+`MainWindow` holds the flag, clears it on each `navigateTo()`, and `repositionTreeToTop()`
+returns immediately while it is set.
+
+**The second report is older than this morning and is a one-line gate.** The whole
+reveal-and-reposition block in `navigateTo()` was guarded by `tree_->currentIndex() != idx`,
+to avoid re-doing work for a navigation that came from a click inside the tree. But a
+bookmark click for the folder you are *already in* also has `currentIndex() == idx`, so it
+skipped the block entirely: the one action a user would obviously reach for to fix a
+mis-framed tree was the one action guaranteed not to touch it. Now only the `setCurrentIndex()`
+call is conditional and everything else runs every time. For a real tree click that costs
+nothing - the row clicked is on screen by definition, and the tolerance check leaves anything
+already in view alone.
+
+**And the reason the settling had run out by then: it was timing out, not finishing.** The
+4-second window and the retries out to 3s were tuned on local disks. `QFileSystemModel`
+listing every ancestor of a path on a mapped network drive is still delivering results well
+after that, each one inserting rows above the browsed folder and pushing it further down, with
+nothing left running to notice. The window is now 20 seconds and the retries run to 15.
+
+That is only affordable because `onTreeDirectoryLoaded()` finally checks *which* directory
+loaded. Only the browsed folder or an ancestor of it can move that folder's row; a listing
+anywhere else changes nothing about where the row sits, so acting on one was always pure
+interference - and it is precisely the interference the 4-second window was invented to stop
+("expanding some unrelated folder minutes later snaps the view back"). That window cured the
+symptom by running out of time, and took the slow cases down with it. Checking the path is the
+real distinction, and with it in place plus a scroll by hand ending the window on the spot,
+twenty seconds of patience costs nothing.
+
+Both fixes together, in the order they matter: the tree can be re-framed by any navigation
+including a re-visit; it keeps trying for as long as the ancestors are still arriving; it
+stops the instant the user touches the wheel; and it never confuses Qt's own scrolling for
+either.
+
+Builds clean, tests pass. Reasoned from the call graph and Qt's deferred-autoScroll behaviour
+rather than measured - the two cases to actually run are the reported one (start on the
+network path, check the tree frames it, then scroll away and confirm nothing snaps back) and
+its opposite (start on a local folder, confirm the bookmark for the current folder now
+re-frames).
+
+---
+
+## 2026-09-11 — desktop — Scrolling the folder tree after a bookmark click no longer gets undone
+
+Reported as: click a bookmark, the tree jumps to that folder, start scrolling down with the
+wheel - and a second or two later the tree snaps back to the bookmarked folder. The guess in
+the report was background scanning re-framing the tree. It isn't; nothing in
+BackgroundReconciler or RawRenderer touches the tree at all. It's our own post-navigation
+settling, doing exactly what it was written to do, for longer than the user is willing to
+wait.
+
+**Why the settling runs so long.** `navigateTo()` positions the browsed folder at the top of
+the tree, but at that moment QFileSystemModel usually hasn't finished listing the ancestors,
+so the row's real position isn't known yet. Hence the retries: `onTreeDirectoryLoaded()` for
+each listing that lands, plus fixed re-attempts at 300/800/1500/3000ms, all bounded by
+`kTreeSettleWindowMs` (4s). A deeply nested path under a busy parent genuinely needs the late
+ones. But 4s is also plenty of time to click a bookmark, see where it landed, and deliberately
+scroll somewhere else - and the 1500/3000ms retries then drag the view back. "After a second
+or two" is those two retries, not a scan finishing.
+
+**The fix is to notice that the user has taken the wheel.** `repositionTreeToTop()` now
+records the tree's vertical scroll value each time it leaves the view somewhere, and compares
+the live value against that record before it scrolls again. A mismatch means the position
+changed by some hand other than ours, so it returns and invalidates `navSettleTimer_` -
+ending the window outright rather than just skipping one attempt, so `onTreeDirectoryLoaded()`
+stops re-deriving the index on every listing for the rest of it. The baseline is reset at the
+top of every `navigateTo()`: a new folder is a new claim on the tree's scroll position,
+whatever the user did under the previous one.
+
+**What makes the comparison sound** is the same property that made the retries necessary in
+the first place: rows streaming in above the viewport shift the *content* while leaving
+`verticalScrollBar()->value()` alone. That's precisely why the browsed row drifts off the top
+and has to be re-positioned - and it means the value only changes when this function or the
+user changes it. Comparing values, rather than intercepting wheel events, also covers every
+way the user can scroll: wheel, scrollbar drag, keyboard, trackpad. The failure mode if
+something *else* ever moves the value (a range clamp when rows disappear, say) is one
+navigation that settles less precisely - not a view fighting the user, which is the direction
+that matters.
+
+**The baseline is set whether or not the reveal block runs.** A navigation that came from a
+click inside the tree skips that block entirely (its row is already current, and Qt's own
+autoScroll has revealed it) - but `onTreeDirectoryLoaded()` still fires for it inside the
+settle window, so without a baseline recorded on that path, scrolling away after a plain tree
+click would have kept getting undone. Same bug, quieter entrance.
+
+Builds clean and the test suite passes; the behaviour itself is UI timing and was reasoned
+from the call graph rather than measured under a live drag of the wheel, so it wants a real
+click-and-scroll on the machine that reported it.
+
+---
+
 ## 2026-09-05 — desktop — Refusing the drag was the wrong lever: on Windows it takes the view out of the drop for the rest of the drag
 
 Reported as: after the scroll stops and the pointer is back in the middle of the pane, the

@@ -11,6 +11,7 @@
 #include <QScrollBar>
 #include <QTimer>
 #include <QUrl>
+#include <QWheelEvent>
 
 #include "DropPolicy.h"
 
@@ -52,6 +53,14 @@ FolderTreeView::FolderTreeView(QWidget *parent) : QTreeView(parent) {
     edgeScrollTimer_ = new QTimer(this);
     edgeScrollTimer_->setInterval(kEdgeScrollTickMs);
     connect(edgeScrollTimer_, &QTimer::timeout, this, &FolderTreeView::onEdgeScrollTick);
+
+    // The scrollbar half of userScrolled() - see that signal's comment for why this is
+    // wired to user actions rather than to valueChanged. actionTriggered covers the
+    // arrows, the trough and the keyboard, sliderMoved the drag; neither is emitted by
+    // setValue(), which is how everything in this program (including the drag edge
+    // scroll in onEdgeScrollTick) moves the view, so nothing but a hand gets in here.
+    connect(verticalScrollBar(), &QAbstractSlider::actionTriggered, this, [this](int) { emit userScrolled(); });
+    connect(verticalScrollBar(), &QAbstractSlider::sliderMoved, this, [this](int) { emit userScrolled(); });
 }
 
 void FolderTreeView::mousePressEvent(QMouseEvent *event) {
@@ -70,6 +79,15 @@ void FolderTreeView::keyPressEvent(QKeyEvent *event) {
     int hScroll = horizontalScrollBar()->value();
     QTreeView::keyPressEvent(event);
     restoreHorizontalScroll(hScroll);
+}
+
+void FolderTreeView::wheelEvent(QWheelEvent *event) {
+    // Emitted before the base class handles it, and unconditionally - including for a
+    // wheel turn against an end stop that scrolls nothing. Someone spinning the wheel at
+    // a tree that is already at the bottom has still said "I am driving this now", and
+    // the settling has no business overriding that a moment later.
+    emit userScrolled();
+    QTreeView::wheelEvent(event);
 }
 
 void FolderTreeView::restoreHorizontalScroll(int value) {

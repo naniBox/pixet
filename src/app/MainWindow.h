@@ -218,6 +218,9 @@ private slots:
     // see that member's doc comment for why this can't just run unconditionally for
     // the rest of the session.
     void onTreeDirectoryLoaded(const QString &path);
+    // The user scrolled the folder tree by hand (see FolderTreeView::userScrolled) -
+    // hands the tree's scroll position over to them for the rest of this navigation.
+    void onTreeScrolledByUser();
     // Ctrl+arrow from the grid (see ThumbGridView::navigateFolderRequested) - up/down
     // to the previous/next sibling folder, left to the parent, right into the first
     // subfolder.
@@ -319,7 +322,21 @@ private:
     // later would silently snap the view back to whatever's currently browsed - a
     // real reported bug, not a hypothetical.
     QElapsedTimer navSettleTimer_;
-    static constexpr int kTreeSettleWindowMs = 4000; // just past the last fixed retry delay (3000ms) in navigateTo()
+    // Just past the last fixed retry delay in navigateTo(). Long, because what is being
+    // waited for is QFileSystemModel listing every ancestor of the browsed folder, and on
+    // a mapped network drive those can still be arriving many seconds in - a restored
+    // deep path on one came up with its row several lines below the fold and nothing left
+    // running to correct it, while the same code looked perfect on a local Downloads
+    // folder. Affordable because the two things that used to make a long window dangerous
+    // are both gone: onTreeDirectoryLoaded() now ignores listings that aren't the browsed
+    // folder or an ancestor of it, and any scroll by hand ends the window on the spot.
+    static constexpr int kTreeSettleWindowMs = 20000;
+
+    // Set by onTreeScrolledByUser(), cleared at the top of every navigateTo(). While it's
+    // set, repositionTreeToTop() does nothing at all: the user has scrolled the tree
+    // themselves and the settling for this navigation has no further claim on where it
+    // sits. A new folder is a new claim, whatever they did under the last one.
+    bool treeScrollTakenByUser_ = false;
 
     // Restarted alongside navSettleTimer_ at the top of every navigateTo(). Exists so
     // onCopyGridDebugInfo() can report real thumbnail-fill timing for whatever
