@@ -46,6 +46,7 @@ add_executable(pixet ${PIXET_APP_TYPE}
 
     QtInterop.h
     PathQ.h
+    DropPolicy.h
 
     FolderTreeView.h
     FolderTreeView.cpp
