@@ -8,6 +8,7 @@ class QDragEnterEvent;
 class QDragLeaveEvent;
 class QDragMoveEvent;
 class QDropEvent;
+class QWheelEvent;
 
 // Qt's native click/keyboard-navigation handling in QTreeView resets horizontal
 // scroll back to the left as part of selecting a new current item (it scrolls to
@@ -58,6 +59,20 @@ public:
     bool dragInProgress() const { return dragActive_; }
 
 signals:
+    // The user moved this view's vertical scroll position themselves - wheel, trackpad,
+    // or the scrollbar. MainWindow uses it to stop the post-navigation settling from
+    // scrolling the tree back (see repositionTreeToTop()): that settling keeps firing for
+    // seconds after a navigation, which is easily long enough for someone to click a
+    // bookmark and then deliberately scroll off somewhere else.
+    //
+    // Deliberately a report of *input*, not a watch on the scrollbar's value. The value
+    // moves on its own all the time here - QFileSystemModel streams rows in, the view
+    // re-lays-out, ranges get clamped, and Qt's own autoScroll reveals the current index
+    // when the window is first shown - and an earlier attempt at this that simply
+    // compared scroll positions read every one of those as the user and gave up on
+    // positioning the tree at all. Only the handlers this is emitted from can be reached
+    // by a hand.
+    void userScrolled();
     // Local files were dropped onto the folder row `target`, which is always a valid
     // index (a drop over empty space below the last row is refused outright, since
     // there is no folder there to name). `move` is true unless Ctrl was held at drop
@@ -79,6 +94,7 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;

@@ -91,6 +91,22 @@ QString normalizeForDb(const QString &path) {
     return QString::fromStdString(pixet::normalizePath(path.toStdString()));
 }
 
+// Is `dir` the folder `path` itself, or one of the folders it sits under? Both sides are
+// expected to have been through normalizeForDb() already, so this is pure string work.
+// Case-insensitively even where it needn't be: the two reach this from different places
+// (one from QSettings via restoreLastDirectory(), the other from QFileSystemModel's own
+// bookkeeping) and a drive letter differing only in case would otherwise silently switch
+// off the settling this gates. A false match costs one reposition attempt that the
+// tolerance check in repositionTreeToTop() usually declines anyway; a false miss costs
+// the whole feature, so the comparison leans the safe way.
+bool isSelfOrAncestor(const QString &dir, const QString &path) {
+    if (dir.isEmpty() || path.isEmpty()) return false;
+    if (path.compare(dir, Qt::CaseInsensitive) == 0) return true;
+    const QChar sep = QChar::fromLatin1(pixet::pathSeparator());
+    const QString prefix = dir.endsWith(sep) ? dir : dir + sep; // a drive root already ends in one
+    return path.startsWith(prefix, Qt::CaseInsensitive);
+}
+
 // Next sibling of `idx` - or, if it's the last one, walks up until an ancestor
 // actually has a next sibling ("aunt": your parent's next sibling; a grandparent's
 // if the parent is *also* last, and so on) - rather than just stopping at the last
@@ -194,6 +210,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(tree_, &FolderTreeView::dropRefused, this,
             [this](const QString &reason) { statusBar()->showMessage(reason, 4000); });
     connect(fsModel_, &QFileSystemModel::directoryLoaded, this, &MainWindow::onTreeDirectoryLoaded);
+    connect(tree_, &FolderTreeView::userScrolled, this, &MainWindow::onTreeScrolledByUser);
 
     // Titled to match bookmarksPanel. A folder tree is self-explanatory on its own, but
     // sitting side by side with a labeled list the asymmetry reads as a missing label
@@ -820,6 +837,7 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
     currentPath_ = normalized;
     updateWindowTitle(); // the Windows submenu and the Dock/app-switcher label track the folder
     navSettleTimer_.restart(); // bounds how long onTreeDirectoryLoaded() keeps chasing this row - see its member comment
+    treeScrollTakenByUser_ = false; // a new navigation owns the tree's scroll position again - see the member comment
     navThumbTimer_.restart(); // see navThumbTimer_'s member comment
     navThumbsRequested_.clear();
     navThumbsReceived_.clear();
@@ -858,18 +876,25 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
     // should show what's inside it in the tree without an extra manual expand click.
     if (idx.isValid()) tree_->expand(idx);
 
-    if (idx.isValid() && tree_->currentIndex() != idx) {
-        // This path only runs for navigation that didn't originate from a click
-        // already inside the tree (bookmark click, restoreLastDirectory on startup) -
-        // a direct tree click already has currentIndex() == idx by the time we get
-        // here. Reveal every ancestor first so idx is actually part of the tree's
-        // visible row structure (a collapsed parent means visualRect() below would
-        // come back invalid).
+    if (idx.isValid()) {
+        // Reveal every ancestor first so idx is actually part of the tree's visible row
+        // structure (a collapsed parent means visualRect() below would come back invalid).
         for (QModelIndex parent = idx.parent(); parent.isValid(); parent = parent.parent()) {
             if (!tree_->isExpanded(parent)) tree_->expand(parent);
         }
 
-        tree_->setCurrentIndex(idx);
+        // Only the selection is conditional, and only because setting the current index
+        // to what it already is would be pointless work. Everything else here runs for
+        // *every* navigation, including one that came from a click inside the tree, and
+        // including a re-navigation to the folder already on screen. That last case is
+        // the point: clicking a bookmark for the folder you are already in used to skip
+        // this whole block, so when the tree came up mis-framed (a restored deep path on
+        // a slow volume - see kTreeSettleWindowMs) the most obvious way to ask for that
+        // to be fixed was the one thing guaranteed not to fix it. A navigation can now
+        // always re-frame the tree. For a click inside the tree this costs nothing: the
+        // row clicked is by definition on screen, and repositionTreeToTop() leaves
+        // anything already in view exactly where it is.
+        if (tree_->currentIndex() != idx) tree_->setCurrentIndex(idx);
 
         // Deliberately not tree_->scrollTo(idx): its default EnsureVisible hint only
         // scrolls the minimum needed, and in the process resets horizontal scroll
@@ -883,7 +908,7 @@ void MainWindow::navigateTo(const QString &path, bool forceReindex, bool forceRe
         // full of app-config dirs) - the fixed-delay retries below are what actually
         // catch up in that case, empirically, up to a few seconds out.
         repositionTreeToTop(idx);
-        for (int delayMs : {300, 800, 1500, 3000}) {
+        for (int delayMs : {300, 800, 1500, 3000, 6000, 10000, 15000}) {
             QTimer::singleShot(delayMs, this, [this, normalized]() {
                 if (normalized == currentPath_) repositionTreeToTop(fsModel_->index(normalized));
             });
@@ -913,6 +938,13 @@ void MainWindow::repositionTreeToTop(const QModelIndex &idx) {
     // under a drop that is about to land. See FolderTreeView::dragInProgress().
     if (tree_->dragInProgress()) return;
 
+    // Never after the user has scrolled the tree themselves - see onTreeScrolledByUser().
+    // Everything below exists to settle the view after a navigation, and it keeps firing
+    // for kTreeSettleWindowMs, easily long enough to click a bookmark, see the tree jump
+    // to that folder, and start scrolling somewhere else only to be yanked back a second
+    // or two later when a late retry lands.
+    if (treeScrollTakenByUser_) return;
+
     // If the row is already visible - or within a couple of rows of the viewport -
     // leave the scroll position alone. Jumping a folder that's already in view (say,
     // the middle of the tree) up to the top on every navigation is disorienting; only
@@ -940,20 +972,34 @@ void MainWindow::repositionTreeToTop(const QModelIndex &idx) {
     tree_->viewport()->update();
 }
 
-void MainWindow::onTreeDirectoryLoaded(const QString &) {
-    // Fires for every directory the tree has ever listed, not just ones relevant to
-    // the current navigation - cheap to just recheck unconditionally each time. Only
-    // reposition while the tree's own selection still agrees with where we navigated
-    // to (so this doesn't fight a selection the user has since changed manually) *and*
-    // we're still within the post-navigation settle window - see navSettleTimer_'s
-    // doc comment. Without that second check, expanding some unrelated folder (whose
-    // currentIndex() never became the browsed one - clicking a branch's expand arrow
-    // doesn't select the row) would still snap the view back to currentPath_ every
-    // time, indefinitely.
+void MainWindow::onTreeDirectoryLoaded(const QString &path) {
+    // Fires for every directory the tree has ever listed. Only one kind of them can move
+    // the browsed folder's row: that folder itself, or one of the folders it sits under -
+    // those are what insert rows above it and push it off the top. A listing anywhere else
+    // changes nothing about where that row is, so repositioning on one is pure
+    // interference, and was: expanding an unrelated branch (whose currentIndex() never
+    // became the browsed one, since clicking an expand arrow doesn't select the row) used
+    // to snap the view straight back to currentPath_. That was originally fixed by only
+    // acting for a few seconds after a navigation, which cured the symptom by running out
+    // of time - and took the genuinely slow cases down with it (a deep path on a network
+    // drive, still listing ancestors well after the window had closed). Checking what
+    // actually loaded is the real distinction, and it is what lets the window be long
+    // enough to be useful.
     if (currentPath_.isEmpty()) return;
+    if (!isSelfOrAncestor(normalizeForDb(path), currentPath_)) return;
     if (!navSettleTimer_.isValid() || navSettleTimer_.elapsed() > kTreeSettleWindowMs) return;
+    // Still requires the tree's own selection to agree with where we navigated to, so
+    // this doesn't fight a selection the user has since changed manually.
     QModelIndex idx = fsModel_->index(currentPath_);
     if (idx.isValid() && tree_->currentIndex() == idx) repositionTreeToTop(idx);
+}
+
+void MainWindow::onTreeScrolledByUser() {
+    // Ending the settle window as well as setting the flag isn't redundant: it stops
+    // onTreeDirectoryLoaded() re-deriving an index on every listing for the rest of a
+    // window that is now 20 seconds long, when the answer can only be "leave it alone".
+    treeScrollTakenByUser_ = true;
+    navSettleTimer_.invalidate();
 }
 
 void MainWindow::onNavigateFolderRequested(Qt::Key direction) {
