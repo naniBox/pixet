@@ -5,6 +5,44 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-09-24 — desktop — `scripts/clean.ps1` / `clean.sh`: delete the build trees
+
+Asked for: a script to clean all the builds. Paired like configure/build, since both machines
+build: `clean.ps1` on Windows, `clean.sh` on the Mac.
+
+It deletes everything under `build/` - every preset's tree, strays like the hand-made
+`debug2`, and the deploy staging folders (`win-deploy`, `dmg-stage`) - **except the finished
+installers** (`pixet-*-setup.exe`, `pixet-*-arm64.dmg`). Those stay unless `-Installers`
+/ `--installers` is passed: they're the one thing in `build/` that a rebuild can't give back
+for an older version without checking out its tag. `deploy-mac.sh`'s intermediate
+`pixet-*-rw.dmg` doesn't match that pattern, so a leftover one is cleaned. `-Vcpkg` /
+`--vcpkg` also deletes `vcpkg/buildtrees` and `vcpkg/packages`, vcpkg's from-source scratch
+space that it never cleans up itself. `vcpkg/downloads` stays. The vcpkg *binary* caches
+(local archives and the `\\kioku` share) are never touched, because they're what make the
+reconfigure after a clean take seconds. Each preset's `vcpkg_installed/` goes with its tree
+and comes back from them.
+
+On this machine that's ~2.1GB by default (debug 726M, debug2 647M, release 623M,
+win-deploy 74M), plus ~2.4GB with `-Vcpkg` (buildtrees 2.1G, packages 334M).
+
+Two Windows-specific details. `clean.ps1` refuses to start while a `pixet`, `pixet-index` or
+`pixet_tests` process is running *from inside `build/`*: Windows won't delete an open file,
+and a clean that fails halfway leaves a tree the next configure trips over. `clean.sh`
+doesn't need the check, because macOS unlinks a running binary happily. `-WhatIf` works (via
+`SupportsShouldProcess`) as the dry run, and `clean.sh` has `--dry-run`.
+
+Tested on a throwaway copy of the repo layout: refusal with a copied-in `pixet.exe` running
+from `build/debug` (exit 1, tree untouched); the default clean (trees, stray dotdir, rw.dmg and
+read-only files gone; both installers and vcpkg kept); `-Installers -Vcpkg` (only
+`vcpkg/downloads` left); a second run ("Nothing to clean."); and `clean.sh` through Git Bash
+with `--dry-run`, an unknown flag (exit 2 with usage), and a real `--vcpkg` run. Against the
+real repo, only `-WhatIf`. Nothing real was deleted.
+
+`clean.sh` needs `git add --chmod=+x` when it's committed, like the other `.sh` scripts
+(100755 in the index). A Windows checkout can't set that bit any other way.
+
+---
+
 ## 2026-09-24 — desktop — Filter the grid by name: wildcard, fuzzy and regex
 
 Asked for: Ctrl+Shift+F enters a filter mode over the grid, with three ways of matching
