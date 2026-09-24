@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 
+#include "NameFilter.h"
 #include "decode/DecodeLimits.h"
 
 // User-configurable settings, backed by the same on-disk store MainWindow also uses
@@ -218,5 +219,12 @@ SortKey gridSortKey();
 void setGridSortKey(SortKey key);
 bool gridSortDescending();
 void setGridSortDescending(bool descending);
+
+// The name filter's last-used matching mode (see NameFilterBar), so it opens the way it
+// was left. Only the mode: the pattern itself is cleared whenever the filter closes, so a
+// launch never comes up with files hidden by a filter nobody can see. Same out-of-range
+// fallback as gridSortKey().
+NameFilter::Mode nameFilterMode();
+void setNameFilterMode(NameFilter::Mode mode);
 
 } // namespace prefs

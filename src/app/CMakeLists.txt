@@ -62,6 +62,10 @@ add_executable(pixet ${PIXET_APP_TYPE}
     ThumbGridView.cpp
     ThumbLoader.h
     ThumbLoader.cpp
+    NameFilter.h
+    NameFilter.cpp
+    NameFilterBar.h
+    NameFilterBar.cpp
 
     PreviewDecoder.h
     PreviewDecoder.cpp

@@ -60,6 +60,7 @@
 #include "ShellOps.h"
 #include "HoverInfoWorker.h"
 #include "KeyBindings.h"
+#include "NameFilterBar.h"
 #include "PathQ.h"
 #include "Preferences.h"
 #include "PreferencesDialog.h"
@@ -276,6 +277,27 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     connect(grid_, &ThumbGridView::filesDropped, this, &MainWindow::onFilesDroppedOnGrid);
     connect(grid_, &ThumbGridView::dragOutRequested, this, &MainWindow::onDragOutRequested);
 
+    // --- name filter: a strip above the grid, hidden until filterByNameAction_ opens it ---
+    filterBar_ = new NameFilterBar(prefs::nameFilterMode(), this);
+    filterBar_->hide();
+    connect(filterBar_, &NameFilterBar::filterChanged, this, &MainWindow::applyNameFilter);
+    connect(filterBar_, &NameFilterBar::modeChanged, this,
+            [](NameFilter::Mode mode) { prefs::setNameFilterMode(mode); });
+    connect(filterBar_, &NameFilterBar::closeRequested, this, &MainWindow::closeNameFilter);
+    connect(filterBar_, &NameFilterBar::focusGridRequested, this, [this] {
+        // Lands on the first match when nothing is selected, so Return straight after
+        // typing leaves the arrow keys and the fullscreen key something to act on.
+        if (grid_->currentRow() < 0 && gridModel_->rowCount() > 0) grid_->setCurrentRow(0);
+        grid_->setFocus();
+    });
+
+    auto *gridColumn = new QWidget(this);
+    auto *gridColumnLayout = new QVBoxLayout(gridColumn);
+    gridColumnLayout->setContentsMargins(0, 0, 0, 0);
+    gridColumnLayout->setSpacing(2);
+    gridColumnLayout->addWidget(filterBar_);
+    gridColumnLayout->addWidget(grid_, /*stretch=*/1);
+
     fullscreenViewer_ = new FullscreenViewer(this);
     // Keep the grid's selection following along while browsing fullscreen, so
     // closing it (Escape/double-click) leaves the grid on whatever image was last
@@ -424,7 +446,9 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     // --- top-level: back/forward + path bar above, left column (40%) vs. thumbnail grid (60%) below ---
     splitter_ = new QSplitter(this);
     splitter_->addWidget(leftPanel_);
-    splitter_->addWidget(grid_);
+    // The grid plus the filter bar above it. Still the splitter's second widget, which is
+    // all mainSplitterState records, so layouts saved before the bar existed restore as-is.
+    splitter_->addWidget(gridColumn);
     splitter_->setStretchFactor(0, 2);
     splitter_->setStretchFactor(1, 3);
     splitter_->setCollapsible(0, false);
@@ -644,6 +668,7 @@ MainWindow::MainWindow(bool resetLayout, QWidget *parent) : QMainWindow(parent),
     auto *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
     refreshAction_ = viewMenu->addAction(QStringLiteral("Refresh"), this, &MainWindow::onRefresh);
     toggleSidePanelAction_ = viewMenu->addAction(QStringLiteral("Toggle Side Panel"), this, &MainWindow::onToggleSidePanel);
+    filterByNameAction_ = viewMenu->addAction(QStringLiteral("Filter by Name"), this, &MainWindow::onFilterByName);
     viewMenu->addSeparator();
     hoverInfoAction_ = viewMenu->addAction(QStringLiteral("Show Hover Info"), this, &MainWindow::onToggleHoverInfo);
     hoverInfoAction_->setCheckable(true);
@@ -2017,6 +2042,7 @@ void MainWindow::applyKeyBindingShortcuts() {
     toggleSidePanelAction_->setShortcut(keybindings::binding(keybindings::Action::ToggleSidePanel));
     addBookmarkAction_->setShortcut(keybindings::binding(keybindings::Action::AddBookmark));
     focusAddressBarAction_->setShortcut(keybindings::binding(keybindings::Action::FocusAddressBar));
+    filterByNameAction_->setShortcut(keybindings::binding(keybindings::Action::FilterByName));
     renameAction_->setShortcut(keybindings::binding(keybindings::Action::Rename));
     // The grid caches its own folder-navigation bindings rather than reading them per key
     // press - see ThumbGridView::reloadKeyBindings().
@@ -2343,22 +2369,9 @@ void MainWindow::onSortOrderChanged() {
     // setDirectory() reload - a sort change doesn't need a DB round trip and
     // shouldn't throw away every already-decoded thumbnail pixmap just to show them
     // in a different order.
-    QList<qint64> selectedIds;
-    for (int r : grid_->selectedRows()) {
-        qint64 id = gridModel_->index(r).data(ThumbGridModel::FileIdRole).toLongLong();
-        if (id != 0) selectedIds << id;
-    }
-    qint64 currentId = gridModel_->index(grid_->currentRow()).data(ThumbGridModel::FileIdRole).toLongLong();
-
+    const GridSelectionIds selection = captureGridSelection();
     gridModel_->setSortOrder(key, descending);
-
-    QList<int> rows;
-    for (qint64 id : selectedIds) {
-        int r = gridModel_->rowForFileId(id);
-        if (r >= 0) rows << r;
-    }
-    int newCurrent = gridModel_->rowForFileId(currentId);
-    grid_->setSelection(rows, newCurrent);
+    const int newCurrent = restoreGridSelection(selection);
     // The old scroll position doesn't correspond to anything meaningful once the row
     // order has changed - land on whatever's still selected if there is one, or the
     // top of the new order otherwise (matching Explorer/Finder re-sorting a folder).
@@ -2998,29 +3011,81 @@ void MainWindow::onPurgePathHistory() {
 }
 
 void MainWindow::reloadGridPreservingSelection() {
-    QList<qint64> selectedIds;
-    for (int r : grid_->selectedRows()) {
-        qint64 id = gridModel_->index(r).data(ThumbGridModel::FileIdRole).toLongLong();
-        if (id != 0) selectedIds << id;
-    }
-    // FileIdRole is 0 for an invalid index (grid_->currentRow() == -1) - rowForFileId(0)
-    // below correctly finds nothing, so no separate "was there a selection at all" check.
-    qint64 currentId = gridModel_->index(grid_->currentRow()).data(ThumbGridModel::FileIdRole).toLongLong();
+    const GridSelectionIds selection = captureGridSelection();
     int scrollValue = grid_->verticalScrollBar()->value();
 
     gridModel_->setDirectory(currentPath_);
-
-    QList<int> rows;
-    for (qint64 id : selectedIds) {
-        int r = gridModel_->rowForFileId(id);
-        if (r >= 0) rows << r;
-    }
-    grid_->setSelection(rows, gridModel_->rowForFileId(currentId));
+    restoreGridSelection(selection);
 
     // Set after setSelection() (which itself doesn't scroll) so nothing downstream
     // moves the scrollbar again after this - restores the exact pre-reload position
     // rather than re-deriving it from whichever row ended up selected.
     grid_->verticalScrollBar()->setValue(scrollValue);
+}
+
+MainWindow::GridSelectionIds MainWindow::captureGridSelection() const {
+    GridSelectionIds ids;
+    for (int r : grid_->selectedRows()) {
+        qint64 id = gridModel_->index(r).data(ThumbGridModel::FileIdRole).toLongLong();
+        if (id != 0) ids.selected << id;
+    }
+    ids.current = gridModel_->index(grid_->currentRow()).data(ThumbGridModel::FileIdRole).toLongLong();
+    return ids;
+}
+
+int MainWindow::restoreGridSelection(const GridSelectionIds &ids) {
+    QList<int> rows;
+    for (qint64 id : ids.selected) {
+        int r = gridModel_->rowForFileId(id);
+        if (r >= 0) rows << r;
+    }
+    const int current = gridModel_->rowForFileId(ids.current);
+    grid_->setSelection(rows, current);
+    return current;
+}
+
+void MainWindow::onFilterByName() { filterBar_->activate(); }
+
+void MainWindow::applyNameFilter() {
+    const NameFilter filter = filterBar_->filter();
+    if (!filter.isValid()) {
+        // A regex is invalid for a keystroke or two on the way to being valid - "(john" on
+        // the way to "(john|jane)". Leaving the last valid filter's matches up meanwhile is
+        // what keeps typing one from emptying the grid, or flashing the whole folder back,
+        // at every unbalanced bracket.
+        filterBar_->setError(filter.errorString());
+        return;
+    }
+    filterBar_->setError(QString());
+
+    // Selected files the new filter hides drop out of the selection - a hidden row can't
+    // be selected - and don't come back when it's widened again. Everything else stays
+    // selected, so Select All, then narrowing the filter, then moving them works.
+    const GridSelectionIds selection = captureGridSelection();
+    if (gridModel_->setNameFilter(filter)) {
+        const int current = restoreGridSelection(selection);
+        // As for a sort change, the old scroll offset means nothing once the rows under it
+        // are different files: stay with the lead file if the filter kept it, otherwise
+        // start from the first match.
+        if (current >= 0) grid_->scrollToRow(current, /*center=*/true);
+        else grid_->verticalScrollBar()->setValue(0);
+    }
+    updateNameFilterStatus();
+}
+
+void MainWindow::closeNameFilter() {
+    filterBar_->clearText();
+    filterBar_->hide();
+    applyNameFilter(); // an empty pattern: every file back
+    grid_->setFocus();
+}
+
+void MainWindow::updateNameFilterStatus() {
+    if (gridModel_->nameFilter().isActive()) {
+        filterBar_->setMatchCount(gridModel_->rowCount(), gridModel_->unfilteredRowCount());
+    } else {
+        filterBar_->setMatchCount(-1, -1);
+    }
 }
 
 void MainWindow::updateSelectionStatus() {
@@ -3047,6 +3112,10 @@ void MainWindow::updateSelectionStatus() {
     rawStatusLabel_->setStatusText(
         rawKnown > 0 ? QStringLiteral("%1 RAW: %2 rendered, %3 preview").arg(rawKnown).arg(rawRendered).arg(rawPreview)
                      : QString());
+
+    // The same rows the folder stats above count, so it has to move whenever they do - a
+    // new folder, Pass A landing, files pasted in or deleted.
+    updateNameFilterStatus();
 
     QModelIndex idx = gridModel_->index(grid_->currentRow());
     if (!idx.isValid()) {

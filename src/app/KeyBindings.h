@@ -29,6 +29,9 @@ enum class Action {
     Refresh,
     AddBookmark,
     FocusAddressBar,
+    // Opens the name filter above the grid (see NameFilterBar), or puts the cursor back in
+    // it if it's already open.
+    FilterByName,
     Rename,
     // Grid: opens the current selection in FullscreenViewer (ThumbGridView's
     // activated() signal). FullscreenViewer: closes back to the grid - the same
@@ -71,7 +74,8 @@ void resetBinding(Action action); // removes the override; binding() falls back 
 // Keys ThumbGridView/FullscreenViewer's own keyPressEvent() always handles itself
 // (navigation, Escape), plus the fixed standard Edit-menu shortcuts (Select All/
 // Copy/Cut/Paste - see MainWindow's Edit menu, which wires these directly via
-// QKeySequence::StandardKey rather than through this configurable system at all) -
+// QKeySequence::StandardKey rather than through this configurable system at all), and
+// the name filter's fixed Ctrl+1/2/3 mode switches (see NameFilterBar) -
 // picking one of these for a configurable action would make that action
 // unreachable, or would silently steal Ctrl+C/X/V from file copy/cut/paste, so the
 // editor UI blocks it. One shared list rather than splitting by source: none of the

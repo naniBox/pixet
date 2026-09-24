@@ -34,6 +34,9 @@ QList<ActionInfo> buildActionList() {
          QKeySequence(QStringLiteral("Ctrl+B"))},
         {Action::FocusAddressBar, QStringLiteral("focusAddressBar"), QStringLiteral("Focus address bar"),
          QKeySequence(QStringLiteral("Ctrl+D"))},
+        // Portable "Ctrl", so Cmd+Shift+F on macOS - see Refresh above.
+        {Action::FilterByName, QStringLiteral("filterByName"), QStringLiteral("Filter by name"),
+         QKeySequence(QStringLiteral("Ctrl+Shift+F"))},
         // F2 on both platforms, not just Windows (where it's Explorer's own
         // convention) - macOS Finder's rename key is Return, but this app's Return is
         // already ActivateFullscreen (above), so F2 avoids that clash rather than
@@ -81,6 +84,14 @@ QList<QKeySequence> buildReservedList() {
         // friends), so reserving it would block those actions from holding their own
         // defaults - and conflicts between two configurable actions are already caught by
         // PreferencesDialog's pairwise check, which reserving was never about.
+        //
+        // The name filter's mode switches - fixed, and live whenever the filter bar is open
+        // (see NameFilterBar). A configurable action bound to one of these would be
+        // ambiguous with it for as long as the bar is up, and Qt fires neither side of an
+        // ambiguous shortcut.
+        QKeySequence(QStringLiteral("Ctrl+1")),
+        QKeySequence(QStringLiteral("Ctrl+2")),
+        QKeySequence(QStringLiteral("Ctrl+3")),
     };
     // Also reserve the fixed (non-remappable) Edit-menu standard shortcuts - Select
     // All/Copy/Cut/Paste are wired directly in MainWindow via QKeySequence::StandardKey,

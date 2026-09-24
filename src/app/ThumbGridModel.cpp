@@ -58,10 +58,28 @@ void ThumbGridModel::accumulate(const Row &row, int sign) {
 void ThumbGridModel::reindexLookups() {
     rowByFileId_.clear();
     rowByName_.clear();
+    shown_.clear();
+    shownRowOf_.resize(rows_.size());
     for (int i = 0; i < rows_.size(); ++i) {
         rowByFileId_[rows_[i].id] = i;
         rowByName_[rows_[i].name] = i;
+        if (rows_[i].shown) {
+            shownRowOf_[i] = shown_.size();
+            shown_.push_back(i);
+        } else {
+            shownRowOf_[i] = -1;
+        }
     }
+}
+
+bool ThumbGridModel::setNameFilter(const NameFilter &filter) {
+    if (filter == filter_) return false;
+    filter_ = filter;
+    beginResetModel();
+    for (Row &row : rows_) row.shown = filter_.matches(row.name);
+    reindexLookups();
+    endResetModel();
+    return true;
 }
 
 QString ThumbGridModel::orderByClause() const {
@@ -122,6 +140,8 @@ void ThumbGridModel::setDirectory(const QString &path) {
     rows_.clear();
     rowByFileId_.clear();
     rowByName_.clear();
+    shown_.clear();
+    shownRowOf_.clear();
     // Every cached pixmap died with rows_, so the byte accounting and the eviction queue have
     // to go with it - otherwise the budget stays "full" against pixmaps that no longer exist
     // and the next folder evicts itself immediately.
@@ -149,6 +169,7 @@ void ThumbGridModel::setDirectory(const QString &path) {
             PIXET_PROF_SCOPE("model.rowSelect");
             while (sel.step()) {
                 Row row = rowFromStatement(sel);
+                row.shown = filter_.matches(row.name);
                 accumulate(row, +1);
                 rows_.push_back(std::move(row));
             }
@@ -163,26 +184,29 @@ void ThumbGridModel::setDirectory(const QString &path) {
 
 int ThumbGridModel::rowForFileId(qint64 fileId) const {
     auto it = rowByFileId_.find(fileId);
-    return it == rowByFileId_.end() ? -1 : it.value();
+    return it == rowByFileId_.end() ? -1 : shownRowOf(it.value());
 }
 
 int ThumbGridModel::insertOrUpdateFileByName(const QString &name) {
     if (dirId_ == 0) return -1;
     Row row;
     if (!loadRow(name, row)) return -1;
+    row.shown = filter_.matches(row.name);
 
     auto existing = rowByName_.find(name);
     if (existing != rowByName_.end()) {
         // Already present (a second call before the first was needed, or a rename
         // landed on an already-loaded name) - update in place rather than inserting
-        // a duplicate row for the same name.
+        // a duplicate row for the same name. Same name, so the filter's verdict can't
+        // have changed and neither can which view row this is.
         int r = existing.value();
         accumulate(rows_[r], -1);
         rows_[r] = row;
         accumulate(rows_[r], +1);
         reindexLookups(); // the file id at this name may have changed
-        emit dataChanged(index(r), index(r), {Qt::DecorationRole, Qt::DisplayRole});
-        return r;
+        const int shownRow = shownRowOf(r);
+        if (shownRow >= 0) emit dataChanged(index(shownRow), index(shownRow), {Qt::DecorationRole, Qt::DisplayRole});
+        return shownRow;
     }
 
     // Sorted insertion position under the current sort order - see isRowBefore()'s
@@ -191,24 +215,35 @@ int ThumbGridModel::insertOrUpdateFileByName(const QString &name) {
     int insertAt = 0;
     while (insertAt < rows_.size() && isRowBefore(rows_[insertAt], row)) ++insertAt;
 
-    beginInsertRows(QModelIndex(), insertAt, insertAt);
+    if (!row.shown) {
+        accumulate(row, +1);
+        rows_.insert(insertAt, std::move(row));
+        reindexLookups();
+        return -1;
+    }
+
+    // The view row it lands on is however many shown rows sort before it - shown_ is in
+    // rows_ order, so that's where insertAt would go in it.
+    const int shownAt = int(std::lower_bound(shown_.begin(), shown_.end(), insertAt) - shown_.begin());
+    beginInsertRows(QModelIndex(), shownAt, shownAt);
     accumulate(row, +1);
     rows_.insert(insertAt, std::move(row));
     reindexLookups();
     endInsertRows();
-    return insertAt;
+    return shownAt;
 }
 
 bool ThumbGridModel::removeFileById(qint64 fileId) {
     auto it = rowByFileId_.find(fileId);
     if (it == rowByFileId_.end()) return false;
     int r = it.value();
+    const int shownRow = shownRowOf(r);
 
-    beginRemoveRows(QModelIndex(), r, r);
+    if (shownRow >= 0) beginRemoveRows(QModelIndex(), shownRow, shownRow);
     accumulate(rows_[r], -1);
     rows_.remove(r);
     reindexLookups();
-    endRemoveRows();
+    if (shownRow >= 0) endRemoveRows();
     return true;
 }
 
@@ -267,8 +302,13 @@ void ThumbGridModel::refreshThumbStates() {
             rows_[row].durationMs = durationMs;
             rows_[row].hasGps = hasGps;
             rows_[row].requested = false; // allow re-request now that a real thumb may exist
-            if (minChanged == -1 || row < minChanged) minChanged = row;
-            if (row > maxChanged) maxChanged = row;
+            // The range is in view rows. A hidden row's new state is recorded above all the
+            // same, and simply read when the filter next lets it through.
+            const int shownRow = shownRowOf(row);
+            if (shownRow >= 0) {
+                if (minChanged == -1 || shownRow < minChanged) minChanged = shownRow;
+                if (shownRow > maxChanged) maxChanged = shownRow;
+            }
         }
     }
 
@@ -277,11 +317,11 @@ void ThumbGridModel::refreshThumbStates() {
     }
 }
 
-int ThumbGridModel::rowCount(const QModelIndex &parent) const { return parent.isValid() ? 0 : rows_.size(); }
+int ThumbGridModel::rowCount(const QModelIndex &parent) const { return parent.isValid() ? 0 : shown_.size(); }
 
 QVariant ThumbGridModel::data(const QModelIndex &index, int role) const {
-    if (!index.isValid() || index.row() < 0 || index.row() >= rows_.size()) return {};
-    const Row &row = rows_[index.row()];
+    if (!index.isValid() || index.row() < 0 || index.row() >= shown_.size()) return {};
+    const Row &row = rows_[shown_[index.row()]];
 
     switch (role) {
         case Qt::DisplayRole:
@@ -335,27 +375,30 @@ QVariant ThumbGridModel::data(const QModelIndex &index, int role) const {
 
 int ThumbGridModel::rowForName(const QString &name) const {
     auto it = rowByName_.find(name);
-    return it == rowByName_.end() ? -1 : it.value();
+    return it == rowByName_.end() ? -1 : shownRowOf(it.value());
 }
 
 QVector<qint64> ThumbGridModel::fileIdsForRows(int first, int last) const {
     first = qMax(0, first);
-    last = qMin(last, rows_.size() - 1);
+    last = qMin(last, int(shown_.size()) - 1);
     QVector<qint64> ids;
     if (first > last) return ids;
     ids.reserve(last - first + 1);
-    for (int row = first; row <= last; ++row) ids.push_back(rows_[row].id);
+    for (int row = first; row <= last; ++row) ids.push_back(rows_[shown_[row]].id);
     return ids;
 }
 
 qint64 ThumbGridModel::sizeForRows(const QList<int> &rows) const {
     qint64 total = 0;
     for (int r : rows) {
-        if (r >= 0 && r < rows_.size()) total += rows_[r].size;
+        if (r >= 0 && r < shown_.size()) total += rows_[shown_[r]].size;
     }
     return total;
 }
 
+// `row` below, here and in evictThumbsIfNeeded(), is a rows_ index - both are driven by file
+// id and by the FIFO, not by anything the view asked for - so only a shown row gets a
+// dataChanged, under its view row number.
 void ThumbGridModel::setThumbnail(qint64 fileId, const QPixmap &pixmap) {
     auto it = rowByFileId_.find(fileId);
     if (it == rowByFileId_.end()) return;
@@ -374,8 +417,8 @@ void ThumbGridModel::setThumbnail(qint64 fileId, const QPixmap &pixmap) {
     thumbCacheBytes_ += rows_[row].thumbBytes;
     thumbFifo_.push_back(row);
 
-    QModelIndex idx = index(row);
-    emit dataChanged(idx, idx, {Qt::DecorationRole});
+    const int shownRow = shownRowOf(row);
+    if (shownRow >= 0) emit dataChanged(index(shownRow), index(shownRow), {Qt::DecorationRole});
 
     // After the dataChanged for this row, so the view has already been told about the arrival
     // it was waiting for before anything else is taken away from it.
@@ -394,7 +437,7 @@ void ThumbGridModel::evictThumbsIfNeeded() {
         // Cleared so data() will re-emit thumbNeeded if this row scrolls back into view -
         // without this the row would be permanently blank, having been "requested" once.
         r.requested = false;
-        QModelIndex idx = index(row);
-        emit dataChanged(idx, idx, {Qt::DecorationRole});
+        const int shownRow = shownRowOf(row);
+        if (shownRow >= 0) emit dataChanged(index(shownRow), index(shownRow), {Qt::DecorationRole});
     }
 }
