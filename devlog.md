@@ -5,6 +5,146 @@ machines. Newest entry on top. Append, don't rewrite history.
 
 ---
 
+## 2026-09-24 — desktop — `scripts/clean.ps1` / `clean.sh`: delete the build trees
+
+Asked for: a script to clean all the builds. Paired like configure/build, since both machines
+build: `clean.ps1` on Windows, `clean.sh` on the Mac.
+
+It deletes everything under `build/` - every preset's tree, strays like the hand-made
+`debug2`, and the deploy staging folders (`win-deploy`, `dmg-stage`) - **except the finished
+installers** (`pixet-*-setup.exe`, `pixet-*-arm64.dmg`). Those stay unless `-Installers`
+/ `--installers` is passed: they're the one thing in `build/` that a rebuild can't give back
+for an older version without checking out its tag. `deploy-mac.sh`'s intermediate
+`pixet-*-rw.dmg` doesn't match that pattern, so a leftover one is cleaned. `-Vcpkg` /
+`--vcpkg` also deletes `vcpkg/buildtrees` and `vcpkg/packages`, vcpkg's from-source scratch
+space that it never cleans up itself. `vcpkg/downloads` stays. The vcpkg *binary* caches
+(local archives and the `\\kioku` share) are never touched, because they're what make the
+reconfigure after a clean take seconds. Each preset's `vcpkg_installed/` goes with its tree
+and comes back from them.
+
+On this machine that's ~2.1GB by default (debug 726M, debug2 647M, release 623M,
+win-deploy 74M), plus ~2.4GB with `-Vcpkg` (buildtrees 2.1G, packages 334M).
+
+Two Windows-specific details. `clean.ps1` refuses to start while a `pixet`, `pixet-index` or
+`pixet_tests` process is running *from inside `build/`*: Windows won't delete an open file,
+and a clean that fails halfway leaves a tree the next configure trips over. `clean.sh`
+doesn't need the check, because macOS unlinks a running binary happily. `-WhatIf` works (via
+`SupportsShouldProcess`) as the dry run, and `clean.sh` has `--dry-run`.
+
+Tested on a throwaway copy of the repo layout: refusal with a copied-in `pixet.exe` running
+from `build/debug` (exit 1, tree untouched); the default clean (trees, stray dotdir, rw.dmg and
+read-only files gone; both installers and vcpkg kept); `-Installers -Vcpkg` (only
+`vcpkg/downloads` left); a second run ("Nothing to clean."); and `clean.sh` through Git Bash
+with `--dry-run`, an unknown flag (exit 2 with usage), and a real `--vcpkg` run. Against the
+real repo, only `-WhatIf`. Nothing real was deleted.
+
+`clean.sh` needs `git add --chmod=+x` when it's committed, like the other `.sh` scripts
+(100755 in the index). A Windows checkout can't set that bit any other way.
+
+---
+
+## 2026-09-24 — desktop — Filter the grid by name: wildcard, fuzzy and regex
+
+Asked for: Ctrl+Shift+F enters a filter mode over the grid, with three ways of matching
+switchable by Ctrl+1/2/3 on a set of radio buttons - wildcard ("`*john_is*` matches
+today_john_is_tall but not today_john_tall_is"), fuzzy, and regex. Branch
+`feat/name-filter`.
+
+**The filter lives inside `ThumbGridModel`, not in a `QSortFilterProxyModel` in front of it.**
+A proxy is the textbook answer and would have been wrong here: `MainWindow`, `ThumbGridView`
+and `FullscreenViewer` all address the model's rows directly - `gridModel_->index(
+grid_->currentRow())` and its relatives appear dozens of times - and with a proxy in between,
+every one of those would have quietly indexed the wrong file until someone taught it to map.
+Inside the model, "row" keeps meaning one thing everywhere: every row number the model takes
+or returns is now a *shown* row. `rows_` still holds the whole folder (sorted, as before),
+`shown_` maps a view row to its `rows_` index and `shownRowOf_` is the inverse, both rebuilt
+in `reindexLookups()` next to the lookups that already lived there. Whether a row passes is
+cached on the row (`Row::shown`) when it's created or the filter changes. `reindexLookups()`
+runs on every single-file insert, and running a regex over the whole folder once per file of
+a large paste would add up. What comes for free: Select All selects the matches, drag-out and
+Cut/Copy/Delete act on them, fullscreen browses only them, and the indexer's on-screen-first
+hint prioritises them. And since hidden rows never leave `rows_`, a filter change keeps every
+decoded thumbnail. Changing the filter just resets the model over the same pixmaps.
+
+The internal call sites that needed care were the ones driven by something other than the
+view: `setThumbnail()`, eviction, `refreshThumbStates()` and the incremental insert/remove.
+They work in `rows_` indices and now only signal a row the view can see. A file pasted into
+the open folder that the filter hides is recorded silently and appears when the filter lets it
+through. Folder aggregates (the status bar's "N items · size", the RAW counts) stay
+whole-folder on purpose. The filter bar's own "12 of 340" is what says how much is on screen.
+
+**The matching rules** are in `NameFilter`, a plain value type with no widget or settings in
+it, so they're unit-tested (`tests/test_namefilter.cpp`, with the requested example as the
+first test). All three modes are case-insensitive and match the whole name, extension included:
+
+- *Wildcard* is a shell glob: `*` any run, `?` one character, anchored at both ends, so
+  `IMG_*` means "starts with". One deliberate exception: a pattern with no `*` or `?` means
+  "contains". Anchored, a plain word could only ever match a file with no extension, so
+  typing one would hide everything. It's a hand-rolled conversion rather than
+  `QRegularExpression::wildcardToRegularExpression()`, because Qt's also treats `[...]` as a
+  character class and "holiday [1].jpg" is an ordinary file name.
+- *Fuzzy* is fzf-style: each whitespace-separated term has to appear as a subsequence, and
+  terms are independent, so `tall john` finds john_is_tall. It filters only, never re-ranks.
+  The grid keeps the sort the user chose.
+- *Regex* is a PCRE search, unanchored like grep, and `(?-i)` turns case back on. A pattern
+  that doesn't compile is reported in red in the bar ("Invalid: missing closing parenthesis")
+  **and the grid keeps showing the last valid filter's matches**. A regex is invalid for a
+  keystroke or two on the way to being valid, and emptying the grid or flashing the whole
+  folder back at every unbalanced bracket would make typing one miserable.
+
+**Keys.** Ctrl+Shift+F is a configurable binding (`Action::FilterByName`, in Preferences like
+the rest; Cmd+Shift+F on macOS through the portable-Ctrl spelling), and also in View > Filter
+by Name. Pressed again while open, it puts the cursor back in the field with the text selected.
+Ctrl+1/2/3 are fixed `QAction`s on `NameFilterBar` itself with the default `WindowShortcut`
+context. That works because Qt only honours an action's shortcut while a widget it belongs to
+is visible, so "the bar is open" and "the mode keys are live" are the same fact, with no
+enable/disable bookkeeping. They also work after focus has moved to the grid, which is the
+point: Return (or Down) in the field hands focus to the grid, landing on the first match if
+nothing was selected, and the mode can still be flipped from there. The three are added to
+`reservedSequences()`, because a configurable action bound to one would be ambiguous with it
+while the bar is up and Qt fires neither side of an ambiguous shortcut. Escape in the field,
+or the × button, closes the bar and clears the filter.
+
+Behaviour decisions worth knowing about:
+- **The filter stays on across folder changes while the bar is open**, so a pattern can be
+  carried from folder to folder with Ctrl+Up/Down. The visible bar and its count are what stop
+  that being a trap.
+- **Closing clears the text**, and only the *mode* is persisted (`nameFilterMode` in
+  pixet.ini). A launch can never come up with files hidden by a filter nobody can see.
+- **Escape in the grid deliberately does not close the filter.** Leaving fullscreen is Escape,
+  and hitting it twice by habit would then silently throw away the pattern.
+- Selected files that a filter change hides drop out of the selection, and don't come back
+  when the filter is widened again. The selection is carried across by file id, the same way
+  a sort change does it. That capture/restore was now written out three times (sort, reload,
+  filter), so it's factored into `captureGridSelection()`/`restoreGridSelection()`, and
+  `onSortOrderChanged()`/`reloadGridPreservingSelection()` use them unchanged in behaviour.
+
+**The tests now link Qt6::Core.** `NameFilter` is written against `QString`/
+`QRegularExpression`, so `pixet_tests` compiles `src/app/NameFilter.cpp` and links Core (only
+Core). Dev builds deliberately keep Qt off PATH, so on Windows a POST_BUILD step copies
+`$<TARGET_RUNTIME_DLLS:pixet_tests>` next to the exe. Verified by running `pixet_tests.exe`
+from a shell with every Qt entry stripped from PATH: it starts, 137/137 pass. macOS needs
+nothing, since the build-tree rpath finds the framework the same way it does for the app.
+
+**Verified in the real app, in a sandboxed profile.** Useful for next time: `appDataDir()`
+uses `SHGetKnownFolderPath(FOLDERID_LocalAppData)`, which follows a process-level
+`USERPROFILE`/`LOCALAPPDATA` override. Launching the debug build with both pointed at a
+scratch directory gives it a private index.db, thumbs.db and pixet.ini, so a scripted run
+never touches the real library, last folder or path history. Driven with SendKeys (guarded so
+that it stops if pixet isn't the foreground window) against a folder of seven generated
+PNGs, with a screenshot after each step: `*john_is*` → 1 of 7 (today_john_is_tall only);
+Ctrl+2, `jhn` → 4 of 7; Ctrl+3, `john_(is|was)` → 2 of 7; `(john` → the red error with the two
+previous matches still up; Escape → all 7 back; Ctrl+Shift+F again → an empty field, still on
+Regex, with that mode's placeholder. `nameFilterMode=2` was written to the sandbox ini and
+nothing to the real one.
+
+Noticed, not changed: `removeFileById()` and the update-in-place path of
+`insertOrUpdateFileByName()` drop a row's pixmap without giving its bytes back to
+`thumbCacheBytes_`, so the cache budget drifts "fuller" than it is until the next
+`setDirectory()`. This is older than the filter and harmless beyond some early eviction.
+
+---
+
 ## 2026-09-11 — desktop — "The user scrolled" is an input, not a scrollbar value, and the tree settling now knows what it's waiting for
 
 Two reports in one, both against this morning's entry. A restored `Y:\dmo\Nextcloud\InstantUpload\Camera`

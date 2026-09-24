@@ -193,4 +193,14 @@ void setGridSortDescending(bool descending) {
     settingsStore().setValue(QStringLiteral("gridSortDescending"), descending);
 }
 
+NameFilter::Mode nameFilterMode() {
+    int v = settingsStore().value(QStringLiteral("nameFilterMode"), (int)NameFilter::Mode::Wildcard).toInt();
+    if (v < (int)NameFilter::Mode::Wildcard || v > (int)NameFilter::Mode::Regex) v = (int)NameFilter::Mode::Wildcard;
+    return (NameFilter::Mode)v;
+}
+
+void setNameFilterMode(NameFilter::Mode mode) {
+    settingsStore().setValue(QStringLiteral("nameFilterMode"), (int)mode);
+}
+
 } // namespace prefs

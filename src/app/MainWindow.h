@@ -27,6 +27,7 @@ class QTimer;
 
 class BookmarkListWidget;
 class FolderTreeView;
+class NameFilterBar;
 class StatusLabel;
 class ThumbGridModel;
 class ThumbGridView;
@@ -155,6 +156,17 @@ private slots:
     // the "type a new destination immediately" convention address-bar-focus
     // shortcuts have in browsers.
     void onFocusAddressBar();
+    // Ctrl+Shift+F by default (see KeyBindings.cpp), and View > Filter by Name. Opens the
+    // name filter above the grid, or puts the cursor back in it if it's already open.
+    void onFilterByName();
+    // The filter bar's text or mode changed. Pushes the filter into the grid model and
+    // carries the selection across by file id, as a sort change does - except for a regex
+    // that doesn't compile yet, which is reported in the bar while the grid keeps showing
+    // the last valid filter's matches.
+    void applyNameFilter();
+    // Escape in the filter field, or its close button: clears the filter, hides the bar,
+    // and hands the keyboard back to the grid.
+    void closeNameFilter();
     void onForceRethumbnail();
     // Status bar thumbnail-size drop-down. Writes the preference, relayouts the grid, and
     // re-thumbnails the current folder only when the stored blobs can't satisfy the new
@@ -282,6 +294,10 @@ private:
     BookmarkListWidget *bookmarks_;
     ThumbGridView *grid_;
     ThumbGridModel *gridModel_;
+    // Above the grid, hidden unless filtering - see NameFilterBar. Stays open (and keeps
+    // filtering) across folder changes until closed, so a pattern can be carried from
+    // folder to folder; its "N of M" is what says so.
+    NameFilterBar *filterBar_;
     PreviewPane *preview_;
     // Runs on the main thread like any other widget (only its internal decoder is a
     // background worker) - a normal parented QWidget is fine, unlike the
@@ -363,6 +379,7 @@ private:
     // addAction() instead, so its shortcut is live) so it's configurable in
     // PreferencesDialog like every other single-key action.
     QAction *focusAddressBarAction_;
+    QAction *filterByNameAction_;
     QAction *toggleSidePanelAction_;
     QAction *hoverInfoAction_;
     QAction *addBookmarkAction_;
@@ -561,6 +578,23 @@ private:
     // about the change a targeted insertOrUpdateFileByName()/removeFileById() call
     // could describe more precisely (see ThumbGridModel).
     void reloadGridPreservingSelection();
+
+    // The grid's selection held by file id rather than row number, so it survives
+    // anything that reassigns row numbers wholesale - a reload, a sort change, a name
+    // filter change. FileIdRole is 0 for an invalid index, so `current` is 0 when nothing
+    // was selected and rowForFileId(0) then correctly finds nothing.
+    struct GridSelectionIds {
+        QList<qint64> selected;
+        qint64 current = 0;
+    };
+    GridSelectionIds captureGridSelection() const;
+    // Re-selects whichever of `ids` still have a row, and returns the lead's row now (-1
+    // if it has none - gone from the folder, or hidden by the name filter). Doesn't scroll;
+    // what the right scroll position is afterwards differs per caller.
+    int restoreGridSelection(const GridSelectionIds &ids);
+    // The filter bar's "N of M" - blank with no active filter. Called wherever the folder
+    // stats are (updateSelectionStatus()), since what changes one changes the other.
+    void updateNameFilterStatus();
 
     // The per-item context menu, shared by the grid and the fullscreen viewer so "the usual
     // data" is literally the same menu in both rather than two lists that drift apart.
